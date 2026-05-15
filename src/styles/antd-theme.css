@@ -1,0 +1,62 @@
+:root {
+  --cs-ink: #1f1f1f;
+  --cs-ink-soft: #595959;
+  --cs-subtle: #8c8c8c;
+  --cs-parchment: #f5f7fa;
+  --cs-parchment-strong: #ffffff;
+  --cs-paper: #ffffff;
+  --cs-paper-elevated: #fafafa;
+  --cs-sand: #f0f5ff;
+  --cs-border: #d9d9d9;
+  --cs-border-soft: rgba(5, 5, 5, 0.06);
+  --cs-brand: #1677ff;
+  --cs-brand-hover: #4096ff;
+  --cs-brand-soft: rgba(22, 119, 255, 0.12);
+  --cs-green: #52c41a;
+  --cs-green-soft: rgba(82, 196, 26, 0.12);
+  --cs-warning: #faad14;
+  --cs-danger: #ff4d4f;
+  --cs-danger-soft: rgba(255, 77, 79, 0.1);
+  --cs-focus: #1677ff;
+  --cs-radius-xs: 4px;
+  --cs-radius-sm: 8px;
+  --cs-radius-md: 8px;
+  --cs-radius-lg: 12px;
+  --cs-radius-xl: 12px;
+  --cs-shadow-card:
+    0 6px 16px rgba(5, 5, 5, 0.04),
+    0 1px 2px rgba(5, 5, 5, 0.03);
+  --cs-shadow-floating:
+    0 12px 32px rgba(5, 5, 5, 0.12),
+    0 0 0 1px rgba(5, 5, 5, 0.06);
+  --cs-shadow-focus: 0 0 0 3px rgba(22, 119, 255, 0.12);
+}
+
+:root[data-theme="dark"] {
+  --cs-ink: #f0f0f0;
+  --cs-ink-soft: #d9d9d9;
+  --cs-subtle: #8c8c8c;
+  --cs-parchment: #141414;
+  --cs-parchment-strong: #000000;
+  --cs-paper: #1f1f1f;
+  --cs-paper-elevated: #262626;
+  --cs-sand: #111a2c;
+  --cs-border: #424242;
+  --cs-border-soft: rgba(255, 255, 255, 0.12);
+  --cs-brand: #1677ff;
+  --cs-brand-hover: #4096ff;
+  --cs-brand-soft: rgba(22, 119, 255, 0.18);
+  --cs-green: #52c41a;
+  --cs-green-soft: rgba(82, 196, 26, 0.14);
+  --cs-warning: #faad14;
+  --cs-danger: #ff4d4f;
+  --cs-danger-soft: rgba(255, 77, 79, 0.14);
+  --cs-focus: #1677ff;
+  --cs-shadow-card:
+    0 14px 32px rgba(0, 0, 0, 0.32),
+    inset 0 1px rgba(255, 255, 255, 0.06);
+  --cs-shadow-floating:
+    0 18px 44px rgba(0, 0, 0, 0.42),
+    0 0 0 1px rgba(255, 255, 255, 0.12);
+  --cs-shadow-focus: 0 0 0 3px rgba(22, 119, 255, 0.22);
+}

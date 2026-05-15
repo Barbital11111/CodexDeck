@@ -1,0 +1,321 @@
+.bottomDock {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: auto auto auto 1fr auto;
+  gap: 20px;
+  padding: 14px 14px 16px;
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--side-rail-bg) 94%, var(--surface-tint) 6%), transparent 150%),
+    color-mix(in srgb, var(--side-rail-bg) 92%, transparent);
+  color: var(--ink);
+}
+
+.dockWindowLights {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 22px;
+}
+
+.dockWindowLights span {
+  width: 11px;
+  height: 11px;
+  border-radius: 999px;
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.44);
+}
+
+.dockWindowLights span:nth-child(1) {
+  background: #ee6b5f;
+}
+
+.dockWindowLights span:nth-child(2) {
+  background: #efbd4b;
+}
+
+.dockWindowLights span:nth-child(3) {
+  background: #61c454;
+}
+
+.dockBrand {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 8px 5px;
+}
+
+.dockBrand strong {
+  color: var(--ink);
+  font: 760 0.94rem/1.2 var(--font-ui);
+  letter-spacing: -0.02em;
+}
+
+.dockSection {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+}
+
+.dockSectionLabel {
+  padding: 0 8px 4px;
+  color: color-mix(in srgb, var(--subtle) 84%, var(--ink) 16%);
+  font: 700 0.72rem/1 var(--font-ui);
+}
+
+button.bottomDockButton {
+  width: 100%;
+  min-height: 42px;
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  border: 1px solid transparent;
+  border-radius: 12px;
+  padding: 0 10px;
+  background: transparent;
+  color: color-mix(in srgb, var(--subtle) 88%, var(--ink) 12%);
+  box-shadow: none;
+  text-align: left;
+}
+
+button.bottomDockButton::after {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: transparent;
+}
+
+button.bottomDockButton:hover,
+button.bottomDockButton:focus-visible {
+  transform: none;
+  filter: none;
+  background: color-mix(in srgb, var(--side-rail-active-bg) 52%, transparent);
+  border-color: color-mix(in srgb, var(--line) 52%, transparent);
+}
+
+button.bottomDockButton.isActive {
+  color: color-mix(in srgb, var(--ink) 90%, var(--side-rail-accent) 10%);
+  border-color: color-mix(in srgb, var(--side-rail-active-bg) 80%, var(--line) 20%);
+  background: var(--side-rail-active-bg);
+  box-shadow:
+    inset 0 1px var(--surface-highlight-soft),
+    0 8px 18px color-mix(in srgb, var(--ink) 6%, transparent);
+}
+
+button.bottomDockButton.isActive::after {
+  background: var(--side-rail-accent);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--side-rail-accent) 12%, transparent);
+}
+
+button.bottomDockButton.isDisabled {
+  cursor: default;
+  opacity: 0.78;
+}
+
+button.bottomDockButton.isDisabled:hover,
+button.bottomDockButton.isDisabled:focus-visible {
+  background: transparent;
+  border-color: transparent;
+}
+
+.bottomDockIcon {
+  width: 18px;
+  height: 18px;
+  justify-self: center;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.7;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  font: 800 0.94rem/1 var(--font-ui);
+}
+
+.bottomDockLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 680 0.82rem/1 var(--font-ui);
+  letter-spacing: -0.01em;
+}
+
+.dockFooter {
+  align-self: end;
+  display: grid;
+  gap: 10px;
+}
+
+.dockPlanCard,
+.dockOnline {
+  display: grid;
+  gap: 6px;
+  border: 1px solid color-mix(in srgb, var(--line) 60%, transparent);
+  border-radius: 13px;
+  padding: 13px 12px;
+  background: color-mix(in srgb, var(--meta-bg) 42%, transparent);
+  box-shadow: inset 0 1px var(--surface-highlight-soft);
+  color: var(--ink);
+  font: 720 0.78rem/1.45 var(--font-ui);
+}
+
+.dockPlanCard strong,
+.dockOnline strong {
+  color: var(--subtle);
+  font: 620 0.7rem/1.35 var(--font-ui);
+}
+
+.dockOnline {
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: start;
+}
+
+/* Reference 7 side rail: software navigation, not a branded glass launcher. */
+.bottomDock {
+  grid-template-rows: auto auto auto auto 1fr;
+  gap: 14px;
+  padding: 14px 13px 15px;
+  background:
+    linear-gradient(180deg, var(--side-rail-bg), color-mix(in srgb, var(--side-rail-bg) 84%, var(--notification-paper) 16%)),
+    var(--side-rail-bg);
+}
+
+.dockWindowLights {
+  height: 18px;
+  gap: 7px;
+}
+
+.dockWindowLights span {
+  width: 10px;
+  height: 10px;
+}
+
+.dockBrand {
+  gap: 10px;
+  padding: 7px 5px 12px;
+}
+
+.dockLogoMark {
+  width: 30px;
+  height: 30px;
+  display: block;
+  flex: 0 0 auto;
+  object-fit: contain;
+  filter: drop-shadow(0 6px 14px rgba(22, 119, 255, 0.14));
+}
+
+.dockBrand strong {
+  font-size: 0.9rem;
+  letter-spacing: -0.015em;
+}
+
+.dockSection {
+  gap: 5px;
+}
+
+.dockSectionLabel {
+  padding: 2px 8px 5px;
+  color: color-mix(in srgb, var(--subtle) 72%, var(--ink) 28%);
+  font-size: 0.68rem;
+  line-height: 1.35;
+}
+
+button.bottomDockButton {
+  min-height: 36px;
+  grid-template-columns: 20px minmax(0, 1fr) 8px;
+  gap: 8px;
+  border-radius: 10px;
+  padding: 3px 9px;
+  color: color-mix(in srgb, var(--subtle) 88%, var(--ink) 12%);
+}
+
+button.bottomDockButton:hover,
+button.bottomDockButton:focus-visible {
+  background: color-mix(in srgb, var(--side-rail-active-bg) 42%, transparent);
+}
+
+button.bottomDockButton.isActive {
+  border-color: color-mix(in srgb, var(--side-rail-active-bg) 72%, var(--line) 28%);
+  background: color-mix(in srgb, var(--side-rail-active-bg) 92%, var(--notification-paper) 8%);
+  box-shadow: none;
+}
+
+.dockSubmenu {
+  display: grid;
+  gap: 3px;
+  margin: -1px 0 4px 28px;
+  padding-left: 9px;
+  border-left: 1px solid color-mix(in srgb, var(--notification-line) 90%, transparent);
+}
+
+.dockSubmenuButton {
+  min-height: 30px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 3px 8px;
+  background: transparent;
+  color: color-mix(in srgb, var(--subtle) 86%, var(--ink) 14%);
+  box-shadow: none;
+  text-align: left;
+  font: 680 0.68rem/1.35 var(--font-ui);
+}
+
+.dockSubmenuButton:hover,
+.dockSubmenuButton:focus-visible {
+  transform: none;
+  border-color: color-mix(in srgb, var(--notification-line) 70%, transparent);
+  background: color-mix(in srgb, var(--side-rail-active-bg) 34%, transparent);
+}
+
+.dockSubmenuButton.isActive {
+  color: var(--ink);
+  border-color: color-mix(in srgb, var(--side-rail-active-bg) 76%, var(--line) 24%);
+  background: color-mix(in srgb, var(--side-rail-active-bg) 72%, transparent);
+}
+
+.dockSubmenuButton span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.35;
+}
+
+button.bottomDockButton.isDisabled {
+  opacity: 0.62;
+}
+
+.bottomDockIcon {
+  width: 16px;
+  height: 16px;
+  font-size: 0.82rem;
+  stroke-width: 1.55;
+}
+
+.bottomDockLabel {
+  font-size: 0.76rem;
+  line-height: 1.3;
+}
+
+.dockFooter {
+  gap: 8px;
+}
+
+.dockPlanCard,
+.dockOnline {
+  gap: 5px;
+  border-radius: 11px;
+  padding: 10px 11px;
+  background: color-mix(in srgb, var(--notification-paper-strong) 58%, transparent);
+  box-shadow: inset 0 1px var(--surface-highlight-soft);
+  font-size: 0.72rem;
+}
+
+.dockPlanCard strong,
+.dockOnline strong {
+  font-size: 0.64rem;
+}
