@@ -101,20 +101,38 @@ function Write-LogTail {
 function Invoke-TauriSigner {
   param(
     [string]$Path,
-    [string]$KeyPath,
+    [string]$PrivateKey,
     [string]$Password
   )
 
-  $tauriCli = Join-Path $repoRoot "node_modules/.bin/tauri.cmd"
+  $tauriCli = Join-Path $repoRoot "node_modules/@tauri-apps/cli/tauri.js"
   $signaturePath = "$Path.sig"
-  $signArgs = @("signer", "sign", "-f", $KeyPath)
-  $signArgs += @("-p", $Password)
+  $effectivePassword = ""
+  if ($null -ne $Password) {
+    $effectivePassword = $Password
+  }
+  $signArgs = @($tauriCli, "signer", "sign", "--password", $effectivePassword)
   $signArgs += $Path
 
-  & $tauriCli @signArgs | Out-Host
-  if ($LASTEXITCODE -ne 0) {
-    throw "tauri signer failed with exit code: $LASTEXITCODE"
+  $previousPrivateKey = [Environment]::GetEnvironmentVariable("TAURI_SIGNING_PRIVATE_KEY", "Process")
+
+  try {
+    $env:TAURI_SIGNING_PRIVATE_KEY = $PrivateKey
+
+    & node @signArgs | Out-Host
+    if ($LASTEXITCODE -ne 0) {
+      throw "tauri signer failed with exit code: $LASTEXITCODE"
+    }
   }
+  finally {
+    if ($null -eq $previousPrivateKey) {
+      Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY -ErrorAction SilentlyContinue
+    }
+    else {
+      $env:TAURI_SIGNING_PRIVATE_KEY = $previousPrivateKey
+    }
+  }
+
   if (-not (Test-Path -LiteralPath $signaturePath)) {
     throw "tauri signer did not produce expected signature: $signaturePath"
   }
@@ -126,6 +144,7 @@ function Invoke-UpdaterSigning {
     [datetime]$Since,
     [string[]]$RequestedBundles,
     [string]$KeyPath,
+    [string]$PrivateKey,
     [string]$Password
   )
 
@@ -133,7 +152,7 @@ function Invoke-UpdaterSigning {
     Where-Object { $_.Extension -ne ".sig" }
 
   foreach ($artifact in $artifacts) {
-    Invoke-TauriSigner -Path $artifact.FullName -KeyPath $KeyPath -Password $Password
+    Invoke-TauriSigner -Path $artifact.FullName -PrivateKey $PrivateKey -Password $Password
   }
 }
 
@@ -237,6 +256,7 @@ function Invoke-TauriBuild {
     -Since $artifactSince `
     -RequestedBundles $requestedBundles `
     -KeyPath $SigningKeyPath `
+    -PrivateKey $privateKeyEnvValue `
     -Password $SigningKeyPassword
 
   Write-Host ""
