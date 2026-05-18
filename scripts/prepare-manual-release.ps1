@@ -65,7 +65,7 @@ if (-not $nsisInstaller -or -not $nsisSignature) {
 
 $notes = ""
 if ($NotesPath) {
-  $notes = Get-Content -Raw $NotesPath
+  $notes = [System.IO.File]::ReadAllText($NotesPath, [System.Text.UTF8Encoding]::new($false))
 }
 
 $outputDir = Join-Path $repoRoot "release/$Tag"
