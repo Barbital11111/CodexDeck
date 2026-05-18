@@ -35,6 +35,13 @@ const CODEX_AUTO_COMPACT_LIMIT_KEY: &str = "model_auto_compact_token_limit";
 const CODEX_TOOL_OUTPUT_LIMIT_KEY: &str = "tool_output_token_limit";
 const CODEX_MODEL_PROVIDER_KEY: &str = "model_provider";
 const CODEX_MODEL_PROVIDERS_KEY: &str = "model_providers";
+const CODEX_PROVIDER_NAME_KEY: &str = "name";
+const CODEX_PROVIDER_BASE_URL_KEY: &str = "base_url";
+const CODEX_PROVIDER_WIRE_API_KEY: &str = "wire_api";
+const CODEX_PROVIDER_WIRE_API_RESPONSES: &str = "responses";
+const CODEX_PROVIDER_REQUIRES_OPENAI_AUTH_KEY: &str = "requires_openai_auth";
+const CODEX_PROVIDER_SUPPORTS_WEBSOCKETS_KEY: &str = "supports_websockets";
+const CODEXDECK_RELAY_PROVIDER_ID: &str = "codexdeck_api";
 const CODEX_FEATURES_TABLE_KEY: &str = "features";
 const CODEX_RESPONSES_WEBSOCKETS_KEY: &str = "responses_websockets";
 const CODEX_RESPONSES_WEBSOCKETS_V2_KEY: &str = "responses_websockets_v2";
@@ -573,7 +580,9 @@ fn build_chatgpt_profile_config(current_config: Option<&str>) -> String {
     let mut document = parse_config_or_default(current_config);
     let had_base_url = document.get(CODEX_BASE_URL_KEY).is_some();
     normalize_standard_profile_config(&mut document);
+    remove_responses_websocket_flags(&mut document);
     document.remove(CODEX_BASE_URL_KEY);
+    document.remove(CODEX_MODEL_PROVIDERS_KEY);
     if had_base_url {
         document.remove(CODEX_MODEL_KEY);
     }
@@ -590,13 +599,30 @@ fn build_relay_profile_config(
     disable_responses_websockets(&mut document);
     document[CODEX_BASE_URL_KEY] = value(base_url);
     document[CODEX_MODEL_KEY] = value(model_name);
+    document[CODEX_MODEL_PROVIDER_KEY] = value(CODEXDECK_RELAY_PROVIDER_ID);
+    document[CODEX_MODEL_PROVIDERS_KEY] = table();
+    document[CODEX_MODEL_PROVIDERS_KEY][CODEXDECK_RELAY_PROVIDER_ID] = table();
+    document[CODEX_MODEL_PROVIDERS_KEY][CODEXDECK_RELAY_PROVIDER_ID][CODEX_PROVIDER_NAME_KEY] =
+        value(CODEXDECK_RELAY_PROVIDER_ID);
+    document[CODEX_MODEL_PROVIDERS_KEY][CODEXDECK_RELAY_PROVIDER_ID][CODEX_PROVIDER_BASE_URL_KEY] =
+        value(base_url);
+    document[CODEX_MODEL_PROVIDERS_KEY][CODEXDECK_RELAY_PROVIDER_ID][CODEX_PROVIDER_WIRE_API_KEY] =
+        value(CODEX_PROVIDER_WIRE_API_RESPONSES);
+    document[CODEX_MODEL_PROVIDERS_KEY][CODEXDECK_RELAY_PROVIDER_ID]
+        [CODEX_PROVIDER_REQUIRES_OPENAI_AUTH_KEY] = value(true);
+    document[CODEX_MODEL_PROVIDERS_KEY][CODEXDECK_RELAY_PROVIDER_ID]
+        [CODEX_PROVIDER_SUPPORTS_WEBSOCKETS_KEY] = value(false);
     document.to_string()
 }
 
 fn normalize_standard_profile_config(document: &mut DocumentMut) {
     document[CODEX_CREDENTIALS_STORE_KEY] = value(CODEX_CREDENTIALS_STORE_FILE);
     document.remove(CODEX_MODEL_PROVIDER_KEY);
-    document.remove(CODEX_MODEL_PROVIDERS_KEY);
+}
+
+pub(crate) fn relay_provider_id_for_account(account: &StoredAccount) -> Option<String> {
+    account.api_base_url.as_deref()?;
+    Some(CODEXDECK_RELAY_PROVIDER_ID.to_string())
 }
 
 fn disable_responses_websockets(document: &mut DocumentMut) {
@@ -610,6 +636,21 @@ fn disable_responses_websockets(document: &mut DocumentMut) {
 
     document[CODEX_FEATURES_TABLE_KEY][CODEX_RESPONSES_WEBSOCKETS_KEY] = value(false);
     document[CODEX_FEATURES_TABLE_KEY][CODEX_RESPONSES_WEBSOCKETS_V2_KEY] = value(false);
+}
+
+fn remove_responses_websocket_flags(document: &mut DocumentMut) {
+    let Some(features) = document
+        .get_mut(CODEX_FEATURES_TABLE_KEY)
+        .and_then(|item| item.as_table_mut())
+    else {
+        return;
+    };
+
+    features.remove(CODEX_RESPONSES_WEBSOCKETS_KEY);
+    features.remove(CODEX_RESPONSES_WEBSOCKETS_V2_KEY);
+    if features.is_empty() {
+        document.remove(CODEX_FEATURES_TABLE_KEY);
+    }
 }
 
 fn merge_active_codex_profile_config(active_config: Option<&str>, profile_config: &str) -> String {
@@ -651,6 +692,18 @@ fn merge_active_codex_profile_config(active_config: Option<&str>, profile_config
         CODEX_RESPONSES_WEBSOCKETS_KEY,
     );
     copy_table_value_if_present(
+        &mut active_document,
+        &profile_document,
+        CODEX_FEATURES_TABLE_KEY,
+        CODEX_RESPONSES_WEBSOCKETS_V2_KEY,
+    );
+    remove_table_value_if_missing(
+        &mut active_document,
+        &profile_document,
+        CODEX_FEATURES_TABLE_KEY,
+        CODEX_RESPONSES_WEBSOCKETS_KEY,
+    );
+    remove_table_value_if_missing(
         &mut active_document,
         &profile_document,
         CODEX_FEATURES_TABLE_KEY,
@@ -707,6 +760,33 @@ fn copy_table_value_if_present(
         target[table_key] = table();
     }
     target[table_key][value_key] = value_item;
+}
+
+fn remove_table_value_if_missing(
+    target: &mut DocumentMut,
+    source: &DocumentMut,
+    table_key: &str,
+    value_key: &str,
+) {
+    let source_has_value = source
+        .get(table_key)
+        .and_then(|item| item.as_table())
+        .and_then(|table| table.get(value_key))
+        .is_some();
+    if source_has_value {
+        return;
+    }
+
+    let Some(table) = target
+        .get_mut(table_key)
+        .and_then(|item| item.as_table_mut())
+    else {
+        return;
+    };
+    table.remove(value_key);
+    if table.is_empty() {
+        target.remove(table_key);
+    }
 }
 
 fn parse_config_or_default(current_config: Option<&str>) -> DocumentMut {
@@ -916,6 +996,14 @@ responses_websockets_v2 = true
         assert!(config.contains("experimental_feature = true"));
         assert!(config.contains("responses_websockets = false"));
         assert!(config.contains("responses_websockets_v2 = false"));
+        assert!(config.contains(r#"openai_base_url = "https://relay.example.com/v1""#));
+        assert!(config.contains(r#"model_provider = "codexdeck_api""#));
+        assert!(config.contains("[model_providers.codexdeck_api]"));
+        assert!(config.contains(r#"name = "codexdeck_api""#));
+        assert!(config.contains(r#"base_url = "https://relay.example.com/v1""#));
+        assert!(config.contains(r#"wire_api = "responses""#));
+        assert!(config.contains("requires_openai_auth = true"));
+        assert!(config.contains("supports_websockets = false"));
     }
 
     #[test]
@@ -953,12 +1041,20 @@ responses_websockets_v2 = true
         let profile = r#"cli_auth_credentials_store = "file"
 openai_base_url = "https://relay.example.com/v1"
 model = "relay-model"
+model_provider = "codexdeck_api"
 model_context_window = 400000
 model_auto_compact_token_limit = 380000
 tool_output_token_limit = 100000
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
 custom_setting = "drop-profile"
+
+[model_providers.codexdeck_api]
+name = "codexdeck_api"
+base_url = "https://relay.example.com/v1"
+wire_api = "responses"
+requires_openai_auth = true
+supports_websockets = false
 
 [mcp_servers.stale]
 command = "stale-mcp"
@@ -996,8 +1092,8 @@ responses_websockets_v2 = false
         assert!(!merged.contains("[mcp_servers.stale]"));
         assert!(!merged.contains("stale-mcp"));
         assert!(!merged.contains(r#"custom_setting = "drop-profile""#));
-        assert!(!merged.contains("model_provider"));
-        assert!(!merged.contains("model_providers"));
+        assert!(merged.contains(r#"model_provider = "codexdeck_api""#));
+        assert!(merged.contains("[model_providers.codexdeck_api]"));
         assert!(!merged.contains("drop-profile-window"));
     }
 
@@ -1016,6 +1112,11 @@ command = "current-mcp"
 
 [model_providers.old_proxy]
 name = "old_proxy"
+
+[features]
+experimental_feature = true
+responses_websockets = false
+responses_websockets_v2 = false
 "#;
         let profile = r#"cli_auth_credentials_store = "file"
 "#;
@@ -1033,6 +1134,9 @@ name = "old_proxy"
         assert!(!merged.contains("tool_output_token_limit"));
         assert!(!merged.contains("model_provider"));
         assert!(!merged.contains("model_providers"));
+        assert!(merged.contains("experimental_feature = true"));
+        assert!(!merged.contains("responses_websockets"));
+        assert!(!merged.contains("responses_websockets_v2"));
     }
 
     #[test]
@@ -1117,7 +1221,7 @@ model = "relay-model"
                 .headers()
                 .get("authorization")
                 .and_then(|value| value.to_str().ok())
-                == Some("Bearer sk-probe");
+                == Some("Bearer test-key-probe");
             if !authorized {
                 return (
                     StatusCode::UNAUTHORIZED,
@@ -1150,7 +1254,7 @@ model = "relay-model"
 
         let result = validate_relay_target(
             &format!("http://{addr}/v1"),
-            "sk-probe",
+            "test-key-probe",
             "upstream-chat-model",
         )
         .await
@@ -1176,7 +1280,7 @@ model = "relay-model"
                 .headers()
                 .get("authorization")
                 .and_then(|value| value.to_str().ok())
-                == Some("Bearer sk-probe");
+                == Some("Bearer test-key-probe");
             if !authorized {
                 return (
                     StatusCode::UNAUTHORIZED,
@@ -1221,7 +1325,11 @@ model = "relay-model"
         });
 
         let result =
-            validate_relay_target(&format!("http://{addr}/v1"), "sk-probe", "upstream-model")
+            validate_relay_target(
+                &format!("http://{addr}/v1"),
+                "test-key-probe",
+                "upstream-model",
+            )
                 .await
                 .expect("validate responses-only relay");
 

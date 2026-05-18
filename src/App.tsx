@@ -13,7 +13,7 @@ import { useI18n } from "./i18n/I18nProvider";
 import { useThemeMode } from "./hooks/useThemeMode";
 import type { AccountPoolConfig } from "./types/app";
 
-type AppTab = "accounts" | "notifications" | "settings";
+type AppTab = "accounts" | "notifications" | "remoteControl" | "settings";
 type NotificationViewTab = "settings" | "pipelines" | "templates" | "tests" | "activity";
 
 const NotificationsPanel = lazy(() =>
@@ -25,6 +25,12 @@ const NotificationsPanel = lazy(() =>
 const SettingsPanel = lazy(() =>
     import("./components/SettingsPanel").then((module) => ({
         default: module.SettingsPanel,
+    })),
+);
+
+const RemoteControlPage = lazy(() =>
+    import("./components/RemoteControlPage").then((module) => ({
+        default: module.RemoteControlPage,
     })),
 );
 
@@ -390,7 +396,7 @@ function App() {
 
                             </div>
                         ) : activeTab === "notifications" ? (
-                            <Suspense fallback={null}>
+                            <Suspense fallback={<ViewLoadingFallback />}>
                                 <NotificationsPanel
                                     settings={settings}
                                     saving={savingSettings}
@@ -399,8 +405,12 @@ function App() {
                                     onUpdateSettings={updateSettings}
                                 />
                             </Suspense>
+                        ) : activeTab === "remoteControl" ? (
+                            <Suspense fallback={<ViewLoadingFallback />}>
+                                <RemoteControlPage />
+                            </Suspense>
                         ) : (
-                            <Suspense fallback={null}>
+                            <Suspense fallback={<ViewLoadingFallback />}>
                                 <SettingsPanel
                                     themeMode={themeMode}
                                     onToggleTheme={toggleTheme}
@@ -420,6 +430,10 @@ function App() {
             </main>
         </div>
     );
+}
+
+function ViewLoadingFallback() {
+    return <div className="viewLoadingFallback">加载中...</div>;
 }
 
 export default App;

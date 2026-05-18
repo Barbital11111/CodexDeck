@@ -213,11 +213,6 @@ Function PageReinstall
   StrCpy $PreviousUninstKey "${UNINSTKEY}"
   ReadRegStr $R0 SHCTX "$PreviousUninstKey" ""
   ReadRegStr $R1 SHCTX "$PreviousUninstKey" "UninstallString"
-  ${If} "$R0$R1" == ""
-    StrCpy $PreviousUninstKey "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex Tools"
-    ReadRegStr $R0 SHCTX "$PreviousUninstKey" ""
-    ReadRegStr $R1 SHCTX "$PreviousUninstKey" "UninstallString"
-  ${EndIf}
   ${IfThen} "$R0$R1" == "" ${|} Abort ${|}
 
   ; Compare this installar version with the existing installation
@@ -367,9 +362,6 @@ Function PageLeaveReinstall
       ExecWait '$R1' $0
     ${Else}
       ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
-      ${If} $4 == ""
-        ReadRegStr $4 SHCTX "${MANUKEY}\Codex Tools" ""
-      ${EndIf}
       ReadRegStr $R1 SHCTX "$PreviousUninstKey" "UninstallString"
       ${IfThen} $UpdateMode = 1 ${|} StrCpy $R1 "$R1 /UPDATE" ${|} ; append /UPDATE
       ${IfThen} $PassiveMode = 1 ${|} StrCpy $R1 "$R1 /P" ${|} ; append /P
@@ -399,6 +391,34 @@ Function PageLeaveReinstall
       Abort
     ${EndIf}
   reinst_done:
+FunctionEnd
+
+Function CloseKnownCodexShellProcesses
+  !insertmacro CheckIfAppIsRunning "app.exe" "${PRODUCTNAME}"
+  !insertmacro CheckIfAppIsRunning "CodexDeck.exe" "${PRODUCTNAME}"
+FunctionEnd
+
+Function RemoveLegacyMainBinaries
+  ${If} "${MAINBINARYNAME}.exe" != "app.exe"
+    Delete "$INSTDIR\app.exe"
+  ${EndIf}
+  ${If} "${MAINBINARYNAME}.exe" != "CodexDeck.exe"
+    Delete "$INSTDIR\CodexDeck.exe"
+  ${EndIf}
+FunctionEnd
+
+Function un.CloseKnownCodexShellProcesses
+  !insertmacro CheckIfAppIsRunning "app.exe" "${PRODUCTNAME}"
+  !insertmacro CheckIfAppIsRunning "CodexDeck.exe" "${PRODUCTNAME}"
+FunctionEnd
+
+Function un.RemoveLegacyMainBinaries
+  ${If} "${MAINBINARYNAME}.exe" != "app.exe"
+    Delete "$INSTDIR\app.exe"
+  ${EndIf}
+  ${If} "${MAINBINARYNAME}.exe" != "CodexDeck.exe"
+    Delete "$INSTDIR\CodexDeck.exe"
+  ${EndIf}
 FunctionEnd
 
 ; 5. Choose install directory page
@@ -659,10 +679,11 @@ Section Install
     !insertmacro NSIS_HOOK_PREINSTALL
   !endif
 
-  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  Call CloseKnownCodexShellProcesses
 
   ; Copy main executable
   File "${MAINBINARYSRCPATH}"
+  Call RemoveLegacyMainBinaries
 
   ; Copy resources
   {{#each resources_dirs}}
@@ -706,6 +727,9 @@ Section Install
 
   ; Remove old main binary if it doesn't match new main binary name
   ReadRegStr $OldMainBinaryName SHCTX "${UNINSTKEY}" "MainBinaryName"
+  ${If} $OldMainBinaryName == ""
+    ReadRegStr $OldMainBinaryName SHCTX "$PreviousUninstKey" "MainBinaryName"
+  ${EndIf}
   ${If} $OldMainBinaryName != ""
   ${AndIf} $OldMainBinaryName != "${MAINBINARYNAME}.exe"
     Delete "$INSTDIR\$OldMainBinaryName"
@@ -734,12 +758,6 @@ Section Install
     WriteRegStr SHCTX "${UNINSTKEY}" "URLUpdateInfo" "${HOMEPAGE}"
   WriteRegStr SHCTX "${UNINSTKEY}" "HelpLink" "${HOMEPAGE}"
   !endif
-
-  ; Clean up the legacy registration after migrating the visible product name.
-  DeleteRegKey SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex Tools"
-  DeleteRegKey /ifempty SHCTX "${MANUKEY}\Codex Tools"
-  DeleteRegKey /ifempty SHCTX "Software\carry\Codex Tools"
-  DeleteRegKey /ifempty SHCTX "Software\com.carry\Codex Tools"
 
   ; Create start menu shortcut
   !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
@@ -802,11 +820,12 @@ Section Uninstall
     !insertmacro NSIS_HOOK_PREUNINSTALL
   !endif
 
-  !insertmacro CheckIfAppIsRunning "${MAINBINARYNAME}.exe" "${PRODUCTNAME}"
+  Call un.CloseKnownCodexShellProcesses
 
   ; Delete the app directory and its content from disk
   ; Copy main executable
   Delete "$INSTDIR\${MAINBINARYNAME}.exe"
+  Call un.RemoveLegacyMainBinaries
 
   ; Delete resources
   {{#each resources}}
@@ -919,15 +938,6 @@ SectionEnd
 
 Function RestorePreviousInstallLocation
   ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
-  ${If} $4 == ""
-    ReadRegStr $4 SHCTX "${MANUKEY}\Codex Tools" ""
-  ${EndIf}
-  ${If} $4 == ""
-    ReadRegStr $4 SHCTX "Software\carry\Codex Tools" ""
-  ${EndIf}
-  ${If} $4 == ""
-    ReadRegStr $4 SHCTX "Software\com.carry\Codex Tools" ""
-  ${EndIf}
   StrCmp $4 "" +2 0
     StrCpy $INSTDIR $4
 FunctionEnd
@@ -944,16 +954,6 @@ Function un.SkipIfPassive
 FunctionEnd
 
 Function CreateOrUpdateStartMenuShortcut
-  ; Rename legacy Codex Tools shortcuts during the brand migration.
-  !insertmacro IsShortcutTarget "$SMPROGRAMS\Codex Tools.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-  Pop $0
-  ${If} $0 = 1
-    Delete "$SMPROGRAMS\Codex Tools.lnk"
-    CreateShortcut "$SMPROGRAMS\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-    !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\${PRODUCTNAME}.lnk"
-    Return
-  ${EndIf}
-
   ; We used to use product name as MAINBINARYNAME
   ; migrate old shortcuts to target the new MAINBINARYNAME
   StrCpy $R0 0
@@ -996,16 +996,6 @@ Function CreateOrUpdateStartMenuShortcut
 FunctionEnd
 
 Function CreateOrUpdateDesktopShortcut
-  ; Rename legacy Codex Tools shortcuts during the brand migration.
-  !insertmacro IsShortcutTarget "$DESKTOP\Codex Tools.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-  Pop $0
-  ${If} $0 = 1
-    Delete "$DESKTOP\Codex Tools.lnk"
-    CreateShortcut "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
-    !insertmacro SetLnkAppUserModelId "$DESKTOP\${PRODUCTNAME}.lnk"
-    Return
-  ${EndIf}
-
   ; We used to use product name as MAINBINARYNAME
   ; migrate old shortcuts to target the new MAINBINARYNAME
   !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"

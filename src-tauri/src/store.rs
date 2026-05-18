@@ -19,6 +19,7 @@ use crate::auth::extract_auth;
 use crate::auth::read_current_codex_auth_optional;
 use crate::auth::write_active_codex_auth;
 use crate::models::dedupe_account_variants;
+use crate::models::AccountSourceKind;
 use crate::models::AccountsStore;
 #[cfg(test)]
 use crate::models::ProxyHealthStatus;
@@ -56,6 +57,15 @@ pub(crate) fn save_store(app: &AppHandle, store: &AccountsStore) -> Result<(), S
 #[cfg(feature = "desktop")]
 pub(crate) fn sync_current_auth_account_on_startup(app: &AppHandle) -> Result<(), String> {
     sync_current_auth_account_on_startup_in_path(&account_store_path(app)?)
+}
+
+/// 启动时重新同步所有 API 中转站 profile。
+///
+/// 旧版本已保存的 API 卡片不会自动重建 profile/config.toml，
+/// 因此升级后需要补写 [features] responses_websockets=false 等 API 专用配置。
+#[cfg(feature = "desktop")]
+pub(crate) fn sync_relay_account_profiles_on_startup(app: &AppHandle) -> Result<usize, String> {
+    sync_relay_account_profiles_on_startup_in_path(&account_store_path(app)?, true)
 }
 
 pub(crate) fn load_store_from_path(path: &Path) -> Result<AccountsStore, String> {
@@ -214,6 +224,64 @@ pub(crate) fn sync_current_auth_account_on_startup_in_path(path: &Path) -> Resul
     store.accounts.push(stored);
     save_store_to_path(path, &store)?;
     Ok(())
+}
+
+#[cfg(feature = "desktop")]
+pub(crate) fn sync_relay_account_profiles_on_startup_in_path(
+    path: &Path,
+    apply_active_profile: bool,
+) -> Result<usize, String> {
+    let mut store = load_store_from_path(path)?;
+    let active_account_id = store.settings.active_account_id.clone();
+    let mut changed = false;
+    let mut synced_count = 0usize;
+    let mut active_relay_account = None;
+
+    for account in store
+        .accounts
+        .iter_mut()
+        .filter(|account| matches!(account.source_kind, AccountSourceKind::Relay))
+    {
+        let previous_auth_path = account.profile_auth_path.clone();
+        let previous_config_path = account.profile_config_path.clone();
+        let previous_auth_ready = account.profile_auth_ready;
+        let previous_config_ready = account.profile_config_ready;
+        let previous_integrity_error = account.profile_integrity_error.clone();
+
+        match profile_files::sync_account_profile_in_store_path(path, account) {
+            Ok(()) => {
+                synced_count += 1;
+                if active_account_id.as_deref() == Some(account.id.as_str()) {
+                    active_relay_account = Some(account.clone());
+                }
+            }
+            Err(error) => {
+                log::warn!("启动时同步 API profile 失败 {}: {}", account.label, error);
+                account.profile_integrity_error = Some(error);
+            }
+        }
+
+        if account.profile_auth_path != previous_auth_path
+            || account.profile_config_path != previous_config_path
+            || account.profile_auth_ready != previous_auth_ready
+            || account.profile_config_ready != previous_config_ready
+            || account.profile_integrity_error != previous_integrity_error
+        {
+            changed = true;
+        }
+    }
+
+    if changed {
+        save_store_to_path(path, &store)?;
+    }
+
+    if apply_active_profile {
+        if let Some(account) = active_relay_account {
+            profile_files::apply_account_profile(&account)?;
+        }
+    }
+
+    Ok(synced_count)
 }
 
 pub(crate) fn update_account_group_refresh_state_in_path(
@@ -684,10 +752,12 @@ mod tests {
     use super::load_store_from_path;
     use super::record_relay_key_success_in_path;
     use super::save_store_to_path;
+    use super::sync_relay_account_profiles_on_startup_in_path;
     use super::update_account_group_refresh_state_in_path;
     use super::update_relay_key_health_in_path;
     use super::LAST_GOOD_BACKUP_FILE_NAME;
     use super::PREVIOUS_GOOD_BACKUP_FILE_NAME;
+    use crate::models::AccountSourceKind;
     use crate::models::AccountsStore;
     use crate::models::ProxyHealthStatus;
     use crate::models::StoredAccount;
@@ -963,7 +1033,7 @@ mod tests {
                     "planType": "api",
                     "authJson": {},
                     "apiBaseUrl": "https://api.example.com/v1/",
-                    "apiKey": "sk-secret",
+                    "apiKey": "test-key-secret",
                     "modelName": "gpt-5.4",
                     "balanceText": null,
                     "providerId": null,
@@ -1010,6 +1080,86 @@ mod tests {
     }
 
     #[test]
+    fn startup_sync_rebuilds_relay_profiles_with_disabled_websockets() {
+        let dir = temp_dir();
+        let store_path = dir.join("accounts.json");
+        let store = AccountsStore {
+            version: 1,
+            accounts: vec![StoredAccount {
+                id: "relay-1".to_string(),
+                label: "Relay".to_string(),
+                source_kind: AccountSourceKind::Relay,
+                principal_id: Some("relay:relay-1".to_string()),
+                email: None,
+                account_id: "relay:relay-1".to_string(),
+                plan_type: Some("api".to_string()),
+                auth_json: json!({}),
+                api_base_url: Some("https://api.example.com/v1".to_string()),
+                api_key: Some("test-key-secret".to_string()),
+                api_keys: Vec::new(),
+                proxy_priority: None,
+                proxy_weight: None,
+                proxy_key_selection_mode: None,
+                proxy_endpoints: Vec::new(),
+                model_name: Some("gpt-5.5".to_string()),
+                balance_text: None,
+                api_quota_mode: Default::default(),
+                api_quota_today_used_text: None,
+                api_quota_remaining_text: None,
+                api_quota_total_remaining_text: None,
+                api_quota_total_tokens_text: None,
+                api_quota_today_tokens_text: None,
+                api_quota_daily_window: None,
+                api_quota_total_window: None,
+                api_quota_subscription_expires_at: None,
+                provider_id: None,
+                provider_name: None,
+                tags: Vec::new(),
+                profile_auth_path: None,
+                profile_config_path: None,
+                profile_auth_ready: false,
+                profile_config_ready: false,
+                profile_integrity_error: None,
+                profile_last_validated_at: None,
+                profile_last_validation_error: None,
+                added_at: 1,
+                updated_at: 1,
+                usage: None,
+                usage_error: None,
+                auth_refresh_blocked: false,
+                auth_refresh_error: None,
+            }],
+            proxy_upstreams: Vec::new(),
+            proxy_route_bindings: Vec::new(),
+            settings: Default::default(),
+        };
+        fs::write(
+            &store_path,
+            serde_json::to_string_pretty(&store).expect("serialize store"),
+        )
+        .expect("write store");
+
+        let synced = sync_relay_account_profiles_on_startup_in_path(&store_path, false)
+            .expect("sync relay profiles");
+
+        let loaded = load_store_from_path(&store_path).expect("load store");
+        let account = &loaded.accounts[0];
+        let config_path = account
+            .profile_config_path
+            .as_ref()
+            .expect("profile config path");
+        let config = fs::read_to_string(config_path).expect("read profile config");
+
+        assert_eq!(synced, 1);
+        assert!(account.profile_auth_ready);
+        assert!(account.profile_config_ready);
+        assert_eq!(account.profile_integrity_error, None);
+        assert!(config.contains("[features]"));
+        assert!(config.contains("responses_websockets = false"));
+        assert!(config.contains("responses_websockets_v2 = false"));
+    }
+
+    #[test]
     fn update_relay_key_health_persists_key_cooldown_state() {
         let dir = temp_dir();
         let store_path = dir.join("accounts.json");
@@ -1027,11 +1177,11 @@ mod tests {
                     "planType": "api",
                     "authJson": {},
                     "apiBaseUrl": "https://api.example.com/v1/",
-                    "apiKey": "sk-secret",
+                    "apiKey": "test-key-secret",
                     "apiKeys": [{
                         "id": "key-a",
                         "label": "A",
-                        "secret": "sk-secret",
+                        "secret": "test-key-secret",
                         "enabled": true,
                         "priority": 100,
                         "weight": 100,
@@ -1104,11 +1254,11 @@ mod tests {
                     "planType": "api",
                     "authJson": {},
                     "apiBaseUrl": "https://api.example.com/v1/",
-                    "apiKey": "sk-secret",
+                    "apiKey": "test-key-secret",
                     "apiKeys": [{
                         "id": "key-a",
                         "label": "A",
-                        "secret": "sk-a",
+                        "secret": "test-key-a",
                         "enabled": true,
                         "priority": 100,
                         "weight": 100,
@@ -1193,11 +1343,11 @@ mod tests {
                     "planType": "api",
                     "authJson": {},
                     "apiBaseUrl": "https://api.example.com/v1/",
-                    "apiKey": "sk-secret",
+                    "apiKey": "test-key-secret",
                     "apiKeys": [{
                         "id": "key-a",
                         "label": "A",
-                        "secret": "sk-a",
+                        "secret": "test-key-a",
                         "enabled": true,
                         "priority": 100,
                         "weight": 100,

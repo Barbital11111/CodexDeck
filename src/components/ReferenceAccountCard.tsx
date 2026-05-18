@@ -65,8 +65,8 @@ export function ReferenceAccountCard() {
         <div className="card-select">
           <input type="checkbox" aria-label="选择 Cockpit 参考账号" />
         </div>
-        <span className="account-email" title="preview-account@example.test">
-          preview-account...
+        <span className="account-email" title="demo@example.com">
+          demo@example...
         </span>
         <span className="codex-status-pill quota-refresh">OAuth</span>
         <span className="tier-badge team">TEAM</span>
@@ -85,9 +85,9 @@ export function ReferenceAccountCard() {
       <div className="account-sub-line">
         <span
           className="codex-login-subline"
-          title="使用 Password 登录 | 用户 ID: user-preview-0001"
+          title="使用 Password 登录 | 用户 ID: b916901f-0024-4832-a109-b..."
         >
-          使用 Password 登录 | 用户 ID: user-preview-0001
+          使用 Password 登录 | 用户 ID: b916901f-0024-4832-a109-b...
         </span>
       </div>
 

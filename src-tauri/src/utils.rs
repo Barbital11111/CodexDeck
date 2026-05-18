@@ -603,9 +603,9 @@ fn preferred_executable_dir_candidates() -> Vec<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        for dir in [
-            PathBuf::from(r"C:\Program Files\Docker\Docker\resources\bin"),
-        ] {
+        for dir in [PathBuf::from(
+            r"C:\Program Files\Docker\Docker\resources\bin",
+        )] {
             push_unique_candidate(&mut dirs, dir);
         }
     }
@@ -767,10 +767,10 @@ mod tests {
             "{}{}{}{}",
             "eyJhbGciOiJIUzI1NiJ9", ".", "eyJzdWIiOiIxMjMifQ", ".signature"
         );
-        let fake_key = ["sk", "redacted-token-fixture"].join("-");
+        let fake_key = ["sk", "secret-token-123456"].join("-");
         let bearer = ["abcdefgh", "ijklmnop"].join("");
         let email = ["user", "example.invalid"].join("@");
-        let local_path = ["C:", "Example", "User", ".codex"].join("\\");
+        let local_path = ["C:", "Users", "alice", ".codex"].join("\\");
         let upstream = ["https://api", "example.invalid/v1"].join(".");
         let input = format!(
             "api_key={fake_key} Authorization: Bearer {bearer} jwt={jwt} {email} {local_path} {upstream} http://127.0.0.1:8787/v1"

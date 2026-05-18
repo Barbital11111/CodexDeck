@@ -105,7 +105,9 @@
 .remoteCheckedRoots code,
 .remoteRuntimeMeta code,
 .remoteConnectionRow code,
-.remoteDetailsGrid code {
+.remoteDetailsGrid code,
+.remoteRuntimeRows code,
+.remoteLogsHeader code {
   font: 600 0.75rem/1.45 var(--font-mono);
   word-break: break-all;
 }
@@ -195,6 +197,12 @@
   border-radius: 10px;
   padding: 10px 12px;
   background: color-mix(in srgb, var(--surface-hover-bg) 52%, transparent);
+}
+
+.remoteRuntimeMetaGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1.2fr) minmax(0, 0.9fr);
+  gap: 10px;
 }
 
 .remoteRuntimeMeta span {
@@ -330,24 +338,159 @@
   font: 700 0.72rem/1.2 var(--font-ui);
 }
 
+.remoteRuntimeGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.9fr);
+  gap: 10px;
+}
+
+.remoteRuntimeCard,
+.remoteLogsPanel {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  border-radius: 12px;
+  padding: 14px;
+  background: color-mix(in srgb, var(--notification-paper-strong) 78%, transparent);
+  box-shadow: inset 0 1px var(--surface-highlight-soft);
+}
+
+.remoteRuntimeCard h3,
+.remoteLogsHeader h3 {
+  margin: 0;
+  color: var(--ink);
+  font: 760 0.98rem/1.2 var(--font-ui);
+  letter-spacing: 0;
+}
+
+.remoteRuntimeRows {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.remoteRuntimeRows div {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 94px minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--line) 64%, transparent);
+  border-radius: 10px;
+  padding: 8px 10px;
+  background: color-mix(in srgb, var(--surface-hover-bg) 42%, transparent);
+}
+
+.remoteRuntimeRows span,
+.remoteLogsHeader span {
+  color: var(--subtle);
+  font: 700 0.72rem/1.2 var(--font-ui);
+}
+
+.remoteCapabilityTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.remoteLogsPanel {
+  display: grid;
+  gap: 12px;
+}
+
+.remoteLogsHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.remoteLogsHeader code {
+  max-width: min(520px, 55%);
+  text-align: right;
+  color: var(--subtle);
+}
+
+.remoteLogList {
+  display: grid;
+  gap: 10px;
+}
+
+.remoteLogEntry {
+  min-width: 0;
+  border: 1px solid color-mix(in srgb, var(--line) 68%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--surface-hover-bg) 44%, transparent);
+  overflow: hidden;
+}
+
+.remoteLogEntry > div {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 58%, transparent);
+}
+
+.remoteLogEntry strong {
+  color: var(--ink);
+  font: 720 0.78rem/1.2 var(--font-ui);
+}
+
+.remoteLogEntry span {
+  color: var(--subtle);
+  font: 620 0.72rem/1.2 var(--font-ui);
+}
+
+.remoteLogEntry pre {
+  max-height: 180px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--ink);
+  font: 560 0.74rem/1.5 var(--font-mono);
+}
+
+.remoteLogsEmpty {
+  border: 1px dashed color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 10px;
+  padding: 16px;
+  color: var(--subtle);
+  font: 620 0.78rem/1.4 var(--font-ui);
+  text-align: center;
+}
+
 @media (max-width: 860px) {
   .remoteControlHeader,
   .remoteOverviewMain,
-  .remoteConnectionPanel {
+  .remoteConnectionPanel,
+  .remoteLogsHeader {
     grid-template-columns: 1fr;
     flex-direction: column;
   }
 
   .remoteStatusGrid,
-  .remoteDetailsGrid {
+  .remoteDetailsGrid,
+  .remoteRuntimeMetaGrid,
+  .remoteRuntimeGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .remoteLogsHeader code {
+    max-width: 100%;
+    text-align: left;
   }
 }
 
 @media (max-width: 620px) {
   .remoteStatusGrid,
   .remoteDetailsGrid,
-  .remoteConnectionRow {
+  .remoteConnectionRow,
+  .remoteRuntimeMetaGrid,
+  .remoteRuntimeGrid,
+  .remoteRuntimeRows div {
     grid-template-columns: 1fr;
   }
 

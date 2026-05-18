@@ -2017,7 +2017,7 @@ mod tests {
             plan_type: Some("api".to_string()),
             auth_json: json!({}),
             api_base_url: Some("https://api.example.com/v1/".to_string()),
-            api_key: Some("sk-relay".to_string()),
+            api_key: Some("test-key-relay".to_string()),
             api_keys: Vec::new(),
             proxy_priority: None,
             proxy_weight: None,
@@ -2064,7 +2064,7 @@ mod tests {
         assert_eq!(upstream.channels[0].model_name.as_deref(), Some("gpt-5.4"));
         assert_eq!(
             upstream.channels[0].keys[0].secret.as_deref(),
-            Some("sk-relay")
+            Some("test-key-relay")
         );
     }
 }

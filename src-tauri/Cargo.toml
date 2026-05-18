@@ -1,13 +1,13 @@
 [package]
-name = "codexdeck"
-version = "2.0.0"
+name = "app"
+version = "2.0.4"
 description = "CodexDeck"
 authors = ["you"]
 license = "MIT"
 repository = "https://github.com/Barbital11111/CodexDeck"
 edition = "2021"
 rust-version = "1.77.2"
-default-run = "codexdeck"
+default-run = "app"
 
 [features]
 default = ["desktop"]
@@ -16,7 +16,7 @@ desktop = []
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
-name = "codexdeck_lib"
+name = "app_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
@@ -46,6 +46,7 @@ if-addrs = "0.13"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
 toml_edit = "0.22"
+rusqlite = { version = "0.31", features = ["bundled"] }
 
 [dev-dependencies]
 futures-util = "0.3"

@@ -2618,7 +2618,7 @@ mod tests {
             plan_type: Some("api".to_string()),
             auth_json: json!({}),
             api_base_url: Some("https://api.example.com/v1".to_string()),
-            api_key: Some("sk-settings".to_string()),
+            api_key: Some("test-key-settings".to_string()),
             api_keys: Vec::new(),
             proxy_priority: None,
             proxy_weight: None,
@@ -2662,7 +2662,7 @@ mod tests {
             ProxyKey {
                 id: "bad".to_string(),
                 label: Some("bad".to_string()),
-                secret: Some("sk-bad".to_string()),
+                secret: Some("test-key-bad".to_string()),
                 enabled: true,
                 priority: 100,
                 weight: 100,
@@ -2676,7 +2676,7 @@ mod tests {
             ProxyKey {
                 id: "good".to_string(),
                 label: Some("good".to_string()),
-                secret: Some("sk-good".to_string()),
+                secret: Some("test-key-good".to_string()),
                 enabled: true,
                 priority: 100,
                 weight: 100,
@@ -2691,7 +2691,7 @@ mod tests {
 
         sync_primary_api_key_from_relay_key_pool(&mut account);
 
-        assert_eq!(account.api_key.as_deref(), Some("sk-good"));
+        assert_eq!(account.api_key.as_deref(), Some("test-key-good"));
     }
 
     #[test]
@@ -2720,7 +2720,7 @@ mod tests {
             &account,
             "https://api.example.com/v1",
             "gpt-5.4",
-            Some("sk-changed"),
+            Some("test-key-changed"),
         ));
     }
 

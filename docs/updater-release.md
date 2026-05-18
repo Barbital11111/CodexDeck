@@ -31,14 +31,14 @@ npx @tauri-apps/cli signer generate -w "$env:USERPROFILE\\.tauri\\codexdeck-upda
 
 至少要有这些：
 
-- `CodexDeck-<version>-x64-setup.exe`
-- `CodexDeck-<version>-x64-setup.exe.sig`
+- `Codex-Tools-<version>-x64-setup.exe`
+- `Codex-Tools-<version>-x64-setup.exe.sig`
 - `latest.json`
 
 建议同时上传：
 
-- `CodexDeck-<version>-x64.msi`
-- `CodexDeck-<version>-x64.msi.sig`
+- `Codex-Tools-<version>-x64.msi`
+- `Codex-Tools-<version>-x64.msi.sig`
 
 ## GitHub Actions 自动发布
 
@@ -52,8 +52,8 @@ npx @tauri-apps/cli signer generate -w "$env:USERPROFILE\\.tauri\\codexdeck-upda
 然后推送 tag：
 
 ```powershell
-git tag v2.0.0
-git push origin v2.0.0
+git tag v1.8.3
+git push origin v1.8.3
 ```
 
 只要私钥配置正确，GitHub Actions 会自动上传：
@@ -100,8 +100,8 @@ npm run release:build-local-signed -- -PrepareManualRelease
 在 PowerShell 中先设置签名环境变量：
 
 ```powershell
-$env:TAURI_SIGNING_PRIVATE_KEY = "<私钥文件路径或私钥内容>"
-$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "<可选密码>"
+$env:TAURI_SIGNING_PRIVATE_KEY = "你的私钥文件路径，或私钥内容本身"
+$env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "可选密码"
 ```
 
 然后执行构建：
@@ -122,7 +122,7 @@ npx @tauri-apps/cli build
 仓库内置了脚本：
 
 ```powershell
-npm run release:prepare-manual -- -Tag v2.0.0
+npm run release:prepare-manual -- -Tag v1.8.3
 ```
 
 默认会：
@@ -130,27 +130,27 @@ npm run release:prepare-manual -- -Tag v2.0.0
 1. 读取当前版本号与仓库地址
 2. 从 `bundle/nsis` 与 `bundle/msi` 中查找安装包和 `.sig`
 3. 生成可直接上传到 GitHub Release 的 `latest.json`
-4. 把这些文件整理到 `release/v2.0.0/`
+4. 把这些文件整理到 `release/v1.8.3/`
 
 ### 第三步：上传到 GitHub Release
 
 至少上传：
 
-- `CodexDeck-2.0.0-x64-setup.exe`
-- `CodexDeck-2.0.0-x64-setup.exe.sig`
+- `Codex-Tools-1.8.3-x64-setup.exe`
+- `Codex-Tools-1.8.3-x64-setup.exe.sig`
 - `latest.json`
 
 建议再附带：
 
-- `CodexDeck-2.0.0-x64.msi`
-- `CodexDeck-2.0.0-x64.msi.sig`
+- `Codex-Tools-1.8.3-x64.msi`
+- `Codex-Tools-1.8.3-x64.msi.sig`
 
 ## 发布后校验
 
 可以直接运行：
 
 ```powershell
-npm run release:check-updater -- -Tag v2.0.0
+npm run release:check-updater -- -Tag v1.8.3
 ```
 
 它会检查 release 里是否包含：

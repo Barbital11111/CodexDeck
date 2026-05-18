@@ -785,10 +785,10 @@ async function testBotConnection(bot: NotificationBotConfig) {
 async function discoverTelegramChats(botToken: string) {
   if (isPreviewRuntime()) {
     return {
-      botUsername: "codexdeck_preview_bot",
+      botUsername: "codexdeck_demo_bot",
       chats: [
         {
-          id: "preview-chat-main",
+          id: "123456789",
           title: "演示私聊",
           chatType: "private",
         },
@@ -3438,7 +3438,7 @@ function BotDrawerForm({
             <CsInput
               type="password"
               value={draft.telegramBotToken}
-              placeholder="填入 Telegram Bot Token"
+              placeholder="123456:ABC-DEF..."
               onChange={(event) => onChange({ ...draft, telegramBotToken: event.target.value })}
             />
           </label>
@@ -3446,7 +3446,7 @@ function BotDrawerForm({
             <span>Chat ID</span>
             <CsInput
               value={draft.telegramChatId}
-              placeholder="-1000000000000 或个人 chat_id"
+              placeholder="-1001234567890 或个人 chat_id"
               onChange={(event) => onChange({ ...draft, telegramChatId: event.target.value })}
             />
           </label>
