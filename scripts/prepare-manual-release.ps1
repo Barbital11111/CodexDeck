@@ -34,18 +34,30 @@ if (-not $ReleaseBaseUrl) {
   $ReleaseBaseUrl = "$repositoryUrl/releases/download/$Tag"
 }
 
-$nsisInstaller = Get-ChildItem -Path (Join-Path $bundleRoot "nsis") -Filter "*-setup.exe" -File |
-  Sort-Object LastWriteTime -Descending |
-  Select-Object -First 1
-$nsisSignature = Get-ChildItem -Path (Join-Path $bundleRoot "nsis") -Filter "*-setup.exe.sig" -File |
-  Sort-Object LastWriteTime -Descending |
-  Select-Object -First 1
-$msiInstaller = Get-ChildItem -Path (Join-Path $bundleRoot "msi") -Filter "*.msi" -File |
-  Sort-Object LastWriteTime -Descending |
-  Select-Object -First 1
-$msiSignature = Get-ChildItem -Path (Join-Path $bundleRoot "msi") -Filter "*.msi.sig" -File |
-  Sort-Object LastWriteTime -Descending |
-  Select-Object -First 1
+$nsisRoot = Join-Path $bundleRoot "nsis"
+$msiRoot = Join-Path $bundleRoot "msi"
+
+$nsisInstaller = $null
+$nsisSignature = $null
+if (Test-Path -LiteralPath $nsisRoot) {
+  $nsisInstaller = Get-ChildItem -Path $nsisRoot -Filter "*-setup.exe" -File |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+  $nsisSignature = Get-ChildItem -Path $nsisRoot -Filter "*-setup.exe.sig" -File |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+}
+
+$msiInstaller = $null
+$msiSignature = $null
+if (Test-Path -LiteralPath $msiRoot) {
+  $msiInstaller = Get-ChildItem -Path $msiRoot -Filter "*.msi" -File |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+  $msiSignature = Get-ChildItem -Path $msiRoot -Filter "*.msi.sig" -File |
+    Sort-Object LastWriteTime -Descending |
+    Select-Object -First 1
+}
 
 if (-not $nsisInstaller -or -not $nsisSignature) {
   throw "NSIS installer or signature was not found. Build and sign the installer first."

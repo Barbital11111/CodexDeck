@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "CodexDeck",
   "mainBinaryName": "CodexDeck",
-  "version": "2.0.0",
+  "version": "2.0.4",
   "identifier": "io.github.barbital11111.codexdeck",
   "build": {
     "frontendDist": "../dist",
@@ -18,6 +18,8 @@
         "height": 960,
         "resizable": true,
         "fullscreen": false,
+        "visible": false,
+        "backgroundColor": "#f5f7fa",
         "titleBarStyle": "Overlay",
         "hiddenTitle": true
       }
@@ -30,6 +32,9 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "resources": {
+      "resources/codex-command-runtime": "codex-command-runtime"
+    },
     "windows": {
       "nsis": {
         "installMode": "currentUser",

@@ -8,6 +8,8 @@ mod models;
 mod notification_service;
 mod opencode;
 mod profile_files;
+mod remote_control;
+mod session_provider_sync;
 mod settings_service;
 mod state;
 mod store;
@@ -28,6 +30,7 @@ use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 
 use rfd::FileDialog;
+use tauri::webview::PageLoadEvent;
 use tauri::AppHandle;
 use tauri::Emitter;
 use tauri::Manager;
@@ -739,6 +742,79 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+async fn remote_detect_runtime(
+    app: AppHandle,
+) -> Result<remote_control::RemoteRuntimeDetection, String> {
+    remote_control::detect_runtime(&app).await
+}
+
+#[tauri::command]
+async fn remote_start_console(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<remote_control::RemoteCommandResult, String> {
+    let _guard = state.remote_runtime_lock.lock().await;
+    remote_control::start_console(&app).await
+}
+
+#[tauri::command]
+async fn remote_stop_console(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<remote_control::RemoteCommandResult, String> {
+    let _guard = state.remote_runtime_lock.lock().await;
+    remote_control::stop_console(&app).await
+}
+
+#[tauri::command]
+async fn remote_restart_console(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<remote_control::RemoteCommandResult, String> {
+    let _guard = state.remote_runtime_lock.lock().await;
+    remote_control::restart_console(&app).await
+}
+
+#[tauri::command]
+async fn remote_get_status() -> Result<remote_control::RemoteStatusSnapshot, String> {
+    remote_control::get_status().await
+}
+
+#[tauri::command]
+async fn remote_get_runtime() -> Result<remote_control::RemoteJsonSnapshot, String> {
+    remote_control::get_runtime_info().await
+}
+
+#[tauri::command]
+async fn remote_get_capabilities() -> Result<remote_control::RemoteJsonSnapshot, String> {
+    remote_control::get_capabilities().await
+}
+
+#[tauri::command]
+async fn remote_get_logs() -> Result<remote_control::RemoteLogsSnapshot, String> {
+    remote_control::get_logs().await
+}
+
+#[tauri::command]
+async fn remote_open_panel() -> Result<(), String> {
+    remote_control::open_panel().await
+}
+
+#[tauri::command]
+async fn remote_install_mobile_apk(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<remote_control::RemoteCommandResult, String> {
+    let _guard = state.remote_runtime_lock.lock().await;
+    remote_control::install_mobile_apk(&app).await
+}
+
+#[tauri::command]
+async fn remote_open_logs(app: AppHandle) -> Result<(), String> {
+    remote_control::open_logs(&app).await
+}
+
+#[tauri::command]
 async fn pick_codex_launch_path(
     kind: String,
     current_path: Option<String>,
@@ -991,6 +1067,25 @@ async fn switch_account_and_launch(
             stored_account,
         )?;
         profile_files::apply_account_profile(stored_account)?;
+        let thread_provider_backup_dir = app_paths::codex_state_provider_backup_dir()?;
+        let synced_thread_count = match stored_account.source_kind {
+            models::AccountSourceKind::Relay => {
+                let provider_id = profile_files::relay_provider_id_for_account(stored_account)
+                    .ok_or_else(|| "API 条目资料不完整".to_string())?;
+                session_provider_sync::sync_codex_thread_providers_for_relay(
+                    &provider_id,
+                    &thread_provider_backup_dir,
+                )?
+            }
+            models::AccountSourceKind::Chatgpt => {
+                session_provider_sync::sync_codex_thread_providers_for_chatgpt(
+                    &thread_provider_backup_dir,
+                )?
+            }
+        };
+        if synced_thread_count > 0 {
+            log::info!("已同步 {synced_thread_count} 条 Codex 线程 provider");
+        }
         settings_service::apply_active_codex_context_window_setting(
             latest_store.settings.codex_context_window_k,
         )?;
@@ -1292,6 +1387,19 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
+        .on_page_load(|webview, payload| {
+            if webview.label() != "main" || payload.event() != PageLoadEvent::Finished {
+                return;
+            }
+            let window = webview.window();
+            if let Err(err) = window.show() {
+                log::warn!("显示主窗口失败: {err}");
+                return;
+            }
+            if let Err(err) = window.set_focus() {
+                log::warn!("聚焦主窗口失败: {err}");
+            }
+        })
         .on_menu_event(tray::handle_status_bar_menu_event)
         .on_window_event(handle_window_close_to_background)
         .setup(|app| {
@@ -1310,7 +1418,27 @@ pub fn run() {
             }
             // 启动阶段先同步当前本机登录账号，再初始化状态栏，保证首次展示即一致。
             store::sync_current_auth_account_on_startup(app.handle())?;
+            match store::sync_relay_account_profiles_on_startup(app.handle()) {
+                Ok(count) if count > 0 => {
+                    log::info!("启动时已同步 {count} 个 API profile");
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    log::warn!("启动时同步 API profile 失败: {err}");
+                }
+            }
             tray::setup_system_tray(app.handle())?;
+            match app_paths::codex_state_provider_backup_dir().and_then(|backup_dir| {
+                session_provider_sync::cleanup_codex_state_provider_backups(&backup_dir)
+            }) {
+                Ok(removed) if removed > 0 => {
+                    log::info!("启动时已清理 {removed} 个旧 Codex 线程 provider 备份");
+                }
+                Ok(_) => {}
+                Err(err) => {
+                    log::warn!("启动时清理 Codex 线程 provider 备份失败: {err}");
+                }
+            }
             start_auth_keepalive_loop(app.handle().clone());
             Ok(())
         })
@@ -1341,6 +1469,17 @@ pub fn run() {
             list_installed_editor_apps,
             is_opencode_desktop_app_installed,
             open_external_url,
+            remote_detect_runtime,
+            remote_start_console,
+            remote_stop_console,
+            remote_restart_console,
+            remote_get_status,
+            remote_get_runtime,
+            remote_get_capabilities,
+            remote_get_logs,
+            remote_open_panel,
+            remote_install_mobile_apk,
+            remote_open_logs,
             pick_codex_launch_path,
             prepare_oauth_login,
             complete_oauth_callback_login,

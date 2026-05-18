@@ -529,7 +529,7 @@ function buildPreviewSettings(): AppSettings {
         costMultiplier: 1,
         baseUrl: "https://relay-demo.example.com",
         email: "demo@example.com",
-        password: "preview-password",
+        password: "demo-password",
         createdAt: now - 3_600,
         updatedAt: now,
         lastTestAt: now - 300,
@@ -543,7 +543,7 @@ function buildPreviewSettings(): AppSettings {
         costMultiplier: 1,
         baseUrl: "https://relay-basic.example.com",
         email: "basic@example.com",
-        password: "preview-password",
+        password: "demo-password",
         createdAt: now - 3_400,
         updatedAt: now,
         lastTestAt: now - 260,
@@ -557,7 +557,7 @@ function buildPreviewSettings(): AppSettings {
         costMultiplier: 1,
         baseUrl: "https://relay-pro.example.com",
         email: "pro@example.com",
-        password: "preview-password",
+        password: "demo-password",
         createdAt: now - 3_200,
         updatedAt: now,
         lastTestAt: now - 220,
@@ -571,7 +571,7 @@ function buildPreviewSettings(): AppSettings {
         costMultiplier: 1,
         baseUrl: "https://relay-admin.example.com",
         email: "admin@example.com",
-        password: "preview-password",
+        password: "demo-password",
         createdAt: now - 3_000,
         updatedAt: now,
         lastTestAt: now - 180,
@@ -584,8 +584,8 @@ function buildPreviewSettings(): AppSettings {
         name: "Telegram Bot（演示）",
         kind: "telegram",
         enabled: true,
-        telegramBotToken: "preview-token-main",
-        telegramChatId: "preview-chat-main",
+        telegramBotToken: "123456:demo-preview-token",
+        telegramChatId: "123456789",
         webhookUrl: null,
         createdAt: now - 3_600,
         updatedAt: now,
@@ -597,8 +597,8 @@ function buildPreviewSettings(): AppSettings {
         name: "Ops Alerts Bot（演示）",
         kind: "telegram",
         enabled: true,
-        telegramBotToken: "preview-token-ops",
-        telegramChatId: "@preview_ops",
+        telegramBotToken: "123456:demo-preview-ops",
+        telegramChatId: "@ops_alerts",
         webhookUrl: null,
         createdAt: now - 2_900,
         updatedAt: now,
@@ -610,8 +610,8 @@ function buildPreviewSettings(): AppSettings {
         name: "Dev Team Bot（演示）",
         kind: "telegram",
         enabled: true,
-        telegramBotToken: "preview-token-dev",
-        telegramChatId: "@preview_team",
+        telegramBotToken: "123456:demo-preview-dev",
+        telegramChatId: "@dev_team",
         webhookUrl: null,
         createdAt: now - 2_700,
         updatedAt: now,
@@ -915,7 +915,6 @@ function buildPreviewTokenUsage(): CodexTokenUsageSnapshot {
 }
 
 const HIDE_ACCOUNT_DETAILS_STORAGE_KEY = "codexdeck:hide-account-details";
-const LEGACY_HIDE_ACCOUNT_DETAILS_STORAGE_KEY = "codex-tools:hide-account-details";
 
 function readHideAccountDetailsPreference() {
   if (typeof window === "undefined") {
@@ -923,10 +922,7 @@ function readHideAccountDetailsPreference() {
   }
 
   try {
-    return (
-      window.localStorage.getItem(HIDE_ACCOUNT_DETAILS_STORAGE_KEY) ??
-      window.localStorage.getItem(LEGACY_HIDE_ACCOUNT_DETAILS_STORAGE_KEY)
-    ) === "true";
+    return window.localStorage.getItem(HIDE_ACCOUNT_DETAILS_STORAGE_KEY) === "true";
   } catch {
     return false;
   }
@@ -2836,4 +2832,3 @@ export function useCodexController() {
     smartSwitching: switchingId !== null,
   };
 }
-

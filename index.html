@@ -5,6 +5,42 @@
     <link rel="icon" type="image/png" href="/codexdeck.png" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CodexDeck</title>
+    <style>
+      :root {
+        color-scheme: light;
+        background: #f5f7fa;
+      }
+
+      html,
+      body,
+      #root {
+        width: 100%;
+        height: 100%;
+        margin: 0;
+        overflow: hidden;
+        background:
+          radial-gradient(circle at 16% 10%, rgba(22, 119, 255, 0.08), transparent 28%),
+          linear-gradient(180deg, #ffffff 0%, #f5f7fa 58%, #f0f5ff 100%);
+      }
+
+      body {
+        min-width: 320px;
+        font-family:
+          "MiSans", "HarmonyOS Sans SC", "Microsoft YaHei UI", "PingFang SC", "Segoe UI",
+          sans-serif;
+      }
+
+      #root:empty::before {
+        content: "CodexDeck";
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%);
+        color: #1f1f1f;
+        font: 700 18px/1.2 "Segoe UI", sans-serif;
+        letter-spacing: 0;
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>

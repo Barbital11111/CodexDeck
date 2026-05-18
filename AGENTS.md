@@ -2,7 +2,7 @@
 
 ## Project
 
-CodexDeck is a React + Tauri desktop console for managing Codex accounts, external API profiles, usage, account switching, and upcoming quota notifications.
+CodexDeck is a React + Tauri desktop console for managing Codex accounts, external API profiles, usage, account switching, notifications, and an external remote-control runtime.
 
 ## Local Path And Privacy Rules
 
@@ -32,4 +32,3 @@ CodexDeck is a React + Tauri desktop console for managing Codex accounts, extern
 - Ant Design MCP is configured at `<workspace-root>/.codex/mcp.json` with `antd mcp`.
 - Local Ant Design LLM references are cached under `<workspace-root>/docs/external/ant-design/`.
 - For UI style work, first consult `docs/external/ant-design/llms-semantic-cn.md` and use Ant Design component semantics/design-token thinking where it fits the product.
-

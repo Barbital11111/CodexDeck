@@ -25,3 +25,11 @@ body {
   transition: background 220ms ease, color 220ms ease;
   overflow: hidden;
 }
+
+.viewLoadingFallback {
+  display: grid;
+  min-height: 220px;
+  place-items: center;
+  color: var(--subtle, #58657a);
+  font: 700 0.86rem/1.4 var(--font-ui);
+}

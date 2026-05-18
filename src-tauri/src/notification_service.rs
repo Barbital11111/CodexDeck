@@ -1490,35 +1490,32 @@ mod tests {
 
     #[test]
     fn sub2api_candidates_try_api_v1_for_root_site_url() {
-        let candidates = sub2api_base_url_candidates("https://quota.example.test").unwrap();
+        let candidates = sub2api_base_url_candidates("https://alexai.work").unwrap();
 
         assert_eq!(
             candidates,
             vec![
-                "https://quota.example.test",
-                "https://quota.example.test/api/v1",
-                "https://quota.example.test/v1",
+                "https://alexai.work",
+                "https://alexai.work/api/v1",
+                "https://alexai.work/v1",
             ]
         );
     }
 
     #[test]
     fn sub2api_candidates_keep_explicit_api_v1_first() {
-        let candidates = sub2api_base_url_candidates("https://quota.example.test/api/v1/").unwrap();
+        let candidates = sub2api_base_url_candidates("https://alexai.work/api/v1/").unwrap();
 
-        assert_eq!(candidates, vec!["https://quota.example.test/api/v1"]);
+        assert_eq!(candidates, vec!["https://alexai.work/api/v1"]);
     }
 
     #[test]
     fn sub2api_candidates_try_api_v1_sibling_for_v1_url() {
-        let candidates = sub2api_base_url_candidates("https://quota.example.test/v1").unwrap();
+        let candidates = sub2api_base_url_candidates("https://alexai.work/v1").unwrap();
 
         assert_eq!(
             candidates,
-            vec![
-                "https://quota.example.test/v1",
-                "https://quota.example.test/api/v1"
-            ]
+            vec!["https://alexai.work/v1", "https://alexai.work/api/v1"]
         );
     }
 
@@ -1548,12 +1545,12 @@ mod tests {
     fn quota_snapshot_maps_subscription_progress_to_usage_windows() {
         let provider = NotificationProviderConfig {
             id: "provider-1".to_string(),
-            name: "Preview".to_string(),
+            name: "Alex".to_string(),
             kind: Default::default(),
             enabled: true,
             cost_multiplier: 1.0,
-            base_url: "https://quota.example.test/api/v1".to_string(),
-            email: "preview@example.com".to_string(),
+            base_url: "https://alexai.work/api/v1".to_string(),
+            email: "alex@example.com".to_string(),
             password: Some("secret".to_string()),
             created_at: 0,
             updated_at: 0,
@@ -1607,12 +1604,12 @@ mod tests {
     fn quota_snapshot_accepts_sub2api_progress_field_names() {
         let provider = NotificationProviderConfig {
             id: "provider-1".to_string(),
-            name: "Preview".to_string(),
+            name: "Alex".to_string(),
             kind: Default::default(),
             enabled: true,
             cost_multiplier: 1.0,
-            base_url: "https://quota.example.test/api/v1".to_string(),
-            email: "preview@example.com".to_string(),
+            base_url: "https://alexai.work/api/v1".to_string(),
+            email: "alex@example.com".to_string(),
             password: Some("secret".to_string()),
             created_at: 0,
             updated_at: 0,
