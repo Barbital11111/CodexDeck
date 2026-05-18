@@ -6,6 +6,8 @@
   3. 切换 API/普通账号时同步修复 Codex 线程 provider 与可见性，降低历史会话不可见风险。
   4. provider 同步备份移动到安装目录下的 `codex-state-provider-backups`，避免占用系统盘。
   5. 打包流程增加远控 runtime staging、运行态排除、manifest 校验和脱敏扫描。
+  6. 修复 2.0.4 同版本覆盖安装逻辑，安装器会优先识别现有 CodexDeck、旧 Codex Tools 和 CodexSwitch 目录，避免误装到新的默认目录。
+  7. release 构建增加 Rust 路径重映射，避免安装包内残留本机 Cargo / 用户目录路径。
 
 - v2.0.0
   1. 创建 CodexDeck 独立仓库，正式切换为新的产品身份与安装包命名。
