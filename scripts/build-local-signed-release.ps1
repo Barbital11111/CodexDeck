@@ -114,6 +114,58 @@ function Resolve-FullPath {
   return [System.IO.Path]::GetFullPath($expanded)
 }
 
+function Get-RustPathRemapFlags {
+  $prefixes = [ordered]@{}
+
+  $repoFullPath = Resolve-FullPath $repoRoot
+  $prefixes[$repoFullPath] = "[codexdeck]"
+
+  if (-not [string]::IsNullOrWhiteSpace($env:CARGO_HOME)) {
+    $cargoHome = Resolve-FullPath $env:CARGO_HOME
+    $prefixes[$cargoHome] = "[cargo-home]"
+  }
+  elseif (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+    $cargoHome = Resolve-FullPath (Join-Path $env:USERPROFILE ".cargo")
+    $prefixes[$cargoHome] = "[cargo-home]"
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($env:RUSTUP_HOME)) {
+    $rustupHome = Resolve-FullPath $env:RUSTUP_HOME
+    $prefixes[$rustupHome] = "[rustup-home]"
+  }
+  elseif (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+    $rustupHome = Resolve-FullPath (Join-Path $env:USERPROFILE ".rustup")
+    $prefixes[$rustupHome] = "[rustup-home]"
+  }
+
+  if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
+    $userProfile = Resolve-FullPath $env:USERPROFILE
+    $prefixes[$userProfile] = "[user-home]"
+  }
+
+  $prefixes.GetEnumerator() |
+    Sort-Object { $_.Key.Length } -Descending |
+    ForEach-Object { "--remap-path-prefix=$($_.Key)=$($_.Value)" }
+}
+
+function Set-RustPathRemapping {
+  param([string]$PreviousRustFlags)
+
+  $remapFlags = @(Get-RustPathRemapFlags)
+  if ($remapFlags.Count -eq 0) {
+    return
+  }
+
+  $parts = @()
+  if (-not [string]::IsNullOrWhiteSpace($PreviousRustFlags)) {
+    $parts += $PreviousRustFlags.Trim()
+  }
+  $parts += $remapFlags
+  $env:RUSTFLAGS = ($parts -join " ")
+
+  Write-Host "Rust path remapping enabled for release build." -ForegroundColor Green
+}
+
 function Get-DefaultRemoteRuntimeSource {
   if (-not [string]::IsNullOrWhiteSpace($env:CODEXDECK_REMOTE_RUNTIME_SOURCE)) {
     return $env:CODEXDECK_REMOTE_RUNTIME_SOURCE
@@ -557,9 +609,11 @@ if ($null -eq $decodedKey -or $decodedKey -notmatch "(minisign|rsign).+secret ke
 
 $previousPrivateKey = [Environment]::GetEnvironmentVariable("TAURI_SIGNING_PRIVATE_KEY", "Process")
 $previousPassword = [Environment]::GetEnvironmentVariable("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", "Process")
+$previousRustFlags = [Environment]::GetEnvironmentVariable("RUSTFLAGS", "Process")
 
 try {
   $env:TAURI_SIGNING_PRIVATE_KEY = $privateKeyEnvValue
+  Set-RustPathRemapping -PreviousRustFlags $previousRustFlags
 
   if (-not [string]::IsNullOrEmpty($SigningKeyPassword)) {
     $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $SigningKeyPassword
@@ -620,5 +674,12 @@ finally {
   }
   else {
     $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $previousPassword
+  }
+
+  if ($null -eq $previousRustFlags) {
+    Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
+  }
+  else {
+    $env:RUSTFLAGS = $previousRustFlags
   }
 }

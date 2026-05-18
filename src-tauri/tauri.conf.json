@@ -32,6 +32,7 @@
     "active": true,
     "targets": "all",
     "createUpdaterArtifacts": true,
+    "publisher": "carry",
     "resources": {
       "resources/codex-command-runtime": "codex-command-runtime"
     },

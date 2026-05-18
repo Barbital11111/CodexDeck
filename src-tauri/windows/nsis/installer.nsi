@@ -70,6 +70,7 @@ Var NoShortcutMode
 Var WixMode
 Var OldMainBinaryName
 Var PreviousUninstKey
+Var RestoredInstallDir
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -936,10 +937,121 @@ Section Uninstall
   ${EndIf}
 SectionEnd
 
-Function RestorePreviousInstallLocation
-  ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
-  StrCmp $4 "" +2 0
+Function UseInstallLocationCandidate
+  ${If} $4 == ""
+    Return
+  ${EndIf}
+
+  ${If} ${FileExists} "$4\${MAINBINARYNAME}.exe"
+  ${OrIf} ${FileExists} "$4\CodexDeck.exe"
+  ${OrIf} ${FileExists} "$4\app.exe"
+  ${OrIf} ${FileExists} "$4\uninstall.exe"
     StrCpy $INSTDIR $4
+    StrCpy $RestoredInstallDir 1
+  ${EndIf}
+FunctionEnd
+
+Function UseInstallLocationFromUninstallString
+  ${If} $4 == ""
+    Return
+  ${EndIf}
+
+  StrCpy $5 $4 1
+  ${If} $5 == '"'
+    StrCpy $4 $4 "" 1
+    ${StrLoc} $5 $4 '"' ">"
+    ${If} $5 != ""
+      StrCpy $4 $4 $5
+    ${EndIf}
+  ${Else}
+    ${StrLoc} $5 $4 " " ">"
+    ${If} $5 != ""
+      StrCpy $4 $4 $5
+    ${EndIf}
+  ${EndIf}
+
+  ${GetParent} "$4" $4
+  Call UseInstallLocationCandidate
+FunctionEnd
+
+Function RestoreInstallLocationFromUninstallKey
+  Pop $7
+
+  ReadRegStr $4 SHCTX "$7" "InstallLocation"
+  StrCpy $5 $4 1
+  ${If} $5 == '"'
+    StrCpy $4 $4 "" 1
+    StrLen $5 $4
+    IntOp $5 $5 - 1
+    ${If} $5 >= 0
+      StrCpy $6 $4 1 $5
+      ${If} $6 == '"'
+        StrCpy $4 $4 $5
+      ${EndIf}
+    ${EndIf}
+  ${EndIf}
+  Call UseInstallLocationCandidate
+  ${If} $RestoredInstallDir == 1
+    Return
+  ${EndIf}
+
+  ReadRegStr $4 SHCTX "$7" "UninstallString"
+  Call UseInstallLocationFromUninstallString
+FunctionEnd
+
+Function RestorePreviousInstallLocation
+  StrCpy $RestoredInstallDir 0
+
+  Push "${UNINSTKEY}"
+  Call RestoreInstallLocationFromUninstallKey
+  ${If} $RestoredInstallDir == 1
+    Return
+  ${EndIf}
+
+  Push "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexDeck"
+  Call RestoreInstallLocationFromUninstallKey
+  ${If} $RestoredInstallDir == 1
+    Return
+  ${EndIf}
+
+  Push "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex Tools"
+  Call RestoreInstallLocationFromUninstallKey
+  ${If} $RestoredInstallDir == 1
+    Return
+  ${EndIf}
+
+  Push "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexSwitch"
+  Call RestoreInstallLocationFromUninstallKey
+  ${If} $RestoredInstallDir == 1
+    Return
+  ${EndIf}
+
+  Push "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex Switch"
+  Call RestoreInstallLocationFromUninstallKey
+  ${If} $RestoredInstallDir == 1
+    Return
+  ${EndIf}
+
+  ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
+  Call UseInstallLocationCandidate
+  ${If} $RestoredInstallDir == 1
+    Return
+  ${EndIf}
+
+  ReadRegStr $4 SHCTX "Software\carry\${PRODUCTNAME}" ""
+  Call UseInstallLocationCandidate
+  ${If} $RestoredInstallDir == 1
+    Return
+  ${EndIf}
+
+  ReadRegStr $4 SHCTX "Software\github\${PRODUCTNAME}" ""
+  Call UseInstallLocationCandidate
+  ${If} $RestoredInstallDir == 1
+    Return
+  ${EndIf}
+
+  StrCpy $4 "$LOCALAPPDATA\${PRODUCTNAME}"
+  Call UseInstallLocationCandidate
 FunctionEnd
 
 Function Skip
