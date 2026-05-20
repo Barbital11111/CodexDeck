@@ -55,6 +55,8 @@ $devTauriConfig = @{
                 width = 1320
                 height = 960
                 resizable = $true
+                decorations = $false
+                shadow = $true
             }
         )
     }

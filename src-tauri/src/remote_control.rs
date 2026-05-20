@@ -3,7 +3,9 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Output;
+use std::process::Stdio;
 use std::time::Duration;
+use std::time::Instant;
 
 #[cfg(any(target_os = "macos", all(unix, not(target_os = "macos"))))]
 use std::process::Command;
@@ -28,6 +30,8 @@ const STOP_SCRIPT: &str = "scripts/stop-codex-command-console.ps1";
 const INSTALL_APK_SCRIPT: &str = "scripts/install-mobile-app.ps1";
 const MOBILE_APK: &str = "mobile/Codex-Command-Mobile-debug.apk";
 const MANIFEST_FILE: &str = "INSTALL-MANIFEST.json";
+const START_READY_TIMEOUT: Duration = Duration::from_secs(120);
+const START_READY_POLL: Duration = Duration::from_millis(750);
 
 #[derive(Clone)]
 struct RuntimeCandidate {
@@ -100,8 +104,7 @@ pub(crate) struct RemoteRuntimeState {
     pub(crate) relay_url: Option<String>,
     pub(crate) binding_code: Option<String>,
     pub(crate) manual_code: Option<String>,
-    pub(crate) session_id: Option<String>,
-    pub(crate) device_id: Option<String>,
+    pub(crate) pairing_payload: Option<String>,
     pub(crate) expires_at: Option<String>,
     pub(crate) panel_url: Option<String>,
     pub(crate) desktop_port: Option<String>,
@@ -111,7 +114,7 @@ pub(crate) struct RemoteRuntimeState {
 
 #[derive(Deserialize)]
 struct RemoteStateEnvelope {
-    state: RemoteRuntimeState,
+    state: serde_json::Value,
 }
 
 #[derive(Serialize)]
@@ -176,7 +179,7 @@ pub(crate) async fn detect_runtime(app: &AppHandle) -> Result<RemoteRuntimeDetec
 
 pub(crate) async fn start_console(app: &AppHandle) -> Result<RemoteCommandResult, String> {
     let runtime = require_runtime(app)?;
-    run_runtime_script(
+    start_runtime_script_and_wait(
         runtime.root,
         START_SCRIPT,
         vec![
@@ -199,7 +202,7 @@ pub(crate) async fn restart_console(app: &AppHandle) -> Result<RemoteCommandResu
     if let Err(error) = stop_result {
         log::warn!("停止远程控制运行时失败，仍尝试重新启动: {error}");
     }
-    run_runtime_script(
+    start_runtime_script_and_wait(
         runtime.root,
         START_SCRIPT,
         vec![
@@ -244,12 +247,14 @@ pub(crate) async fn get_status() -> Result<RemoteStatusSnapshot, String> {
         .json::<RemoteStateEnvelope>()
         .await
         .map_err(|error| format!("解析远程控制状态失败: {error}"))?;
-    let connection_address = relay_connection_address(envelope.state.relay_url.as_deref());
-    let connection_code = preferred_connection_code(&envelope.state);
+    let state = remote_state_from_value(envelope.state)
+        .map_err(|error| format!("解析远程控制状态失败: {error}"))?;
+    let connection_address = relay_connection_address(state.relay_url.as_deref());
+    let connection_code = preferred_connection_code(&state);
 
     Ok(RemoteStatusSnapshot {
         reachable: true,
-        state: Some(envelope.state),
+        state: Some(state),
         connection_address,
         connection_code,
         error: None,
@@ -507,6 +512,26 @@ fn read_manifest(root: &Path) -> Option<RemoteRuntimeManifest> {
     }
 }
 
+fn powershell_path_arg(path: &Path) -> String {
+    let value = path.to_string_lossy();
+    if let Some(rest) = value.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{rest}")
+    } else if let Some(rest) = value.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        value.to_string()
+    }
+}
+
+async fn start_runtime_script_and_wait(
+    runtime_root: PathBuf,
+    relative_script: &'static str,
+    args: Vec<String>,
+) -> Result<RemoteCommandResult, String> {
+    start_runtime_script_detached(runtime_root, relative_script, args).await?;
+    wait_for_runtime_ready().await
+}
+
 async fn run_runtime_script(
     runtime_root: PathBuf,
     relative_script: &'static str,
@@ -518,25 +543,147 @@ async fn run_runtime_script(
     }
 
     tauri::async_runtime::spawn_blocking(move || {
-        let mut command = new_resolved_command("pwsh");
+        let script_arg = powershell_path_arg(&script_path);
+        let mut command = new_resolved_command("powershell");
         command
             .current_dir(&runtime_root)
             .arg("-NoProfile")
             .arg("-ExecutionPolicy")
             .arg("Bypass")
             .arg("-File")
-            .arg(&script_path);
+            .arg(&script_arg);
         for arg in args {
             command.arg(arg);
         }
 
-        let output = command
-            .output()
-            .map_err(|error| format!("调用远程控制脚本失败 {}: {error}", script_path.display()))?;
+        let output = command.output().map_err(|error| {
+            format!(
+                "调用远程控制脚本失败 {}: {error}。请确认 Windows PowerShell 可用。",
+                script_path.display()
+            )
+        })?;
         command_result_from_output(output)
     })
     .await
     .map_err(|error| format!("等待远程控制脚本结束失败: {error}"))?
+}
+
+async fn start_runtime_script_detached(
+    runtime_root: PathBuf,
+    relative_script: &'static str,
+    args: Vec<String>,
+) -> Result<(), String> {
+    let script_path = runtime_root.join(relative_script);
+    if !script_path.is_file() {
+        return Err(format!("远程控制脚本不存在: {}", script_path.display()));
+    }
+
+    tauri::async_runtime::spawn_blocking(move || {
+        let script_arg = powershell_path_arg(&script_path);
+        let mut command = new_resolved_command("powershell");
+        command
+            .current_dir(&runtime_root)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .arg("-NoProfile")
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-File")
+            .arg(&script_arg);
+        for arg in args {
+            command.arg(arg);
+        }
+
+        command.spawn().map(|_| ()).map_err(|error| {
+            format!(
+                "启动远程控制脚本失败 {}: {error}。请确认 Windows PowerShell 可用。",
+                script_path.display()
+            )
+        })
+    })
+    .await
+    .map_err(|error| format!("启动远程控制脚本任务失败: {error}"))?
+}
+
+async fn wait_for_runtime_ready() -> Result<RemoteCommandResult, String> {
+    let started = Instant::now();
+
+    loop {
+        let detail = match get_status().await {
+            Ok(snapshot) if remote_snapshot_ready(&snapshot) => {
+                return Ok(RemoteCommandResult {
+                    ok: true,
+                    code: Some(0),
+                    stdout_tail: "远程控制台已启动，连接码和二维码数据已生成。".to_string(),
+                    stderr_tail: String::new(),
+                });
+            }
+            Ok(snapshot) => format_wait_snapshot(&snapshot),
+            Err(error) => error,
+        };
+
+        if started.elapsed() >= START_READY_TIMEOUT {
+            return Err(format!("远程控制台启动超时: {detail}"));
+        }
+
+        tokio::time::sleep(START_READY_POLL).await;
+    }
+}
+
+fn remote_snapshot_ready(snapshot: &RemoteStatusSnapshot) -> bool {
+    let Some(state) = snapshot.state.as_ref() else {
+        return false;
+    };
+
+    let has_error = trimmed_option(state.last_error.as_deref()).is_some();
+    snapshot.reachable
+        && !has_error
+        && status_in(state.bridge_status.as_deref(), &["running"])
+        && status_in(state.relay_status.as_deref(), &["connected", "running"])
+        && status_in(state.desktop_status.as_deref(), &["ready", "running"])
+        && preferred_connection_code(state).is_some()
+        && trimmed_option(state.pairing_payload.as_deref()).is_some()
+}
+
+fn status_in(value: Option<&str>, allowed: &[&str]) -> bool {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return false;
+    };
+    allowed
+        .iter()
+        .any(|allowed_value| value.eq_ignore_ascii_case(allowed_value))
+}
+
+fn format_wait_snapshot(snapshot: &RemoteStatusSnapshot) -> String {
+    if let Some(error) = trimmed_option(snapshot.error.as_deref()) {
+        return error;
+    }
+
+    let Some(state) = snapshot.state.as_ref() else {
+        return "远程控制运行时尚未返回状态".to_string();
+    };
+
+    if let Some(error) = trimmed_option(state.last_error.as_deref()) {
+        return error;
+    }
+
+    format!(
+        "bridge={}, relay={}, desktop={}, code={}, payload={}",
+        state.bridge_status.as_deref().unwrap_or("unknown"),
+        state.relay_status.as_deref().unwrap_or("unknown"),
+        state.desktop_status.as_deref().unwrap_or("unknown"),
+        if preferred_connection_code(state).is_some() {
+            "ready"
+        } else {
+            "missing"
+        },
+        if trimmed_option(state.pairing_payload.as_deref()).is_some() {
+            "ready"
+        } else {
+            "missing"
+        }
+    )
 }
 
 fn command_result_from_output(output: Output) -> Result<RemoteCommandResult, String> {
@@ -595,6 +742,19 @@ fn relay_connection_address(relay_url: Option<&str>) -> Option<String> {
 fn preferred_connection_code(state: &RemoteRuntimeState) -> Option<String> {
     trimmed_option(state.manual_code.as_deref())
         .or_else(|| trimmed_option(state.binding_code.as_deref()))
+}
+
+fn remote_state_from_value(
+    mut value: serde_json::Value,
+) -> Result<RemoteRuntimeState, serde_json::Error> {
+    if let Some(object) = value.as_object_mut() {
+        let legacy_key = ["pairing", "Payload", "Json"].concat();
+        if let Some(payload) = object.remove(&legacy_key) {
+            object.entry("pairingPayload").or_insert(payload);
+        }
+    }
+
+    serde_json::from_value(value)
 }
 
 fn trimmed_option(value: Option<&str>) -> Option<String> {
@@ -706,5 +866,25 @@ fn open_path(path: &Path) -> Result<(), String> {
     {
         let _ = path;
         Err("当前平台暂不支持打开远程控制日志".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::powershell_path_arg;
+    use std::path::Path;
+
+    #[test]
+    fn powershell_path_arg_removes_windows_extended_path_prefix() {
+        assert_eq!(
+            powershell_path_arg(Path::new(
+                r"\\?\D:\CODEX tool\Codex Tools\codex-command-runtime\scripts\start.ps1"
+            )),
+            r"D:\CODEX tool\Codex Tools\codex-command-runtime\scripts\start.ps1"
+        );
+        assert_eq!(
+            powershell_path_arg(Path::new(r"\\?\UNC\server\share\start.ps1")),
+            r"\\server\share\start.ps1"
+        );
     }
 }

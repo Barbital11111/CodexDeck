@@ -20,8 +20,8 @@
         "fullscreen": false,
         "visible": false,
         "backgroundColor": "#f5f7fa",
-        "titleBarStyle": "Overlay",
-        "hiddenTitle": true
+        "decorations": false,
+        "shadow": true
       }
     ],
     "security": {

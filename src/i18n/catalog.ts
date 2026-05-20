@@ -75,6 +75,14 @@ export type MessageCatalog = {
   };
   addAccount: {
     smartSwitch: string;
+    hybridTitle: string;
+    hybridChatgptLabel: string;
+    hybridRelayLabel: string;
+    hybridChatgptPlaceholder: string;
+    hybridRelayPlaceholder: string;
+    hybridStart: string;
+    hybridStarting: string;
+    hybridMissing: string;
     exportButton: string;
     startButton: string;
     dialogAriaLabel: string;
@@ -717,6 +725,9 @@ export type MessageCatalog = {
     switchedOnly: string;
     switchedAndLaunchByCli: string;
     switchedAndLaunching: string;
+    hybridSwitchedOnly: string;
+    hybridSwitchedAndLaunchByCli: string;
+    hybridSwitchedAndLaunching: string;
     opencodeSyncFailed: (base: string, error: string) => string;
     opencodeSynced: (base: string) => string;
     opencodeDesktopRestartFailed: (base: string, error: string) => string;

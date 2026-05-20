@@ -99,24 +99,32 @@ struct RelayKeyProbeFailure {
     message: String,
 }
 
-pub(crate) async fn list_accounts_internal(
-    app: &AppHandle,
-    state: &AppState,
-) -> Result<Vec<AccountSummary>, String> {
-    let _guard = state.store_lock.lock().await;
-    let store = load_store(app)?;
-    let current_account_key = current_auth_account_key();
-    let current_variant_key = current_auth_variant_key();
+fn build_account_summaries_for_store(
+    store: &AccountsStore,
+    current_account_key: Option<&str>,
+    current_variant_key: Option<&str>,
+) -> Vec<AccountSummary> {
     let mut summaries = store
         .accounts
         .iter()
-        .map(|account| {
-            account.to_summary(
-                current_account_key.as_deref(),
-                current_variant_key.as_deref(),
-            )
-        })
+        .map(|account| account.to_summary(current_account_key, current_variant_key))
         .collect::<Vec<_>>();
+
+    if let Some(hybrid) = store.settings.active_hybrid_profile.as_ref() {
+        let has_valid_hybrid_pair = store.accounts.iter().any(|account| {
+            account.id == hybrid.chatgpt_account_id
+                && matches!(account.source_kind, AccountSourceKind::Chatgpt)
+        }) && store.accounts.iter().any(|account| {
+            account.id == hybrid.relay_account_id
+                && matches!(account.source_kind, AccountSourceKind::Relay)
+        });
+        if has_valid_hybrid_pair {
+            for summary in &mut summaries {
+                summary.is_current = summary.id == hybrid.relay_account_id;
+            }
+            return summaries;
+        }
+    }
 
     if !summaries.iter().any(|account| account.is_current) {
         if let Some(active_id) = store.settings.active_account_id.as_deref() {
@@ -126,7 +134,62 @@ pub(crate) async fn list_accounts_internal(
         }
     }
 
-    Ok(summaries)
+    summaries
+}
+
+fn current_hybrid_pair_for_relay(
+    store: &AccountsStore,
+    relay_account_id: &str,
+) -> Option<(StoredAccount, StoredAccount)> {
+    let hybrid = store.settings.active_hybrid_profile.as_ref()?;
+    if hybrid.relay_account_id != relay_account_id {
+        return None;
+    }
+    let chatgpt_account = store
+        .accounts
+        .iter()
+        .find(|account| {
+            account.id == hybrid.chatgpt_account_id
+                && matches!(account.source_kind, AccountSourceKind::Chatgpt)
+        })?
+        .clone();
+    let relay_account = store
+        .accounts
+        .iter()
+        .find(|account| {
+            account.id == hybrid.relay_account_id
+                && matches!(account.source_kind, AccountSourceKind::Relay)
+        })?
+        .clone();
+    Some((chatgpt_account, relay_account))
+}
+
+fn apply_current_relay_profile(
+    store: &AccountsStore,
+    relay_account: &StoredAccount,
+) -> Result<(), String> {
+    if let Some((chatgpt_account, relay_account)) =
+        current_hybrid_pair_for_relay(store, &relay_account.id)
+    {
+        profile_files::apply_hybrid_account_profile(&chatgpt_account, &relay_account)
+    } else {
+        profile_files::apply_account_profile(relay_account)
+    }
+}
+
+pub(crate) async fn list_accounts_internal(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<Vec<AccountSummary>, String> {
+    let _guard = state.store_lock.lock().await;
+    let store = load_store(app)?;
+    let current_account_key = current_auth_account_key();
+    let current_variant_key = current_auth_variant_key();
+    Ok(build_account_summaries_for_store(
+        &store,
+        current_account_key.as_deref(),
+        current_variant_key.as_deref(),
+    ))
 }
 
 pub(crate) async fn import_current_auth_account_internal(
@@ -413,6 +476,14 @@ pub(crate) async fn delete_account_internal(
     if removed_current {
         store.settings.active_account_id = None;
     }
+    if store
+        .settings
+        .active_hybrid_profile
+        .as_ref()
+        .is_some_and(|hybrid| hybrid.chatgpt_account_id == id || hybrid.relay_account_id == id)
+    {
+        store.settings.active_hybrid_profile = None;
+    }
     let valid_account_keys = store
         .accounts
         .iter()
@@ -550,14 +621,29 @@ pub(crate) async fn update_api_account_internal(
         account.clone()
     };
 
-    if active_account_id.as_deref() == Some(updated_account.id.as_str()) {
-        profile_files::apply_account_profile(&updated_account)?;
+    if active_account_id.as_deref() == Some(updated_account.id.as_str())
+        || store
+            .settings
+            .active_hybrid_profile
+            .as_ref()
+            .is_some_and(|hybrid| hybrid.relay_account_id == updated_account.id)
+    {
+        apply_current_relay_profile(&store, &updated_account)?;
     }
 
-    let summary = updated_account.to_summary(
+    let summary = build_account_summaries_for_store(
+        &store,
         current_account_key.as_deref(),
         current_variant_key.as_deref(),
-    );
+    )
+    .into_iter()
+    .find(|account| account.id == updated_account.id)
+    .unwrap_or_else(|| {
+        updated_account.to_summary(
+            current_account_key.as_deref(),
+            current_variant_key.as_deref(),
+        )
+    });
     save_store(app, &store)?;
     Ok(summary)
 }
@@ -635,14 +721,29 @@ pub(crate) async fn update_api_account_keys_internal(
         account.clone()
     };
 
-    if active_account_id.as_deref() == Some(updated_account.id.as_str()) {
-        profile_files::apply_account_profile(&updated_account)?;
+    if active_account_id.as_deref() == Some(updated_account.id.as_str())
+        || store
+            .settings
+            .active_hybrid_profile
+            .as_ref()
+            .is_some_and(|hybrid| hybrid.relay_account_id == updated_account.id)
+    {
+        apply_current_relay_profile(&store, &updated_account)?;
     }
 
-    let summary = updated_account.to_summary(
+    let summary = build_account_summaries_for_store(
+        &store,
         current_account_key.as_deref(),
         current_variant_key.as_deref(),
-    );
+    )
+    .into_iter()
+    .find(|account| account.id == updated_account.id)
+    .unwrap_or_else(|| {
+        updated_account.to_summary(
+            current_account_key.as_deref(),
+            current_variant_key.as_deref(),
+        )
+    });
     save_store(app, &store)?;
     Ok(summary)
 }
@@ -749,14 +850,29 @@ pub(crate) async fn probe_api_account_key_internal(
         profile_files::sync_account_profile_in_store_path(&store_path, account)?;
         let updated_account = account.clone();
 
-        if active_account_id.as_deref() == Some(updated_account.id.as_str()) {
-            profile_files::apply_account_profile(&updated_account)?;
+        if active_account_id.as_deref() == Some(updated_account.id.as_str())
+            || store
+                .settings
+                .active_hybrid_profile
+                .as_ref()
+                .is_some_and(|hybrid| hybrid.relay_account_id == updated_account.id)
+        {
+            apply_current_relay_profile(&store, &updated_account)?;
         }
 
-        let summary = updated_account.to_summary(
+        let summary = build_account_summaries_for_store(
+            &store,
             current_account_key.as_deref(),
             current_variant_key.as_deref(),
-        );
+        )
+        .into_iter()
+        .find(|account| account.id == updated_account.id)
+        .unwrap_or_else(|| {
+            updated_account.to_summary(
+                current_account_key.as_deref(),
+                current_variant_key.as_deref(),
+            )
+        });
         save_store(app, &store)?;
         summary
     };
@@ -893,16 +1009,11 @@ async fn refresh_api_quota_internal(
 
     let current_account_key = current_auth_account_key();
     let current_variant_key = current_auth_variant_key();
-    Ok(store
-        .accounts
-        .iter()
-        .map(|account| {
-            account.to_summary(
-                current_account_key.as_deref(),
-                current_variant_key.as_deref(),
-            )
-        })
-        .collect())
+    Ok(build_account_summaries_for_store(
+        &store,
+        current_account_key.as_deref(),
+        current_variant_key.as_deref(),
+    ))
 }
 
 fn build_api_quota_refresh_targets(
@@ -1095,26 +1206,11 @@ async fn refresh_usage_internal(
     // 与当前 auth 文件重新对齐，确保 current 标签准确。
     let current_account_key = current_auth_account_key();
     let current_variant_key = current_auth_variant_key();
-    let mut summaries: Vec<AccountSummary> = store
-        .accounts
-        .iter()
-        .map(|account| {
-            account.to_summary(
-                current_account_key.as_deref(),
-                current_variant_key.as_deref(),
-            )
-        })
-        .collect();
-
-    if !summaries.iter().any(|account| account.is_current) {
-        if let Some(active_id) = store.settings.active_account_id.as_deref() {
-            if let Some(account) = summaries.iter_mut().find(|account| account.id == active_id) {
-                account.is_current = true;
-            }
-        }
-    }
-
-    Ok(summaries)
+    Ok(build_account_summaries_for_store(
+        &store,
+        current_account_key.as_deref(),
+        current_variant_key.as_deref(),
+    ))
 }
 
 fn build_refresh_targets(
@@ -2553,6 +2649,7 @@ fn normalize_import_source(source: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::build_account_summaries_for_store;
     use super::build_refresh_targets;
     use super::expand_import_json_content;
     use super::probe_failure_message;
@@ -2562,6 +2659,7 @@ mod tests {
     use super::PreparedImport;
     use crate::models::AccountSourceKind;
     use crate::models::AccountsStore;
+    use crate::models::ActiveHybridProfile;
     use crate::models::ProxyHealthStatus;
     use crate::models::ProxyKey;
     use crate::models::StoredAccount;
@@ -2652,6 +2750,77 @@ mod tests {
             auth_refresh_blocked: false,
             auth_refresh_error: None,
         }
+    }
+
+    fn chatgpt_account_for_tests() -> StoredAccount {
+        StoredAccount {
+            id: "chatgpt-settings".to_string(),
+            label: "ChatGPT Settings".to_string(),
+            source_kind: AccountSourceKind::Chatgpt,
+            principal_id: Some("chatgpt@example.com".to_string()),
+            email: Some("chatgpt@example.com".to_string()),
+            account_id: "chatgpt-account".to_string(),
+            plan_type: Some("pro".to_string()),
+            auth_json: json!({ "kind": "chatgpt" }),
+            api_base_url: None,
+            api_key: None,
+            api_keys: Vec::new(),
+            proxy_priority: None,
+            proxy_weight: None,
+            proxy_key_selection_mode: None,
+            proxy_endpoints: Vec::new(),
+            model_name: None,
+            balance_text: None,
+            api_quota_mode: Default::default(),
+            api_quota_today_used_text: None,
+            api_quota_remaining_text: None,
+            api_quota_total_remaining_text: None,
+            api_quota_total_tokens_text: None,
+            api_quota_today_tokens_text: None,
+            api_quota_daily_window: None,
+            api_quota_total_window: None,
+            api_quota_subscription_expires_at: None,
+            provider_id: None,
+            provider_name: None,
+            tags: Vec::new(),
+            profile_auth_path: None,
+            profile_config_path: None,
+            profile_auth_ready: false,
+            profile_config_ready: false,
+            profile_integrity_error: None,
+            profile_last_validated_at: None,
+            profile_last_validation_error: None,
+            added_at: 1,
+            updated_at: 1,
+            usage: None,
+            usage_error: None,
+            auth_refresh_blocked: false,
+            auth_refresh_error: None,
+        }
+    }
+
+    #[test]
+    fn hybrid_summaries_mark_relay_as_current_even_when_auth_matches_chatgpt() {
+        let chatgpt = chatgpt_account_for_tests();
+        let relay = relay_account_for_tests();
+        let chatgpt_variant_key = chatgpt.variant_key();
+        let mut store = AccountsStore::default();
+        store.settings.active_account_id = Some(relay.id.clone());
+        store.settings.active_hybrid_profile = Some(ActiveHybridProfile {
+            chatgpt_account_id: chatgpt.id.clone(),
+            relay_account_id: relay.id.clone(),
+        });
+        store.accounts = vec![chatgpt.clone(), relay.clone()];
+
+        let summaries =
+            build_account_summaries_for_store(&store, None, Some(chatgpt_variant_key.as_str()));
+
+        let current_ids = summaries
+            .iter()
+            .filter(|account| account.is_current)
+            .map(|account| account.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(current_ids, vec![relay.id.as_str()]);
     }
 
     #[test]

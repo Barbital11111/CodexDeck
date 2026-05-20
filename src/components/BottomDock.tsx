@@ -80,11 +80,6 @@ export function BottomDock({
 
   return (
     <nav className="bottomDock" aria-label={copy.bottomDock.ariaLabel}>
-      <div className="dockWindowLights" aria-hidden="true">
-        <span />
-        <span />
-        <span />
-      </div>
       <div className="dockBrand">
         <img className="dockLogoMark" src="/codexdeck.png" alt="" aria-hidden="true" />
         <strong>CodexDeck</strong>

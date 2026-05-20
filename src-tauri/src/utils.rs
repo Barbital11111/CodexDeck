@@ -603,9 +603,11 @@ fn preferred_executable_dir_candidates() -> Vec<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        for dir in [PathBuf::from(
-            r"C:\Program Files\Docker\Docker\resources\bin",
-        )] {
+        for dir in [
+            PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0"),
+            PathBuf::from(r"C:\Windows\SysWOW64\WindowsPowerShell\v1.0"),
+            PathBuf::from(r"C:\Program Files\Docker\Docker\resources\bin"),
+        ] {
             push_unique_candidate(&mut dirs, dir);
         }
     }

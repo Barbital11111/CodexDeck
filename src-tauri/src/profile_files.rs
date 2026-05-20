@@ -41,6 +41,7 @@ const CODEX_PROVIDER_WIRE_API_KEY: &str = "wire_api";
 const CODEX_PROVIDER_WIRE_API_RESPONSES: &str = "responses";
 const CODEX_PROVIDER_REQUIRES_OPENAI_AUTH_KEY: &str = "requires_openai_auth";
 const CODEX_PROVIDER_SUPPORTS_WEBSOCKETS_KEY: &str = "supports_websockets";
+const CODEX_PROVIDER_EXPERIMENTAL_BEARER_TOKEN_KEY: &str = "experimental_bearer_token";
 const CODEXDECK_RELAY_PROVIDER_ID: &str = "codexdeck_api";
 const CODEX_FEATURES_TABLE_KEY: &str = "features";
 const CODEX_RESPONSES_WEBSOCKETS_KEY: &str = "responses_websockets";
@@ -303,6 +304,50 @@ pub(crate) fn apply_account_profile(account: &StoredAccount) -> Result<(), Strin
     let active_config_contents = read_optional_text(&active_config_path)?;
     let merged_config_contents =
         merge_active_codex_profile_config(active_config_contents.as_deref(), &config_contents);
+    write_file_atomically(&active_config_path, merged_config_contents.as_bytes())?;
+    Ok(())
+}
+
+pub(crate) fn apply_hybrid_account_profile(
+    chatgpt_account: &StoredAccount,
+    relay_account: &StoredAccount,
+) -> Result<(), String> {
+    if !matches!(chatgpt_account.source_kind, AccountSourceKind::Chatgpt) {
+        return Err("混合模式需要选择一个 ChatGPT 官方账号。".to_string());
+    }
+    if !matches!(relay_account.source_kind, AccountSourceKind::Relay) {
+        return Err("混合模式需要选择一个 API 条目。".to_string());
+    }
+
+    let base_url = relay_account
+        .api_base_url
+        .as_deref()
+        .ok_or_else(|| RELAY_INCOMPLETE_MESSAGE.to_string())?;
+    let model_name = relay_account
+        .model_name
+        .as_deref()
+        .ok_or_else(|| RELAY_INCOMPLETE_MESSAGE.to_string())?;
+    let api_key = relay_account
+        .primary_relay_api_key()
+        .ok_or_else(|| RELAY_INCOMPLETE_MESSAGE.to_string())?;
+
+    auth::write_active_codex_auth(&chatgpt_account.auth_json)?;
+
+    let active_config_path = current_codex_config_path()?;
+    let parent = active_config_path
+        .parent()
+        .ok_or_else(|| format!("无法解析 Codex 配置目录 {}", active_config_path.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("创建 Codex 配置目录失败 {}: {error}", parent.display()))?;
+    let active_config_contents = read_optional_text(&active_config_path)?;
+    let profile_config = build_hybrid_relay_profile_config(
+        active_config_contents.as_deref(),
+        base_url,
+        model_name,
+        api_key,
+    );
+    let merged_config_contents =
+        merge_active_codex_profile_config(active_config_contents.as_deref(), &profile_config);
     write_file_atomically(&active_config_path, merged_config_contents.as_bytes())?;
     Ok(())
 }
@@ -615,6 +660,35 @@ fn build_relay_profile_config(
     document.to_string()
 }
 
+fn build_hybrid_relay_profile_config(
+    current_config: Option<&str>,
+    base_url: &str,
+    model_name: &str,
+    api_key: &str,
+) -> String {
+    let mut document = parse_config_or_default(current_config);
+    normalize_standard_profile_config(&mut document);
+    disable_responses_websockets(&mut document);
+    document.remove(CODEX_BASE_URL_KEY);
+    document[CODEX_MODEL_KEY] = value(model_name);
+    document[CODEX_MODEL_PROVIDER_KEY] = value(CODEXDECK_RELAY_PROVIDER_ID);
+    document[CODEX_MODEL_PROVIDERS_KEY] = table();
+    document[CODEX_MODEL_PROVIDERS_KEY][CODEXDECK_RELAY_PROVIDER_ID] = table();
+    document[CODEX_MODEL_PROVIDERS_KEY][CODEXDECK_RELAY_PROVIDER_ID][CODEX_PROVIDER_NAME_KEY] =
+        value(CODEXDECK_RELAY_PROVIDER_ID);
+    document[CODEX_MODEL_PROVIDERS_KEY][CODEXDECK_RELAY_PROVIDER_ID][CODEX_PROVIDER_BASE_URL_KEY] =
+        value(base_url);
+    document[CODEX_MODEL_PROVIDERS_KEY][CODEXDECK_RELAY_PROVIDER_ID][CODEX_PROVIDER_WIRE_API_KEY] =
+        value(CODEX_PROVIDER_WIRE_API_RESPONSES);
+    document[CODEX_MODEL_PROVIDERS_KEY][CODEXDECK_RELAY_PROVIDER_ID]
+        [CODEX_PROVIDER_REQUIRES_OPENAI_AUTH_KEY] = value(true);
+    document[CODEX_MODEL_PROVIDERS_KEY][CODEXDECK_RELAY_PROVIDER_ID]
+        [CODEX_PROVIDER_EXPERIMENTAL_BEARER_TOKEN_KEY] = value(api_key);
+    document[CODEX_MODEL_PROVIDERS_KEY][CODEXDECK_RELAY_PROVIDER_ID]
+        [CODEX_PROVIDER_SUPPORTS_WEBSOCKETS_KEY] = value(false);
+    document.to_string()
+}
+
 fn normalize_standard_profile_config(document: &mut DocumentMut) {
     document[CODEX_CREDENTIALS_STORE_KEY] = value(CODEX_CREDENTIALS_STORE_FILE);
     document.remove(CODEX_MODEL_PROVIDER_KEY);
@@ -904,6 +978,7 @@ fn write_file_atomically(path: &Path, contents: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::build_chatgpt_profile_config;
+    use super::build_hybrid_relay_profile_config;
     use super::build_relay_profile_config;
     use super::cleanup_orphan_profiles_in_store_path;
     use super::merge_active_codex_profile_config;
@@ -1004,6 +1079,78 @@ responses_websockets_v2 = true
         assert!(config.contains(r#"wire_api = "responses""#));
         assert!(config.contains("requires_openai_auth = true"));
         assert!(config.contains("supports_websockets = false"));
+    }
+
+    #[test]
+    fn hybrid_profile_config_uses_codexdeck_provider_and_bearer_token() {
+        let config = build_hybrid_relay_profile_config(
+            Some(
+                r#"openai_base_url = "https://old.example.com/v1"
+
+[features]
+experimental_feature = true
+responses_websockets = true
+responses_websockets_v2 = true
+"#,
+            ),
+            "https://relay.example.com/v1",
+            "gpt-5.5",
+            "sk-hybrid-secret",
+        );
+
+        assert!(config.contains(r#"cli_auth_credentials_store = "file""#));
+        assert!(config.contains(r#"model = "gpt-5.5""#));
+        assert!(config.contains(r#"model_provider = "codexdeck_api""#));
+        assert!(!config.contains("openai_base_url"));
+        assert!(config.contains("[model_providers.codexdeck_api]"));
+        assert!(config.contains(r#"name = "codexdeck_api""#));
+        assert!(config.contains(r#"base_url = "https://relay.example.com/v1""#));
+        assert!(config.contains(r#"wire_api = "responses""#));
+        assert!(config.contains("requires_openai_auth = true"));
+        assert!(config.contains(r#"experimental_bearer_token = "sk-hybrid-secret""#));
+        assert!(config.contains("supports_websockets = false"));
+        assert!(config.contains("experimental_feature = true"));
+        assert!(config.contains("responses_websockets = false"));
+        assert!(config.contains("responses_websockets_v2 = false"));
+    }
+
+    #[test]
+    fn hybrid_profile_merge_preserves_user_tables_and_removes_legacy_base_url() {
+        let active = r#"model = "old-model"
+openai_base_url = "https://old.example.com/v1"
+custom_setting = "keep"
+
+[mcp_servers.filesystem]
+command = "node"
+args = ["server.js"]
+
+[projects."D:\\AI\\Project"]
+trust_level = "trusted"
+
+[features]
+experimental_feature = true
+responses_websockets = true
+"#;
+        let profile = build_hybrid_relay_profile_config(
+            Some(active),
+            "https://relay.example.com/v1",
+            "gpt-5.5",
+            "sk-hybrid-secret",
+        );
+
+        let merged = merge_active_codex_profile_config(Some(active), &profile);
+
+        assert!(merged.contains(r#"model = "gpt-5.5""#));
+        assert!(merged.contains(r#"model_provider = "codexdeck_api""#));
+        assert!(!merged.contains("openai_base_url"));
+        assert!(merged.contains("[mcp_servers.filesystem]"));
+        assert!(merged.contains(r#"args = ["server.js"]"#));
+        assert!(merged.contains(r#"[projects."D:\\AI\\Project"]"#));
+        assert!(merged.contains(r#"trust_level = "trusted""#));
+        assert!(merged.contains(r#"custom_setting = "keep""#));
+        assert!(merged.contains(r#"experimental_bearer_token = "sk-hybrid-secret""#));
+        assert!(merged.contains("responses_websockets = false"));
+        assert!(merged.contains("responses_websockets_v2 = false"));
     }
 
     #[test]
@@ -1324,14 +1471,13 @@ model = "relay-model"
             let _ = axum::serve(listener, app).await;
         });
 
-        let result =
-            validate_relay_target(
-                &format!("http://{addr}/v1"),
-                "test-key-probe",
-                "upstream-model",
-            )
-                .await
-                .expect("validate responses-only relay");
+        let result = validate_relay_target(
+            &format!("http://{addr}/v1"),
+            "test-key-probe",
+            "upstream-model",
+        )
+        .await
+        .expect("validate responses-only relay");
 
         assert_eq!(result.endpoints, vec![ProxyEndpointCapability::Responses]);
     }

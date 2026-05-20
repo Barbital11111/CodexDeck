@@ -60,8 +60,7 @@ type RemoteRuntimeState = {
   relayUrl?: string | null;
   bindingCode?: string | null;
   manualCode?: string | null;
-  sessionId?: string | null;
-  deviceId?: string | null;
+  pairingPayload?: string | null;
   expiresAt?: string | null;
   panelUrl?: string | null;
   desktopPort?: string | null;
@@ -184,11 +183,12 @@ function formatTime(value: string | null | undefined) {
   });
 }
 
-function buildQrPayload(address: string | null, code: string | null) {
-  if (!address || !code) {
+function buildQrPayload(pairingPayload: string | null | undefined) {
+  const payload = pairingPayload?.trim();
+  if (!payload) {
     return "CodexDeck Remote Control";
   }
-  return JSON.stringify({ address, code });
+  return payload;
 }
 
 function asRecord(value: unknown): JsonRecord | null {
@@ -349,6 +349,7 @@ export function RemoteControlPage() {
   const manifest = detection?.manifest ?? null;
   const connectionAddress = status?.connectionAddress ?? null;
   const connectionCode = status?.connectionCode ?? null;
+  const pairingPayload = state?.pairingPayload ?? null;
   const hasLastError = Boolean(state?.lastError?.trim());
   const runtimeReady = detection?.available ?? false;
   const statusReachable = status?.reachable ?? false;
@@ -362,8 +363,8 @@ export function RemoteControlPage() {
   const recentLogs = useMemo(() => logEntries(logs), [logs]);
   const consoleRunning = statusReachable && !hasLastError;
   const qrPayload = useMemo(
-    () => buildQrPayload(connectionAddress, connectionCode),
-    [connectionAddress, connectionCode],
+    () => buildQrPayload(pairingPayload),
+    [pairingPayload],
   );
 
   const refreshAll = useCallback(async (quiet = false, preserveReachableStatus = true) => {

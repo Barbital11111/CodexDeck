@@ -848,6 +848,13 @@ pub(crate) struct InstalledEditorApp {
     pub(crate) label: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ActiveHybridProfile {
+    pub(crate) chatgpt_account_id: String,
+    pub(crate) relay_account_id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct AppSettings {
@@ -883,6 +890,8 @@ pub(crate) struct AppSettings {
     pub(crate) codex_launch_path: Option<String>,
     #[serde(default)]
     pub(crate) active_account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) active_hybrid_profile: Option<ActiveHybridProfile>,
     pub(crate) sync_opencode_openai_auth: bool,
     pub(crate) restart_opencode_desktop_on_switch: bool,
     pub(crate) restart_editors_on_switch: bool,
@@ -926,6 +935,7 @@ impl Default for AppSettings {
             quota_alert_one_week_threshold: default_quota_alert_one_week_threshold(),
             codex_launch_path: None,
             active_account_id: None,
+            active_hybrid_profile: None,
             sync_opencode_openai_auth: false,
             restart_opencode_desktop_on_switch: false,
             restart_editors_on_switch: false,

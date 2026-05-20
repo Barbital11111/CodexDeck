@@ -3,11 +3,12 @@ import "./App.css";
 import { AddAccountSection } from "./components/AddAccountSection";
 import { AddAccountDialog } from "./components/AddAccountDialog";
 import { AccountPoolManager } from "./components/AccountPoolManager";
-import { AppTopBar } from "./components/AppTopBar";
 import { BottomDock } from "./components/BottomDock";
+import { HybridLaunchPanel } from "./components/HybridLaunchPanel";
 import { MetaStrip } from "./components/MetaStrip";
 import { NoticeBanner } from "./components/NoticeBanner";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { WindowTitleBar } from "./components/WindowTitleBar";
 import { useCodexController } from "./hooks/useCodexController";
 import { useI18n } from "./i18n/I18nProvider";
 import { useThemeMode } from "./hooks/useThemeMode";
@@ -15,6 +16,7 @@ import type { AccountPoolConfig } from "./types/app";
 
 type AppTab = "accounts" | "notifications" | "remoteControl" | "settings";
 type NotificationViewTab = "settings" | "pipelines" | "templates" | "tests" | "activity";
+const BROWSER_PREVIEW_WINDOW_PARAM = "codexdeckPreviewWindow";
 
 const NotificationsPanel = lazy(() =>
     import("./components/NotificationsPanel").then((module) => ({
@@ -81,8 +83,53 @@ function normalizeApiQuotaProviderBaseUrl(value: string | null | undefined) {
 }
 
 function App() {
+    if (shouldRenderBrowserPreviewWindow()) {
+        return <BrowserPreviewWindow />;
+    }
+
+    return <CodexDeckApp />;
+}
+
+function hasTauriRuntime() {
+    return (
+        typeof window !== "undefined" &&
+        Boolean((window as Window & { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__)
+    );
+}
+
+function shouldRenderBrowserPreviewWindow() {
+    if (typeof window === "undefined" || hasTauriRuntime() || !import.meta.env.DEV) {
+        return false;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    return !params.has(BROWSER_PREVIEW_WINDOW_PARAM);
+}
+
+function BrowserPreviewWindow() {
+    const previewUrl = useMemo(() => {
+        const url = new URL(window.location.href);
+        url.searchParams.set(BROWSER_PREVIEW_WINDOW_PARAM, "1");
+        return `${url.pathname}${url.search}${url.hash}`;
+    }, []);
+
+    return (
+        <div className="browserPreviewHost">
+            <div className="browserPreviewWindow">
+                <iframe
+                    title="CodexDeck browser preview"
+                    src={previewUrl}
+                    allow="clipboard-read; clipboard-write"
+                />
+            </div>
+        </div>
+    );
+}
+
+function CodexDeckApp() {
     const [activeTab, setActiveTab] = useState<AppTab>("accounts");
     const [notificationView, setNotificationView] = useState<NotificationViewTab>("settings");
+    const tauriRuntime = hasTauriRuntime();
     const { copy } = useI18n();
     const { themeMode, toggleTheme } = useThemeMode();
     const {
@@ -137,6 +184,7 @@ function App() {
         onRenameAccountLabel,
         onDelete,
         onSwitch,
+        onSwitchHybrid,
         onSmartSwitch,
         smartSwitching,
     } = useCodexController();
@@ -267,8 +315,9 @@ function App() {
     }, [accounts, refreshApiQuotaForAccountKeys, refreshTokenUsage, refreshUsage, settings.notificationProviders]);
 
     return (
-        <div className="shell">
+        <div className={`shell${tauriRuntime ? " shellHasWindowTitleBar" : ""}`}>
             <div className="ambient" />
+            <WindowTitleBar visible={tauriRuntime} />
             <main className="panel">
                 <BottomDock
                     activeTab={activeTab}
@@ -277,10 +326,6 @@ function App() {
                     onSelectNotificationView={setNotificationView}
                 />
                 <div className="appMainPane">
-                    <AppTopBar
-                        onGoHome={() => setActiveTab("accounts")}
-                    />
-
                     <AddAccountDialog
                         open={addDialogOpen}
                         reauthorizeAccount={reauthorizeAccount}
@@ -328,6 +373,14 @@ function App() {
                                         hideAccountDetails={hideAccountDetails}
                                         onToggleHideAccountDetails={() =>
                                             setHideAccountDetails((current) => !current)
+                                        }
+                                    />
+                                    <HybridLaunchPanel
+                                        accounts={accounts}
+                                        switchingId={switchingId}
+                                        hideAccountDetails={hideAccountDetails}
+                                        onSwitchHybrid={(chatgptAccount, relayAccount) =>
+                                            void onSwitchHybrid(chatgptAccount, relayAccount)
                                         }
                                     />
                                 </div>

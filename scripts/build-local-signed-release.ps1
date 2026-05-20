@@ -281,7 +281,7 @@ function Protect-RemoteRuntimeSensitiveSource {
 
   Get-ChildItem -LiteralPath $StageRoot -Recurse -File -Include "*.js", "*.cjs", "*.mjs" |
     ForEach-Object {
-      $raw = Get-Content -Raw -LiteralPath $_.FullName
+      $raw = [System.IO.File]::ReadAllText($_.FullName, [System.Text.UTF8Encoding]::new($false))
       $containsForbiddenTerm = $false
       foreach ($term in $forbiddenTerms) {
         if ($raw.Contains($term)) {
@@ -296,7 +296,20 @@ function Protect-RemoteRuntimeSensitiveSource {
       $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($raw))
       $wrapped = "const __codexDeckRuntimeSource = `"$encoded`";`n" +
         "eval(Buffer.from(__codexDeckRuntimeSource, `"base64`").toString(`"utf8`"));`n"
-      Set-Content -LiteralPath $_.FullName -Value $wrapped -Encoding UTF8
+      [System.IO.File]::WriteAllText($_.FullName, $wrapped, [System.Text.UTF8Encoding]::new($false))
+    }
+}
+
+function Use-WindowsPowerShellLaunchers {
+  param([string]$StageRoot)
+
+  Get-ChildItem -LiteralPath $StageRoot -File -Filter "*.cmd" |
+    ForEach-Object {
+      $raw = [System.IO.File]::ReadAllText($_.FullName, [System.Text.UTF8Encoding]::new($false))
+      $updated = $raw -replace "(?im)(^|[ \t])pwsh(\.exe)?(?=[ \t])", '$1powershell.exe'
+      if ($updated -ne $raw) {
+        [System.IO.File]::WriteAllText($_.FullName, $updated, [System.Text.UTF8Encoding]::new($false))
+      }
     }
 }
 
@@ -397,6 +410,7 @@ function Sync-RemoteRuntimeResource {
   $stageFullPath = Assert-RepoChildPath -Path $remoteRuntimeStageRoot -ExpectedLeaf "codex-command-runtime" -Label "remote runtime stage"
   Clear-RemoteRuntimeStageRoot -StageRoot $stageFullPath
   Copy-RemoteRuntimeTree -Source $source -Destination $stageFullPath
+  Use-WindowsPowerShellLaunchers -StageRoot $stageFullPath
   Protect-RemoteRuntimeSensitiveSource -StageRoot $stageFullPath
   Assert-RemoteRuntimeManifest -StageRoot $stageFullPath
   Assert-RemoteRuntimeNoForbiddenContent -StageRoot $stageFullPath

@@ -2747,6 +2747,91 @@ export function useCodexController() {
     ],
   );
 
+  const onSwitchHybrid = useCallback(
+    async (chatgptAccount: AccountSummary, relayAccount: AccountSummary) => {
+      const switchingKey = `hybrid:${chatgptAccount.id}:${relayAccount.id}`;
+      setSwitchingId(switchingKey);
+      try {
+        if (isPreviewRuntime()) {
+          const nextAccounts = readPreviewAccounts().map((item) => ({
+            ...item,
+            isCurrent: item.id === relayAccount.id,
+          }));
+          writePreviewAccounts(nextAccounts);
+          applyAccounts(nextAccounts);
+          setNotice({ type: "ok", message: copy.notices.hybridSwitchedOnly });
+          return;
+        }
+
+        const result = await invoke<SwitchAccountResult>("switch_hybrid_account_and_launch", {
+          chatgptAccountId: chatgptAccount.id,
+          relayAccountId: relayAccount.id,
+          workspacePath: null,
+          launchCodex: settings.launchCodexAfterSwitch,
+          restartEditorsOnSwitch: settings.restartEditorsOnSwitch,
+          restartEditorTargets: settings.restartEditorTargets,
+        });
+        await loadAccounts();
+
+        let baseNotice: Notice;
+        if (!settings.launchCodexAfterSwitch) {
+          baseNotice = { type: "ok", message: copy.notices.hybridSwitchedOnly };
+        } else if (result.usedFallbackCli) {
+          baseNotice = {
+            type: "info",
+            message: copy.notices.hybridSwitchedAndLaunchByCli,
+          };
+        } else {
+          baseNotice = { type: "ok", message: copy.notices.hybridSwitchedAndLaunching };
+        }
+
+        if (settings.restartEditorsOnSwitch) {
+          if (result.editorRestartError) {
+            baseNotice = {
+              type: "error",
+              message: copy.notices.editorRestartFailed(
+                baseNotice.message,
+                localizeError(result.editorRestartError),
+              ),
+            };
+          } else if (result.restartedEditorApps.length > 0) {
+            const restartedLabels = result.restartedEditorApps
+              .map((id) => copy.editorAppLabels[id] ?? id)
+              .join(" / ");
+            baseNotice = {
+              ...baseNotice,
+              message: copy.notices.editorsRestarted(baseNotice.message, restartedLabels),
+            };
+          } else {
+            baseNotice = {
+              ...baseNotice,
+              message: copy.notices.noEditorRestarted(baseNotice.message),
+            };
+          }
+        }
+
+        setNotice(baseNotice);
+      } catch (error) {
+        setNotice({
+          type: "error",
+          message: copy.notices.switchFailed(localizeError(String(error))),
+        });
+      } finally {
+        setSwitchingId(null);
+      }
+    },
+    [
+      copy.editorAppLabels,
+      copy.notices,
+      applyAccounts,
+      loadAccounts,
+      localizeError,
+      settings.launchCodexAfterSwitch,
+      settings.restartEditorsOnSwitch,
+      settings.restartEditorTargets,
+    ],
+  );
+
   const onSmartSwitch = useCallback(async () => {
     if (switchingId) {
       return;
@@ -2828,6 +2913,7 @@ export function useCodexController() {
     onProbeApiAccountKey,
     onDelete,
     onSwitch,
+    onSwitchHybrid,
     onSmartSwitch,
     smartSwitching: switchingId !== null,
   };
