@@ -140,7 +140,9 @@ jobs:
           Get-ChildItem -LiteralPath $stageRoot -Force | Where-Object { $_.Name -ne ".gitkeep" } | ForEach-Object {
             Remove-Item -LiteralPath $_.FullName -Recurse -Force
           }
-          Copy-Item -LiteralPath (Join-Path $runtimeRoot "*") -Destination $stageRoot -Recurse -Force
+          Get-ChildItem -LiteralPath $runtimeRoot -Force | ForEach-Object {
+            Copy-Item -LiteralPath $_.FullName -Destination $stageRoot -Recurse -Force
+          }
 
           $runtimeManifest = Get-Content -Raw -LiteralPath (Join-Path $stageRoot "INSTALL-MANIFEST.json") | ConvertFrom-Json
           if ($runtimeManifest.repoRoot -ne "[redacted]") { throw "Runtime manifest repoRoot is not redacted." }
