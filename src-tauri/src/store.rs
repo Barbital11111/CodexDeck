@@ -277,11 +277,45 @@ pub(crate) fn sync_relay_account_profiles_on_startup_in_path(
 
     if apply_active_profile {
         if let Some(account) = active_relay_account {
-            profile_files::apply_account_profile(&account)?;
+            if let Some((chatgpt_account, relay_account)) =
+                current_hybrid_pair_for_relay(&store, &account.id)
+            {
+                profile_files::apply_hybrid_account_profile(&chatgpt_account, &relay_account)?;
+            } else {
+                profile_files::apply_account_profile(&account)?;
+            }
         }
     }
 
     Ok(synced_count)
+}
+
+#[cfg(feature = "desktop")]
+fn current_hybrid_pair_for_relay(
+    store: &AccountsStore,
+    relay_account_id: &str,
+) -> Option<(StoredAccount, StoredAccount)> {
+    let hybrid = store.settings.active_hybrid_profile.as_ref()?;
+    if hybrid.relay_account_id != relay_account_id {
+        return None;
+    }
+    let chatgpt_account = store
+        .accounts
+        .iter()
+        .find(|account| {
+            account.id == hybrid.chatgpt_account_id
+                && matches!(account.source_kind, AccountSourceKind::Chatgpt)
+        })?
+        .clone();
+    let relay_account = store
+        .accounts
+        .iter()
+        .find(|account| {
+            account.id == hybrid.relay_account_id
+                && matches!(account.source_kind, AccountSourceKind::Relay)
+        })?
+        .clone();
+    Some((chatgpt_account, relay_account))
 }
 
 pub(crate) fn update_account_group_refresh_state_in_path(
@@ -444,6 +478,24 @@ fn normalize_loaded_store(path: &Path, mut store: AccountsStore) -> AccountsStor
                 changed = true;
             }
         }
+    }
+
+    if store
+        .settings
+        .active_hybrid_profile
+        .as_ref()
+        .is_some_and(|hybrid| {
+            !store.accounts.iter().any(|account| {
+                account.id == hybrid.chatgpt_account_id
+                    && matches!(account.source_kind, AccountSourceKind::Chatgpt)
+            }) || !store.accounts.iter().any(|account| {
+                account.id == hybrid.relay_account_id
+                    && matches!(account.source_kind, AccountSourceKind::Relay)
+            })
+        })
+    {
+        store.settings.active_hybrid_profile = None;
+        changed = true;
     }
 
     if dedupe_account_variants(&mut store.accounts) {

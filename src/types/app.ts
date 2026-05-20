@@ -305,6 +305,10 @@ export type AppSettings = {
   quotaAlertFiveHourThreshold: number;
   quotaAlertOneWeekThreshold: number;
   codexLaunchPath: string | null;
+  activeHybridProfile?: {
+    chatgptAccountId: string;
+    relayAccountId: string;
+  } | null;
   syncOpencodeOpenaiAuth: boolean;
   restartOpencodeDesktopOnSwitch: boolean;
   restartEditorsOnSwitch: boolean;

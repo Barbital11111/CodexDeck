@@ -1090,6 +1090,7 @@ async fn switch_account_and_launch(
             latest_store.settings.codex_context_window_k,
         )?;
         latest_store.settings.active_account_id = Some(stored_account.id.clone());
+        latest_store.settings.active_hybrid_profile = None;
         account = stored_account.clone();
         store::save_store(&app, &latest_store)?;
     }
@@ -1225,6 +1226,281 @@ async fn switch_account_and_launch(
         opencode_sync_error,
         opencode_desktop_restarted,
         opencode_desktop_restart_error,
+        restarted_editor_apps,
+        editor_restart_error,
+    })
+}
+
+#[tauri::command]
+async fn switch_hybrid_account_and_launch(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    chatgpt_account_id: String,
+    relay_account_id: String,
+    workspace_path: Option<String>,
+    launch_codex: Option<bool>,
+    restart_editors_on_switch: Option<bool>,
+    restart_editor_targets: Option<Vec<EditorAppId>>,
+) -> Result<SwitchAccountResult, String> {
+    let store = {
+        let _guard = state.store_lock.lock().await;
+        store::load_store(&app)?
+    };
+
+    let chatgpt_account = store
+        .accounts
+        .iter()
+        .find(|account| account.id == chatgpt_account_id)
+        .cloned()
+        .ok_or_else(|| "找不到要用于混合模式的 ChatGPT 官方账号".to_string())?;
+    if !matches!(
+        chatgpt_account.source_kind,
+        models::AccountSourceKind::Chatgpt
+    ) {
+        return Err("混合模式需要选择一个 ChatGPT 官方账号。".to_string());
+    }
+    if auth::auth_tokens_need_refresh(&chatgpt_account.auth_json) {
+        if chatgpt_account.auth_refresh_blocked {
+            return Err(format!(
+                "切换混合模式前刷新登录令牌失败: {}",
+                chatgpt_account
+                    .auth_refresh_error
+                    .clone()
+                    .unwrap_or_else(|| "授权过期，请重新登录授权。".to_string())
+            ));
+        }
+
+        let refreshed_auth = match auth::refresh_chatgpt_auth_tokens_serialized(
+            &chatgpt_account.auth_json,
+            &state.auth_refresh_lock,
+        )
+        .await
+        {
+            Ok(refreshed_auth) => refreshed_auth,
+            Err(error) => {
+                let normalized_error = normalize_switch_refresh_error(&error);
+                let should_block_refresh = normalized_error
+                    == "当前账号的 refresh_token 已失效或已被轮换，请重新登录授权。"
+                    || normalized_error == "当前账号授权已过期，请重新登录授权。";
+
+                if should_block_refresh {
+                    let blocked_message = "授权过期，请重新登录授权。";
+                    match app_paths::app_data_dir(&app) {
+                        Ok(data_dir) => {
+                            let store_path = store::account_store_path_from_data_dir(&data_dir);
+                            if let Err(persist_error) =
+                                store::update_account_group_refresh_state_in_path(
+                                    &store_path,
+                                    &chatgpt_account.account_key(),
+                                    None,
+                                    true,
+                                    Some(blocked_message),
+                                    utils::now_unix_seconds(),
+                                    false,
+                                )
+                            {
+                                log::warn!(
+                                    "混合模式切换失败后写回账号停刷状态失败: {persist_error}"
+                                );
+                            }
+                        }
+                        Err(path_error) => {
+                            log::warn!("混合模式切换失败后获取应用数据目录失败: {path_error}");
+                        }
+                    }
+                }
+
+                return Err(format!(
+                    "切换混合模式前刷新登录令牌失败: {normalized_error}"
+                ));
+            }
+        };
+
+        let refreshed_at = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|error| format!("读取系统时间失败: {error}"))?
+            .as_secs() as i64;
+        let _guard = state.store_lock.lock().await;
+        let mut latest_store = store::load_store(&app)?;
+        let stored_account = latest_store
+            .accounts
+            .iter_mut()
+            .find(|stored| stored.id == chatgpt_account_id)
+            .ok_or_else(|| "找不到要用于混合模式的 ChatGPT 官方账号".to_string())?;
+        stored_account.auth_json = refreshed_auth;
+        stored_account.updated_at = refreshed_at;
+        stored_account.auth_refresh_blocked = false;
+        stored_account.auth_refresh_error = None;
+        profile_files::sync_account_profile_in_store_path(
+            &store::account_store_path_from_data_dir(&app_paths::app_data_dir(&app)?),
+            stored_account,
+        )?;
+        store::save_store(&app, &latest_store)?;
+    }
+
+    let should_restart_editors =
+        restart_editors_on_switch.unwrap_or(store.settings.restart_editors_on_switch);
+    let effective_restart_targets =
+        restart_editor_targets.unwrap_or_else(|| store.settings.restart_editor_targets.clone());
+    let configured_codex_launch_path = store.settings.codex_launch_path.clone();
+    let should_launch_codex = launch_codex.unwrap_or(true);
+    let relay_account;
+    {
+        let _guard = state.store_lock.lock().await;
+        let mut latest_store = store::load_store(&app)?;
+        let store_path = store::account_store_path_from_data_dir(&app_paths::app_data_dir(&app)?);
+        let chatgpt_index = latest_store
+            .accounts
+            .iter()
+            .position(|account| account.id == chatgpt_account_id)
+            .ok_or_else(|| "找不到要用于混合模式的 ChatGPT 官方账号".to_string())?;
+        if !matches!(
+            latest_store.accounts[chatgpt_index].source_kind,
+            models::AccountSourceKind::Chatgpt
+        ) {
+            return Err("混合模式需要选择一个 ChatGPT 官方账号。".to_string());
+        }
+        let relay_index = latest_store
+            .accounts
+            .iter()
+            .position(|account| account.id == relay_account_id)
+            .ok_or_else(|| "找不到要用于混合模式的 API 条目".to_string())?;
+        if !matches!(
+            latest_store.accounts[relay_index].source_kind,
+            models::AccountSourceKind::Relay
+        ) {
+            return Err("混合模式需要选择一个 API 条目。".to_string());
+        }
+
+        {
+            let stored_relay = &mut latest_store.accounts[relay_index];
+            profile_files::sync_account_profile_in_store_path(&store_path, stored_relay)?;
+        }
+        let stored_chatgpt = latest_store.accounts[chatgpt_index].clone();
+        let stored_relay = latest_store.accounts[relay_index].clone();
+        profile_files::apply_hybrid_account_profile(&stored_chatgpt, &stored_relay)?;
+
+        let thread_provider_backup_dir = app_paths::codex_state_provider_backup_dir()?;
+        let provider_id = profile_files::relay_provider_id_for_account(&stored_relay)
+            .ok_or_else(|| "API 条目资料不完整".to_string())?;
+        let synced_thread_count = session_provider_sync::sync_codex_thread_providers_for_relay(
+            &provider_id,
+            &thread_provider_backup_dir,
+        )?;
+        if synced_thread_count > 0 {
+            log::info!("混合模式已同步 {synced_thread_count} 条 Codex 线程 provider");
+        }
+        settings_service::apply_active_codex_context_window_setting(
+            latest_store.settings.codex_context_window_k,
+        )?;
+        latest_store.settings.active_account_id = Some(stored_relay.id.clone());
+        latest_store.settings.active_hybrid_profile = Some(models::ActiveHybridProfile {
+            chatgpt_account_id: stored_chatgpt.id.clone(),
+            relay_account_id: stored_relay.id.clone(),
+        });
+        relay_account = stored_relay;
+        store::save_store(&app, &latest_store)?;
+    }
+    let _ = tray::refresh_macos_tray_snapshot(&app);
+
+    let (restarted_editor_apps, editor_restart_error) = if should_restart_editors {
+        editor_apps::restart_selected_editor_apps(&effective_restart_targets)
+    } else {
+        (Vec::new(), None)
+    };
+
+    if !should_launch_codex {
+        return Ok(SwitchAccountResult {
+            account_id: relay_account.account_id,
+            launched_app_path: None,
+            used_fallback_cli: false,
+            opencode_synced: false,
+            opencode_sync_error: None,
+            opencode_desktop_restarted: false,
+            opencode_desktop_restart_error: None,
+            restarted_editor_apps,
+            editor_restart_error,
+        });
+    }
+
+    force_stop_running_codex();
+
+    let mut app_launch_error = None;
+    if let Some(path) = cli::find_configured_codex_app_path(configured_codex_launch_path.as_deref())
+        .or_else(cli::find_codex_app_path)
+    {
+        match launch_codex_app(&path, workspace_path.as_deref()) {
+            Ok(()) => {
+                return Ok(SwitchAccountResult {
+                    account_id: relay_account.account_id,
+                    launched_app_path: Some(path.to_string_lossy().to_string()),
+                    used_fallback_cli: false,
+                    opencode_synced: false,
+                    opencode_sync_error: None,
+                    opencode_desktop_restarted: false,
+                    opencode_desktop_restart_error: None,
+                    restarted_editor_apps,
+                    editor_restart_error,
+                });
+            }
+            Err(error) => {
+                log::warn!("通过 Codex 应用路径启动失败 {}: {}", path.display(), error);
+                app_launch_error = Some(error);
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    if cli::has_windows_store_codex_app() {
+        match cli::launch_windows_store_codex() {
+            Ok(()) => {
+                return Ok(SwitchAccountResult {
+                    account_id: relay_account.account_id,
+                    launched_app_path: None,
+                    used_fallback_cli: false,
+                    opencode_synced: false,
+                    opencode_sync_error: None,
+                    opencode_desktop_restarted: false,
+                    opencode_desktop_restart_error: None,
+                    restarted_editor_apps,
+                    editor_restart_error,
+                });
+            }
+            Err(error) => {
+                log::warn!("通过 Windows Store AUMID 启动 Codex 失败: {error}");
+                app_launch_error = Some(match app_launch_error {
+                    Some(previous_error) => {
+                        format!("{previous_error}；且通过 Windows Store AUMID 启动失败: {error}")
+                    }
+                    None => format!("通过 Windows Store AUMID 启动失败: {error}"),
+                });
+            }
+        }
+    }
+
+    let mut cmd = cli::new_codex_command(configured_codex_launch_path.as_deref())?;
+    cmd.arg("app");
+    if let Some(workspace) = workspace_path.as_deref() {
+        cmd.arg(workspace);
+    }
+    cmd.spawn().map_err(|e| {
+        if let Some(app_launch_error) = app_launch_error.as_ref() {
+            format!(
+                "通过 Codex 应用路径启动失败: {app_launch_error}；且通过 codex app 启动失败: {e}"
+            )
+        } else {
+            format!("未检测到本地 Codex 应用，且通过 codex app 启动失败: {e}")
+        }
+    })?;
+
+    Ok(SwitchAccountResult {
+        account_id: relay_account.account_id,
+        launched_app_path: None,
+        used_fallback_cli: true,
+        opencode_synced: false,
+        opencode_sync_error: None,
+        opencode_desktop_restarted: false,
+        opencode_desktop_restart_error: None,
         restarted_editor_apps,
         editor_restart_error,
     })
@@ -1371,6 +1647,19 @@ fn start_auth_keepalive_loop(app: AppHandle) {
     });
 }
 
+fn apply_main_window_chrome(app: &AppHandle) {
+    let Some(window) = app.get_webview_window("main") else {
+        return;
+    };
+
+    if let Err(err) = window.set_decorations(false) {
+        log::warn!("设置主窗口无系统标题栏失败: {err}");
+    }
+    if let Err(err) = window.set_shadow(true) {
+        log::warn!("设置主窗口阴影失败: {err}");
+    }
+}
+
 // ===== App Bootstrap =====
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -1404,6 +1693,7 @@ pub fn run() {
         .on_window_event(handle_window_close_to_background)
         .setup(|app| {
             utils::prepare_process_path();
+            apply_main_window_chrome(app.handle());
 
             if cfg!(debug_assertions) {
                 app.handle().plugin(
@@ -1484,7 +1774,8 @@ pub fn run() {
             prepare_oauth_login,
             complete_oauth_callback_login,
             cancel_oauth_login,
-            switch_account_and_launch
+            switch_account_and_launch,
+            switch_hybrid_account_and_launch
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application");
