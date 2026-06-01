@@ -430,6 +430,10 @@
   border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
 }
 
+.addApiQuotaSelect {
+  width: 100%;
+}
+
 .addApiQuotaNote {
   display: grid;
   gap: 4px;

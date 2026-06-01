@@ -19,7 +19,6 @@ mod tray;
 mod usage;
 mod utils;
 
-use std::io::ErrorKind;
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
@@ -134,10 +133,10 @@ fn build_oauth_callback_url(redirect_uri: &str, path: &str) -> Result<String, St
 fn bind_oauth_callback_listener(preferred_port: u16) -> Result<(TcpListener, u16), String> {
     match TcpListener::bind(("127.0.0.1", preferred_port)) {
         Ok(listener) => Ok((listener, preferred_port)),
-        Err(error) if error.kind() == ErrorKind::AddrInUse => {
+        Err(error) => {
             let fallback = TcpListener::bind(("127.0.0.1", 0)).map_err(|fallback_error| {
                 format!(
-                    "无法启动 OAuth 回调监听 127.0.0.1:{preferred_port}: {error}；自动回退到空闲端口也失败: {fallback_error}"
+                    "无法启动 OAuth 回调监听 127.0.0.1:{preferred_port}: {error}；自动回退到本地空闲端口也失败: {fallback_error}"
                 )
             })?;
             let port = fallback
@@ -145,15 +144,13 @@ fn bind_oauth_callback_listener(preferred_port: u16) -> Result<(TcpListener, u16
                 .map_err(|addr_error| format!("无法读取 OAuth 回调监听端口: {addr_error}"))?
                 .port();
             log::warn!(
-                "OAuth 回调默认端口 {} 已占用，已自动回退到本地空闲端口 {}",
+                "OAuth 回调默认端口 {} 绑定失败: {}；已自动回退到本地空闲端口 {}",
                 preferred_port,
+                error,
                 port
             );
             Ok((fallback, port))
         }
-        Err(error) => Err(format!(
-            "无法启动 OAuth 回调监听 127.0.0.1:{preferred_port}: {error}"
-        )),
     }
 }
 

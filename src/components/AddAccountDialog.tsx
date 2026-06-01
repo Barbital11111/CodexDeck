@@ -8,9 +8,11 @@ import {
   type InputHTMLAttributes,
 } from "react";
 import { createPortal } from "react-dom";
+import { Select } from "antd";
 import { useI18n } from "../i18n/I18nProvider";
 import type {
   AccountSummary,
+  ApiQuotaMode,
   AuthJsonImportInput,
   CreateApiAccountInput,
   PreparedOauthLogin,
@@ -230,6 +232,27 @@ export function AddAccountDialog({
   const dialogSubtitle = reauthorizeAccount
     ? copy.addAccount.reauthorizeDialogSubtitle(reauthorizeAccount.label)
     : copy.addAccount.dialogSubtitle;
+  const apiQuotaModeOptions = useMemo(
+    () => [
+      {
+        value: "apiOnly" as const,
+        label: copy.accountCard.apiQuotaModeApiOnly,
+      },
+      {
+        value: "platformBasic" as const,
+        label: copy.accountCard.apiQuotaModePlatformBasic,
+      },
+      {
+        value: "platformSubscription" as const,
+        label: copy.accountCard.apiQuotaModePlatformSubscription,
+      },
+      {
+        value: "admin" as const,
+        label: copy.accountCard.apiQuotaModeAdmin,
+      },
+    ],
+    [copy.accountCard],
+  );
 
   const selectedSummary = useMemo(() => {
     if (selectedFiles.length === 0) {
@@ -425,6 +448,13 @@ export function AddAccountDialog({
     }
 
     const apiQuotaMode = apiForm.apiQuotaMode ?? "apiOnly";
+    const hasPlatformLogin = Boolean(
+      apiForm.platformLoginEmail?.trim() && apiForm.platformLoginPassword?.trim(),
+    );
+    const resolvedApiQuotaMode: ApiQuotaMode =
+      apiForm.balanceDisplayEnabled && hasPlatformLogin && apiQuotaMode === "apiOnly"
+        ? "platformBasic"
+        : apiQuotaMode;
     setPendingRoute("api");
     setApiInlineError(null);
     try {
@@ -432,9 +462,11 @@ export function AddAccountDialog({
         ...apiForm,
         tags: parseTagInput(apiTagsInput),
         forceSave,
-        apiQuotaMode,
-        platformLoginEmail: apiQuotaMode === "apiOnly" ? "" : apiForm.platformLoginEmail,
-        platformLoginPassword: apiQuotaMode === "apiOnly" ? "" : apiForm.platformLoginPassword,
+        apiQuotaMode: resolvedApiQuotaMode,
+        platformLoginEmail:
+          resolvedApiQuotaMode === "apiOnly" ? "" : apiForm.platformLoginEmail,
+        platformLoginPassword:
+          resolvedApiQuotaMode === "apiOnly" ? "" : apiForm.platformLoginPassword,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -754,6 +786,30 @@ export function AddAccountDialog({
                         <p>{copy.addAccount.apiQuotaTokenDescription}</p>
                       </div>
                       <div className="addApiFieldGrid">
+                        <label className="addOauthField addApiFieldFull">
+                          <span className="addOauthFieldLabel">
+                            {copy.accountCard.apiQuotaModeLabel}
+                          </span>
+                          <Select
+                            className="addApiQuotaSelect"
+                            value={apiForm.apiQuotaMode ?? "apiOnly"}
+                            options={apiQuotaModeOptions}
+                            onChange={(value: ApiQuotaMode) => {
+                              setApiForm((current) => ({
+                                ...current,
+                                apiQuotaMode: value,
+                                platformLoginEmail:
+                                  value === "apiOnly" ? "" : current.platformLoginEmail,
+                                platformLoginPassword:
+                                  value === "apiOnly" ? "" : current.platformLoginPassword,
+                                forceSave: false,
+                              }));
+                              setApiInlineError(null);
+                              setApiCanForceSave(false);
+                            }}
+                          />
+                        </label>
+
                         <label className="addOauthField">
                           <span className="addOauthFieldLabel">
                             {copy.addAccount.apiPlatformEmailLabel}
