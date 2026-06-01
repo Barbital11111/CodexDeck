@@ -1,14 +1,17 @@
 import { useCallback, useEffect, useState } from "react";
 import type { ThemeMode } from "../types/app";
 
-const THEME_STORAGE_KEY = "codexdeck-theme";
+const THEME_STORAGE_KEY = "codex-switch-theme";
+const LEGACY_THEME_STORAGE_KEY = "codex-tools-theme";
 
 function readInitialTheme(): ThemeMode {
   if (typeof window === "undefined") {
     return "light";
   }
 
-  const saved = window.localStorage.getItem(THEME_STORAGE_KEY);
+  const saved =
+    window.localStorage.getItem(THEME_STORAGE_KEY) ??
+    window.localStorage.getItem(LEGACY_THEME_STORAGE_KEY);
   return saved === "dark" || saved === "light" ? saved : "light";
 }
 

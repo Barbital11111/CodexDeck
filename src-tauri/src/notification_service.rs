@@ -195,6 +195,57 @@ pub(crate) async fn fetch_api_quota_snapshot(
     ))
 }
 
+pub(crate) async fn fetch_newapi_token_quota_snapshot(
+    base_url: &str,
+    api_key: &str,
+) -> Result<ApiQuotaSnapshot, String> {
+    let base_url = normalize_openai_compatible_base_url(required_field(
+        Some(base_url),
+        "请填写 API 平台访问 URL",
+    )?);
+    let api_key = required_field(Some(api_key), "请填写 API Key")?;
+    let base =
+        reqwest::Url::parse(&base_url).map_err(|error| format!("API 平台 URL 无效: {error}"))?;
+    if !matches!(base.scheme(), "http" | "https") {
+        return Err("API 平台 URL 仅支持 http/https".to_string());
+    }
+
+    let client = build_client()?;
+    let mut last_error = None;
+    for endpoint in [
+        format!("{base_url}/api/usage/token/"),
+        format!("{base_url}/api/usage/token"),
+    ] {
+        let response = client
+            .get(&endpoint)
+            .bearer_auth(api_key)
+            .send()
+            .await
+            .map_err(|error| {
+                format!(
+                    "连接 NewAPI 额度接口失败: {}",
+                    sanitize_reqwest_error(error)
+                )
+            })?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            last_error = Some(format!(
+                "NewAPI 额度接口失败 {status}: {}",
+                summarize_api_error_body(&body).unwrap_or_else(|| summarize_response_body(&body))
+            ));
+            continue;
+        }
+
+        let payload = parse_json_body(&body, "NewAPI 额度接口返回格式异常")?;
+        let data = unwrap_data(&payload);
+        return build_newapi_token_quota_snapshot(data)
+            .ok_or_else(|| "NewAPI 额度接口返回缺少 total_available / total_used".to_string());
+    }
+
+    Err(last_error.unwrap_or_else(|| "NewAPI 额度接口失败: 未收到响应".to_string()))
+}
+
 pub(crate) async fn test_notification_target(
     target: NotificationTargetConfig,
 ) -> Result<(), String> {
@@ -715,15 +766,16 @@ fn required_field<'a>(value: Option<&'a str>, message: &str) -> Result<&'a str, 
 }
 
 fn unwrap_data(payload: &Value) -> &Value {
+    let data = payload.get("data");
     if payload
         .get("code")
-        .is_some_and(|value| value == 0 || value == "0")
-        && payload.get("data").is_some()
+        .is_some_and(|value| value == 0 || value == "0" || value == true || value == "true")
+        && data.is_some()
     {
-        return payload.get("data").unwrap_or(payload);
+        return data.unwrap_or(payload);
     }
 
-    if payload.get("data").is_some()
+    if data.is_some()
         && (payload
             .get("success")
             .and_then(Value::as_bool)
@@ -734,7 +786,19 @@ fn unwrap_data(payload: &Value) -> &Value {
                 .and_then(Value::as_str)
                 .is_some_and(|value| value.eq_ignore_ascii_case("success")))
     {
-        return payload.get("data").unwrap_or(payload);
+        return data.unwrap_or(payload);
+    }
+
+    if data.is_some()
+        && payload
+            .get("message")
+            .and_then(Value::as_str)
+            .is_some_and(|value| {
+                let value = value.trim();
+                value.eq_ignore_ascii_case("ok") || value.eq_ignore_ascii_case("success")
+            })
+    {
+        return data.unwrap_or(payload);
     }
 
     payload
@@ -783,6 +847,15 @@ fn provider_display_name(provider: &NotificationProviderConfig) -> String {
 fn normalize_sub2api_base_url(value: &str) -> String {
     let trimmed = value.trim().trim_end_matches('/');
     trimmed.to_string()
+}
+
+fn normalize_openai_compatible_base_url(value: &str) -> String {
+    let trimmed = value.trim().trim_end_matches('/');
+    trimmed
+        .strip_suffix("/api/v1")
+        .or_else(|| trimmed.strip_suffix("/v1"))
+        .unwrap_or(trimmed)
+        .to_string()
 }
 
 fn sub2api_base_url_candidates(value: &str) -> Result<Vec<String>, String> {
@@ -934,6 +1007,15 @@ fn json_optional_i64(value: Option<&Value>) -> Option<i64> {
 
 fn money_text(value: f64) -> String {
     format!("${:.2}", value.max(0.0))
+}
+
+fn quota_text(value: f64) -> String {
+    if value.fract().abs() < f64::EPSILON {
+        format!("{:.0}", value.max(0.0))
+    } else {
+        let text = format!("{:.4}", value.max(0.0));
+        text.trim_end_matches('0').trim_end_matches('.').to_string()
+    }
 }
 
 fn parse_api_time_to_unix(value: Option<&Value>) -> Option<i64> {
@@ -1088,6 +1170,66 @@ fn build_api_quota_snapshot(
         total_window,
         subscription_expires_at,
     }
+}
+
+fn build_newapi_token_quota_snapshot(payload: &Value) -> Option<ApiQuotaSnapshot> {
+    let total_used = json_optional_number(payload.get("total_used"))
+        .or_else(|| json_optional_number(payload.get("used_quota")))
+        .or_else(|| json_optional_number(payload.get("used")));
+    let total_granted = json_optional_number(payload.get("total_granted"))
+        .or_else(|| json_optional_number(payload.get("total_quota")))
+        .or_else(|| json_optional_number(payload.get("quota")));
+    let total_available = json_optional_number(payload.get("total_available"))
+        .or_else(|| json_optional_number(payload.get("remaining_quota")))
+        .or_else(|| json_optional_number(payload.get("available_quota")))
+        .or_else(|| json_optional_number(payload.get("balance")));
+    let has_any_quota =
+        total_used.is_some() || total_granted.is_some() || total_available.is_some();
+    if !has_any_quota {
+        return None;
+    }
+
+    let used = total_used.unwrap_or(0.0).max(0.0);
+    let granted = total_granted.unwrap_or_else(|| used + total_available.unwrap_or(0.0));
+    let available = total_available.unwrap_or_else(|| (granted - used).max(0.0));
+    let unlimited = payload
+        .get("unlimited_quota")
+        .or_else(|| payload.get("unlimited"))
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let used_percent = if unlimited || granted <= 0.0 {
+        0.0
+    } else {
+        ((used / granted) * 100.0).clamp(0.0, 100.0)
+    };
+
+    Some(ApiQuotaSnapshot {
+        mode: crate::models::ApiQuotaMode::ApiOnly,
+        today_used_text: None,
+        remaining_text: Some(if unlimited {
+            "不限量".to_string()
+        } else {
+            quota_text(available)
+        }),
+        total_remaining_text: Some(if unlimited {
+            "不限量".to_string()
+        } else {
+            quota_text(available)
+        }),
+        total_tokens_text: total_granted.map(quota_text),
+        today_tokens_text: total_used.map(quota_text),
+        daily_window: None,
+        total_window: Some(UsageWindow {
+            used_percent,
+            window_seconds: 0,
+            reset_at: parse_api_time_to_unix(payload.get("expires_at"))
+                .or_else(|| parse_api_time_to_unix(payload.get("expire_time")))
+                .or_else(|| parse_api_time_to_unix(payload.get("expired_at"))),
+        }),
+        subscription_expires_at: parse_api_time_to_unix(payload.get("expires_at"))
+            .or_else(|| parse_api_time_to_unix(payload.get("expire_time")))
+            .or_else(|| parse_api_time_to_unix(payload.get("expired_at"))),
+    })
 }
 
 fn report_date_text() -> String {
@@ -1485,6 +1627,8 @@ mod tests {
 
     use super::body_looks_like_non_api_response;
     use super::build_api_quota_snapshot;
+    use super::build_newapi_token_quota_snapshot;
+    use super::normalize_openai_compatible_base_url;
     use super::should_retry_sub2api_base_candidate;
     use super::sub2api_base_url_candidates;
 
@@ -1539,6 +1683,61 @@ mod tests {
             reqwest::StatusCode::UNAUTHORIZED,
             r#"{"code":"INVALID_CREDENTIALS","message":"invalid email or password"}"#
         ));
+    }
+
+    #[test]
+    fn newapi_quota_uses_root_site_for_openai_compatible_base_url() {
+        assert_eq!(
+            normalize_openai_compatible_base_url("https://newapi.example.com/v1/"),
+            "https://newapi.example.com"
+        );
+        assert_eq!(
+            normalize_openai_compatible_base_url("https://newapi.example.com/api/v1"),
+            "https://newapi.example.com"
+        );
+    }
+
+    #[test]
+    fn newapi_token_usage_maps_total_available_payload() {
+        let snapshot = build_newapi_token_quota_snapshot(&json!({
+            "token_name": "CodexDeck",
+            "total_granted": 1000000,
+            "total_used": 250000,
+            "total_available": 750000,
+            "unlimited_quota": false,
+            "expires_at": "2099-01-02T03:04:05Z"
+        }))
+        .expect("newapi quota snapshot");
+
+        assert_eq!(snapshot.mode, crate::models::ApiQuotaMode::ApiOnly);
+        assert_eq!(snapshot.remaining_text.as_deref(), Some("750000"));
+        assert_eq!(snapshot.total_remaining_text.as_deref(), Some("750000"));
+        assert_eq!(snapshot.total_tokens_text.as_deref(), Some("1000000"));
+        assert_eq!(snapshot.today_tokens_text.as_deref(), Some("250000"));
+        assert_eq!(snapshot.total_window.unwrap().used_percent, 25.0);
+        assert!(snapshot.subscription_expires_at.is_some());
+    }
+
+    #[test]
+    fn unwrap_data_accepts_newapi_boolean_code_payload() {
+        let payload = json!({
+            "code": true,
+            "message": "ok",
+            "data": {
+                "total_granted": 500000,
+                "total_used": 12003529,
+                "total_available": -11503529,
+                "unlimited_quota": true
+            }
+        });
+
+        let data = super::unwrap_data(&payload);
+        let snapshot = build_newapi_token_quota_snapshot(data).expect("newapi quota snapshot");
+
+        assert_eq!(snapshot.mode, crate::models::ApiQuotaMode::ApiOnly);
+        assert_eq!(snapshot.remaining_text.as_deref(), Some("不限量"));
+        assert_eq!(snapshot.total_tokens_text.as_deref(), Some("500000"));
+        assert_eq!(snapshot.today_tokens_text.as_deref(), Some("12003529"));
     }
 
     #[test]

@@ -76,7 +76,7 @@ jobs:
           }
 
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
-          "name=CodexDeck $tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "name=Codex Tools $tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "body<<EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           $releaseBody | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
           "EOF" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
@@ -86,14 +86,6 @@ jobs:
         run: |
           if [ -z "${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}" ]; then
             echo "::error::Missing TAURI_SIGNING_PRIVATE_KEY secret. Tauri updater assets (latest.json / .sig) cannot be generated."
-            exit 1
-          fi
-
-      - name: Validate remote runtime source
-        shell: bash
-        run: |
-          if [ -z "${{ secrets.CODEX_COMMAND_RUNTIME_ZIP_URL }}" ]; then
-            echo "::error::Missing CODEX_COMMAND_RUNTIME_ZIP_URL secret. CodexDeck release builds must bundle the sanitized WACodex-command runtime; otherwise the installer would be incomplete."
             exit 1
           fi
 
@@ -111,57 +103,6 @@ jobs:
 
       - name: Install frontend dependencies
         run: npm ci
-
-      - name: Stage remote runtime
-        shell: pwsh
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          $ErrorActionPreference = "Stop"
-          $zipPath = Join-Path $env:RUNNER_TEMP "codex-command-runtime.zip"
-          $extractRoot = Join-Path $env:RUNNER_TEMP "codex-command-runtime"
-          $headers = @{
-            Authorization = "Bearer $env:GITHUB_TOKEN"
-            Accept = "application/octet-stream"
-            "X-GitHub-Api-Version" = "2022-11-28"
-          }
-          Invoke-WebRequest -Uri "${{ secrets.CODEX_COMMAND_RUNTIME_ZIP_URL }}" -Headers $headers -OutFile $zipPath
-          Expand-Archive -LiteralPath $zipPath -DestinationPath $extractRoot -Force
-
-          $manifest = Get-ChildItem -LiteralPath $extractRoot -Recurse -File -Filter "INSTALL-MANIFEST.json" |
-            Select-Object -First 1
-          if (-not $manifest) {
-            throw "Downloaded runtime zip does not contain INSTALL-MANIFEST.json."
-          }
-
-          $runtimeRoot = Split-Path -Parent $manifest.FullName
-          $stageRoot = "src-tauri/resources/codex-command-runtime"
-          New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
-          Get-ChildItem -LiteralPath $stageRoot -Force | Where-Object { $_.Name -ne ".gitkeep" } | ForEach-Object {
-            Remove-Item -LiteralPath $_.FullName -Recurse -Force
-          }
-          Get-ChildItem -LiteralPath $runtimeRoot -Force | ForEach-Object {
-            Copy-Item -LiteralPath $_.FullName -Destination $stageRoot -Recurse -Force
-          }
-
-          $runtimeManifest = Get-Content -Raw -LiteralPath (Join-Path $stageRoot "INSTALL-MANIFEST.json") | ConvertFrom-Json
-          if ($runtimeManifest.repoRoot -ne "[redacted]") { throw "Runtime manifest repoRoot is not redacted." }
-          if ($runtimeManifest.installRoot -ne ".") { throw "Runtime manifest installRoot must be '.'." }
-          if ($runtimeManifest.localPathsRedacted -ne $true) { throw "Runtime manifest localPathsRedacted must be true." }
-          if ($runtimeManifest.runtimeStateIncluded -ne $false) { throw "Runtime manifest runtimeStateIncluded must be false." }
-
-          foreach ($relativePath in @(
-            "runtime/logs",
-            "runtime/device-state",
-            "runtime/codex-user-data",
-            "runtime/codex-desktop-app",
-            "runtime/bridge.pid",
-            "runtime/relay.pid"
-          )) {
-            if (Test-Path -LiteralPath (Join-Path $stageRoot $relativePath)) {
-              throw "Runtime zip contains forbidden state path: $relativePath"
-            }
-          }
 
       - name: Build and publish release
         uses: tauri-apps/tauri-action@v0.6.2

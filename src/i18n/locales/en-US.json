@@ -18,8 +18,6 @@
     "ariaLabel": "Account overview",
     "accountCount": "Accounts",
     "currentActive": "Active now",
-    "tokensSession": "Session tokens",
-    "tokens24h": "24h tokens",
     "tokens7d": "7d tokens",
     "tokens30d": "30d tokens",
     "tokensPending": "Reading local Codex token logs",
@@ -28,6 +26,18 @@
     "tokensEvents": "Token events",
     "tokensFailedSources": "Read failures",
     "exportAll": "Export all"
+  },
+  "exportDialog": {
+    "title": "Choose export format",
+    "allDescription": "Choose the account file format to export.",
+    "selectedDescription": "{{count}} accounts selected. Choose the file format to export.",
+    "singleDescription": "Choose the export file format for this account.",
+    "codexDeckTitle": "CodexDeck backup format",
+    "codexDeckDescription": "Export a zip backup for CodexDeck restore or migration.",
+    "sub2apiTitle": "Sub2API import format",
+    "sub2apiDescription": "Export account JSON that sub2api can import; exporting all accounts combines multiple accounts into one file.",
+    "ok": "Export",
+    "cancel": "Cancel"
   },
   "addAccount": {
     "smartSwitch": "Smart switch",
@@ -113,6 +123,7 @@
     "apiBadge": "API",
     "profileIncomplete": "Profile incomplete",
     "validationFailed": "Validation failed",
+    "enhancedLaunchLabel": "Enhanced mode",
     "providerLabel": "Provider",
     "endpointLabel": "Endpoint",
     "modelLabel": "Model",
@@ -171,6 +182,7 @@
     "reorder": "Reorder",
     "refreshQuota": "Refresh quota",
     "refreshQuotaEmpty": "No native accounts in this pool to refresh",
+    "exportGroup": "Bulk export",
     "renamePlaceholder": "Enter pool name",
     "delete": "Delete pool",
     "deleteConfirmTitle": "Delete this pool?",
@@ -436,6 +448,11 @@
       "label": "Include API in smart switch (when signed-in accounts run out of quota)",
       "checkedText": "On",
       "uncheckedText": "Off"
+    },
+    "apiEnhancedLaunch": {
+      "label": "Default enhanced launch for pure API",
+      "checkedText": "Inject page enhancements after pure API switch",
+      "uncheckedText": "Use normal launch for pure API"
     },
     "autoRefresh": {
       "label": "Auto refresh usage in background",

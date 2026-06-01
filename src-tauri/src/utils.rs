@@ -603,11 +603,9 @@ fn preferred_executable_dir_candidates() -> Vec<PathBuf> {
 
     #[cfg(target_os = "windows")]
     {
-        for dir in [
-            PathBuf::from(r"C:\Windows\System32\WindowsPowerShell\v1.0"),
-            PathBuf::from(r"C:\Windows\SysWOW64\WindowsPowerShell\v1.0"),
-            PathBuf::from(r"C:\Program Files\Docker\Docker\resources\bin"),
-        ] {
+        for dir in [PathBuf::from(
+            r"C:\Program Files\Docker\Docker\resources\bin",
+        )] {
             push_unique_candidate(&mut dirs, dir);
         }
     }
@@ -695,7 +693,7 @@ mod tests {
 
     fn unique_test_dir(name: &str) -> PathBuf {
         let unique = format!(
-            "codexdeck-utils-test-{name}-{}-{}",
+            "codex-tools-utils-test-{name}-{}-{}",
             std::process::id(),
             now_unix_seconds()
         );
@@ -735,7 +733,7 @@ mod tests {
         let sandbox = unique_test_dir("cargo-home");
         let cargo_home = sandbox.join("cargo-home");
         let bin_dir = cargo_home.join("bin");
-        let command_name = "codexdeck-test-probe";
+        let command_name = "codex-tools-test-probe";
         fs::create_dir_all(&bin_dir).expect("create cargo bin dir");
         let cargo_path = write_test_command(&bin_dir, command_name);
 

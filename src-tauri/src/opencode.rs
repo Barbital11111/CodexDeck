@@ -704,7 +704,7 @@ mod tests {
             .unwrap_or_default()
             .as_nanos();
         std::env::temp_dir()
-            .join("codexdeck-tests")
+            .join("codex-tools-tests")
             .join(format!("{unique}"))
             .join(name)
     }

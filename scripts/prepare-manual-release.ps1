@@ -65,7 +65,7 @@ if (-not $nsisInstaller -or -not $nsisSignature) {
 
 $notes = ""
 if ($NotesPath) {
-  $notes = [System.IO.File]::ReadAllText($NotesPath, [System.Text.UTF8Encoding]::new($false))
+  $notes = Get-Content -Raw -Encoding UTF8 -LiteralPath $NotesPath
 }
 
 $outputDir = Join-Path $repoRoot "release/$Tag"
@@ -92,8 +92,7 @@ $latestJson = [ordered]@{
 }
 
 $latestJsonPath = Join-Path $outputDir "latest.json"
-$latestJsonContent = $latestJson | ConvertTo-Json -Depth 6
-[System.IO.File]::WriteAllText($latestJsonPath, $latestJsonContent, [System.Text.UTF8Encoding]::new($false))
+$latestJson | ConvertTo-Json -Depth 6 | Set-Content -Encoding utf8 $latestJsonPath
 
 Write-Host ""
 Write-Host "Manual release assets prepared:" -ForegroundColor Green

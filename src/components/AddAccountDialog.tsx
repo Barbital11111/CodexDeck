@@ -424,6 +424,7 @@ export function AddAccountDialog({
       return;
     }
 
+    const apiQuotaMode = apiForm.apiQuotaMode ?? "apiOnly";
     setPendingRoute("api");
     setApiInlineError(null);
     try {
@@ -431,6 +432,9 @@ export function AddAccountDialog({
         ...apiForm,
         tags: parseTagInput(apiTagsInput),
         forceSave,
+        apiQuotaMode,
+        platformLoginEmail: apiQuotaMode === "apiOnly" ? "" : apiForm.platformLoginEmail,
+        platformLoginPassword: apiQuotaMode === "apiOnly" ? "" : apiForm.platformLoginPassword,
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

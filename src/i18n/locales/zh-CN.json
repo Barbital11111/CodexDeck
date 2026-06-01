@@ -18,8 +18,6 @@
     "ariaLabel": "账号概览",
     "accountCount": "账号数",
     "currentActive": "当前活跃",
-    "tokensSession": "会话 Token",
-    "tokens24h": "24h Token",
     "tokens7d": "7d Token",
     "tokens30d": "30d Token",
     "tokensPending": "正在读取本机 Codex token 日志",
@@ -28,6 +26,18 @@
     "tokensEvents": "Token 事件",
     "tokensFailedSources": "读取失败",
     "exportAll": "全部导出"
+  },
+  "exportDialog": {
+    "title": "选择导出格式",
+    "allDescription": "选择要导出的账号文件格式。",
+    "selectedDescription": "已选择 {{count}} 个账号，选择要导出的文件格式。",
+    "singleDescription": "选择这个账号的导出文件格式。",
+    "codexDeckTitle": "CodexDeck 备份格式",
+    "codexDeckDescription": "导出 zip 备份，可用于 CodexDeck 恢复或迁移。",
+    "sub2apiTitle": "Sub2API 导入格式",
+    "sub2apiDescription": "导出 sub2api 可导入的账号 JSON；全部导出时会把多个账号合并到一个文件。",
+    "ok": "导出",
+    "cancel": "取消"
   },
   "addAccount": {
     "smartSwitch": "智能切换",
@@ -122,6 +132,7 @@
     "apiBadge": "API",
     "profileIncomplete": "配置不完整",
     "validationFailed": "最近检测失败",
+    "enhancedLaunchLabel": "增强模式",
     "providerLabel": "Provider",
     "endpointLabel": "接口",
     "modelLabel": "模型",
@@ -214,6 +225,7 @@
     "reorder": "重排序",
     "refreshQuota": "查询配额",
     "refreshQuotaEmpty": "分组内没有可查询的原生账号",
+    "exportGroup": "批量导出",
     "renamePlaceholder": "输入分组名称",
     "delete": "删除分组",
     "deleteConfirmTitle": "删除分组？",
@@ -548,6 +560,11 @@
       "label": "智能切换包含 API（当账号登录无足够限额时）",
       "checkedText": "开启",
       "uncheckedText": "关闭"
+    },
+    "apiEnhancedLaunch": {
+      "label": "纯 API 默认增强启动",
+      "checkedText": "纯 API 切换后注入页面增强",
+      "uncheckedText": "纯 API 使用普通启动"
     },
     "autoRefresh": {
       "label": "后台自动刷新用量",

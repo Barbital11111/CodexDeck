@@ -123,10 +123,16 @@ pub(crate) fn has_windows_store_codex_app() -> bool {
 
 #[cfg(target_os = "windows")]
 pub(crate) fn launch_windows_store_codex() -> Result<(), String> {
+    launch_windows_store_codex_with_args(&[])
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn launch_windows_store_codex_with_args(arguments: &[String]) -> Result<(), String> {
     let app_id = find_windows_codex_store_app_id()
         .ok_or_else(|| "未找到微软商店版 Codex 的启动标识（AUMID）。".to_string())?;
     let baseline_pids = list_running_windows_codex_process_ids();
-    let process_id = activate_windows_store_codex_by_aumid(&app_id)?;
+    let process_id =
+        activate_windows_store_codex_by_aumid(&app_id, &windows_command_line_arguments(arguments))?;
     if wait_for_windows_store_codex_process(process_id, &baseline_pids) {
         Ok(())
     } else {
@@ -544,16 +550,57 @@ if ($match) {
 }
 
 #[cfg(target_os = "windows")]
-fn activate_windows_store_codex_by_aumid(app_id: &str) -> Result<u32, String> {
+fn activate_windows_store_codex_by_aumid(app_id: &str, arguments: &str) -> Result<u32, String> {
     let _com_guard = WindowsComGuard::initialize()?;
     let activation_manager: IApplicationActivationManager =
         unsafe { CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER) }
             .map_err(|error| format!("创建微软商店激活管理器失败: {error}"))?;
 
     let app_id = HSTRING::from(app_id);
-    let arguments = HSTRING::new();
+    let arguments = HSTRING::from(arguments);
     unsafe { activation_manager.ActivateApplication(&app_id, &arguments, AO_NONE) }
         .map_err(|error| format!("通过 AUMID 激活 Codex 失败: {error}"))
+}
+
+#[cfg(target_os = "windows")]
+fn windows_command_line_arguments(arguments: &[String]) -> String {
+    arguments
+        .iter()
+        .map(|argument| quote_windows_argument(argument))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+#[cfg(target_os = "windows")]
+fn quote_windows_argument(argument: &str) -> String {
+    if !argument.is_empty()
+        && !argument
+            .chars()
+            .any(|ch| matches!(ch, ' ' | '\t' | '\n' | '\r' | '"'))
+    {
+        return argument.to_string();
+    }
+
+    let mut quoted = String::from("\"");
+    let mut backslashes = 0usize;
+    for ch in argument.chars() {
+        match ch {
+            '\\' => backslashes += 1,
+            '"' => {
+                quoted.push_str(&"\\".repeat(backslashes * 2 + 1));
+                quoted.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                quoted.push_str(&"\\".repeat(backslashes));
+                backslashes = 0;
+                quoted.push(ch);
+            }
+        }
+    }
+    quoted.push_str(&"\\".repeat(backslashes * 2));
+    quoted.push('"');
+    quoted
 }
 
 #[cfg(target_os = "windows")]

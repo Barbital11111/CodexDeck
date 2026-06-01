@@ -193,6 +193,7 @@ pub(crate) fn sync_current_auth_account_on_startup_in_path(path: &Path) -> Resul
         proxy_endpoints: Vec::new(),
         model_name: None,
         balance_text: None,
+        balance_display_enabled: false,
         api_quota_mode: Default::default(),
         api_quota_today_used_text: None,
         api_quota_remaining_text: None,
@@ -819,7 +820,7 @@ mod tests {
     use uuid::Uuid;
 
     fn temp_dir() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("codexdeck-store-test-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("codex-tools-store-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
     }
@@ -845,6 +846,7 @@ mod tests {
                 proxy_endpoints: Vec::new(),
                 model_name: None,
                 balance_text: None,
+                balance_display_enabled: false,
                 api_quota_mode: Default::default(),
                 api_quota_today_used_text: None,
                 api_quota_remaining_text: None,
@@ -955,6 +957,7 @@ mod tests {
                 proxy_endpoints: Vec::new(),
                 model_name: None,
                 balance_text: None,
+                balance_display_enabled: false,
                 api_quota_mode: Default::default(),
                 api_quota_today_used_text: None,
                 api_quota_remaining_text: None,
@@ -1085,7 +1088,7 @@ mod tests {
                     "planType": "api",
                     "authJson": {},
                     "apiBaseUrl": "https://api.example.com/v1/",
-                    "apiKey": "test-key-secret",
+                    "apiKey": "sk-secret",
                     "modelName": "gpt-5.4",
                     "balanceText": null,
                     "providerId": null,
@@ -1147,7 +1150,7 @@ mod tests {
                 plan_type: Some("api".to_string()),
                 auth_json: json!({}),
                 api_base_url: Some("https://api.example.com/v1".to_string()),
-                api_key: Some("test-key-secret".to_string()),
+                api_key: Some("sk-secret".to_string()),
                 api_keys: Vec::new(),
                 proxy_priority: None,
                 proxy_weight: None,
@@ -1155,6 +1158,7 @@ mod tests {
                 proxy_endpoints: Vec::new(),
                 model_name: Some("gpt-5.5".to_string()),
                 balance_text: None,
+                balance_display_enabled: false,
                 api_quota_mode: Default::default(),
                 api_quota_today_used_text: None,
                 api_quota_remaining_text: None,
@@ -1229,11 +1233,11 @@ mod tests {
                     "planType": "api",
                     "authJson": {},
                     "apiBaseUrl": "https://api.example.com/v1/",
-                    "apiKey": "test-key-secret",
+                    "apiKey": "sk-secret",
                     "apiKeys": [{
                         "id": "key-a",
                         "label": "A",
-                        "secret": "test-key-secret",
+                        "secret": "sk-secret",
                         "enabled": true,
                         "priority": 100,
                         "weight": 100,
@@ -1306,11 +1310,11 @@ mod tests {
                     "planType": "api",
                     "authJson": {},
                     "apiBaseUrl": "https://api.example.com/v1/",
-                    "apiKey": "test-key-secret",
+                    "apiKey": "sk-secret",
                     "apiKeys": [{
                         "id": "key-a",
                         "label": "A",
-                        "secret": "test-key-a",
+                        "secret": "sk-a",
                         "enabled": true,
                         "priority": 100,
                         "weight": 100,
@@ -1395,11 +1399,11 @@ mod tests {
                     "planType": "api",
                     "authJson": {},
                     "apiBaseUrl": "https://api.example.com/v1/",
-                    "apiKey": "test-key-secret",
+                    "apiKey": "sk-secret",
                     "apiKeys": [{
                         "id": "key-a",
                         "label": "A",
-                        "secret": "test-key-a",
+                        "secret": "sk-a",
                         "enabled": true,
                         "priority": 100,
                         "weight": 100,

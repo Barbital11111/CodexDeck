@@ -18,8 +18,6 @@
     "ariaLabel": "Обзор аккаунтов",
     "accountCount": "Аккаунты",
     "currentActive": "Активен сейчас",
-    "tokensSession": "Токены сессии",
-    "tokens24h": "Токены 24h",
     "tokens7d": "Токены 7d",
     "tokens30d": "Токены 30d",
     "tokensPending": "Чтение локальных журналов token Codex",
@@ -28,6 +26,18 @@
     "tokensEvents": "События token",
     "tokensFailedSources": "Ошибки чтения",
     "exportAll": "Экспортировать все"
+  },
+  "exportDialog": {
+    "title": "Выберите формат экспорта",
+    "allDescription": "Выберите формат файла аккаунтов для экспорта.",
+    "selectedDescription": "Выбрано аккаунтов: {{count}}. Выберите формат экспорта.",
+    "singleDescription": "Выберите формат экспорта для этого аккаунта.",
+    "codexDeckTitle": "Формат резервной копии CodexDeck",
+    "codexDeckDescription": "Экспорт zip-копии для восстановления или переноса в CodexDeck.",
+    "sub2apiTitle": "Формат импорта Sub2API",
+    "sub2apiDescription": "Экспорт JSON аккаунтов для импорта в sub2api; при экспорте всех аккаунтов несколько записей объединяются в один файл.",
+    "ok": "Экспорт",
+    "cancel": "Отмена"
   },
   "addAccount": {
     "smartSwitch": "Умное переключение",
@@ -113,6 +123,7 @@
     "apiBadge": "API",
     "profileIncomplete": "Profile incomplete",
     "validationFailed": "Validation failed",
+    "enhancedLaunchLabel": "Enhanced mode",
     "providerLabel": "Provider",
     "endpointLabel": "Endpoint",
     "modelLabel": "Model",
@@ -171,6 +182,7 @@
     "reorder": "Сортировать",
     "refreshQuota": "Обновить квоты",
     "refreshQuotaEmpty": "В этой группе нет нативных аккаунтов для обновления",
+    "exportGroup": "Массовый экспорт",
     "renamePlaceholder": "Введите имя группы",
     "delete": "Удалить группу",
     "deleteConfirmTitle": "Удалить эту группу?",
@@ -436,6 +448,11 @@
       "label": "Включать API в умное переключение (когда у аккаунтов входа не хватает квоты)",
       "checkedText": "Вкл",
       "uncheckedText": "Выкл"
+    },
+    "apiEnhancedLaunch": {
+      "label": "Расширенный запуск по умолчанию для чистого API",
+      "checkedText": "Внедрять улучшения страницы после переключения API",
+      "uncheckedText": "Обычный запуск для чистого API"
     },
     "autoRefresh": {
       "label": "Автообновление использования",

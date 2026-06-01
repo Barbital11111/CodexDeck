@@ -2,7 +2,7 @@
 
 ## Project
 
-CodexDeck is a React + Tauri desktop console for managing Codex accounts, external API profiles, usage, account switching, notifications, and an external remote-control runtime.
+Codex Switch is a React + Tauri desktop console for managing Codex accounts, external API profiles, usage, account switching, and upcoming quota notifications.
 
 ## Local Path And Privacy Rules
 

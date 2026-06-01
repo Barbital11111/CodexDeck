@@ -41,6 +41,7 @@ type AccountCardProps = {
   notificationProviders: NotificationProviderConfig[];
   usageDisplayMode: TrayUsageDisplayMode;
   hideAccountDetails: boolean;
+  apiEnhancedLaunchEnabled: boolean;
   onExport: (account: AccountSummary) => void;
   onReauthorize: (account: AccountSummary) => void;
   onRename: (account: AccountSummary, label: string) => Promise<boolean>;
@@ -159,11 +160,21 @@ function hasProviderLogin(provider: NotificationProviderConfig | null | undefine
   return Boolean(provider?.email.trim() && provider.password?.trim());
 }
 
+function isApiQuotaErrorMessage(message: string | null | undefined) {
+  return Boolean(
+    message &&
+      (message.includes("NewAPI 额度接口") ||
+        message.includes("连接 NewAPI 额度接口失败") ||
+        message.includes("API 平台连接失败") ||
+        message.includes("API 平台 URL 无效")),
+  );
+}
+
 function resolveQuotaMode(
   account: AccountSummary,
   provider: NotificationProviderConfig | null,
 ): ApiQuotaMode {
-  if (account.apiQuotaMode && account.apiQuotaMode !== "apiOnly") {
+  if (account.apiQuotaMode) {
     return account.apiQuotaMode;
   }
 
@@ -191,6 +202,7 @@ export function AccountCard({
   notificationProviders,
   usageDisplayMode,
   hideAccountDetails,
+  apiEnhancedLaunchEnabled,
   onExport,
   onReauthorize,
   onRename,
@@ -286,12 +298,22 @@ export function AccountCard({
     selectedAccount,
     notificationProviders,
   );
-  const hasApiQuotaRefresh = isRelay && hasProviderLogin(matchingNotificationProvider);
+  const profileLastValidationError =
+    !selectedAccount.balanceDisplayEnabled &&
+    isApiQuotaErrorMessage(selectedAccount.profileLastValidationError)
+      ? null
+      : selectedAccount.profileLastValidationError;
+  const hasApiQuotaRefresh =
+    isRelay &&
+    selectedAccount.balanceDisplayEnabled &&
+    (hasProviderLogin(matchingNotificationProvider) ||
+      selectedAccount.apiQuotaMode === "apiOnly");
   const rawApiQuotaMode = resolveQuotaMode(selectedAccount, matchingNotificationProvider);
   const resolvedApiQuotaMode =
     rawApiQuotaMode === "platformSubscription" && !hasApiSubscriptionUsage
       ? "platformBasic"
       : rawApiQuotaMode;
+  const shouldShowApiQuotaPanel = isRelay && selectedAccount.balanceDisplayEnabled;
   const normalizedDraftLabel = draftLabel.trim();
   const normalizedDraftApiLabel = draftApiLabel.trim();
   const normalizedDraftApiBaseUrl = draftApiBaseUrl.trim();
@@ -309,7 +331,7 @@ export function AccountCard({
   );
   const footerErrors = [
     selectedAccount.profileIntegrityError,
-    selectedAccount.profileLastValidationError,
+    profileLastValidationError,
     shouldShowAuthRefreshError ? selectedAccount.authRefreshError : null,
     selectedAccount.usageError,
   ].filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index);
@@ -345,11 +367,13 @@ export function AccountCard({
     setDraftApiBaseUrl(selectedAccount.apiBaseUrl ?? "");
     setDraftApiKey("");
     setDraftApiModelName(selectedAccount.modelName ?? "");
-    setDraftApiBalanceEnabled(Boolean(apiBalanceSource) || resolvedApiQuotaMode !== "apiOnly");
+    setDraftApiBalanceEnabled(selectedAccount.balanceDisplayEnabled);
     setDraftApiQuotaMode(resolvedApiQuotaMode);
     setDraftApiQuotaTodayUsedText(selectedAccount.apiQuotaTodayUsedText ?? "");
     setDraftApiQuotaRemainingText(selectedAccount.apiQuotaRemainingText ?? "");
-    setDraftApiPlatformEmail(matchingNotificationProvider?.email ?? "");
+    setDraftApiPlatformEmail(
+      resolvedApiQuotaMode === "apiOnly" ? "" : matchingNotificationProvider?.email ?? "",
+    );
     setDraftApiPlatformPassword("");
     setIsEditingApi(true);
   };
@@ -359,11 +383,13 @@ export function AccountCard({
     setDraftApiBaseUrl(selectedAccount.apiBaseUrl ?? "");
     setDraftApiKey("");
     setDraftApiModelName(selectedAccount.modelName ?? "");
-    setDraftApiBalanceEnabled(Boolean(apiBalanceSource) || resolvedApiQuotaMode !== "apiOnly");
+    setDraftApiBalanceEnabled(selectedAccount.balanceDisplayEnabled);
     setDraftApiQuotaMode(resolvedApiQuotaMode);
     setDraftApiQuotaTodayUsedText(selectedAccount.apiQuotaTodayUsedText ?? "");
     setDraftApiQuotaRemainingText(selectedAccount.apiQuotaRemainingText ?? "");
-    setDraftApiPlatformEmail(matchingNotificationProvider?.email ?? "");
+    setDraftApiPlatformEmail(
+      resolvedApiQuotaMode === "apiOnly" ? "" : matchingNotificationProvider?.email ?? "",
+    );
     setDraftApiPlatformPassword("");
     setIsEditingApi(false);
   };
@@ -399,7 +425,7 @@ export function AccountCard({
       normalizedDraftApiLabel === selectedAccount.label.trim() &&
       normalizedDraftApiBaseUrl === (selectedAccount.apiBaseUrl ?? "").trim() &&
       normalizedDraftApiModelName === (selectedAccount.modelName ?? "").trim() &&
-      draftApiBalanceEnabled === Boolean(apiBalanceSource) &&
+      draftApiBalanceEnabled === selectedAccount.balanceDisplayEnabled &&
       draftApiQuotaMode === resolvedApiQuotaMode &&
       normalizedDraftApiQuotaTodayUsedText ===
         (selectedAccount.apiQuotaTodayUsedText ?? "").trim() &&
@@ -412,6 +438,15 @@ export function AccountCard({
       setIsEditingApi(false);
       return;
     }
+
+    const platformLoginEmail =
+      draftApiQuotaMode === "apiOnly" ? "" : normalizedDraftApiPlatformEmail;
+    const platformLoginPassword =
+      draftApiQuotaMode === "apiOnly"
+        ? ""
+        : normalizedDraftApiPlatformPassword ||
+          (normalizedDraftApiPlatformEmail ? matchingNotificationProvider?.password?.trim() : "") ||
+          "";
 
     const updated = await onUpdateApiAccount(selectedAccount, {
       label: normalizedDraftApiLabel,
@@ -426,11 +461,8 @@ export function AccountCard({
       apiQuotaRemainingText: canEditApiQuotaDisplay
         ? normalizedDraftApiQuotaRemainingText || null
         : null,
-      platformLoginEmail: normalizedDraftApiPlatformEmail,
-      platformLoginPassword:
-        normalizedDraftApiPlatformPassword ||
-        (normalizedDraftApiPlatformEmail ? matchingNotificationProvider?.password?.trim() : "") ||
-        "",
+      platformLoginEmail,
+      platformLoginPassword,
     });
     if (updated) {
       setDraftApiKey("");
@@ -469,7 +501,7 @@ export function AccountCard({
                 {selectedAccount.profileIntegrityError ? (
                   <span className="cardBadge stateBadge">{copy.accountCard.profileIncomplete}</span>
                 ) : null}
-                {selectedAccount.profileLastValidationError ? (
+                {profileLastValidationError ? (
                   <span className="cardBadge stateBadge">{copy.accountCard.validationFailed}</span>
                 ) : null}
                 {selectedAccount.isCurrent ? (
@@ -581,12 +613,12 @@ export function AccountCard({
 
       {isRelay ? (
         <div className="relayInfoPanel">
-          {resolvedApiQuotaMode === "apiOnly" ? (
+          {shouldShowApiQuotaPanel && resolvedApiQuotaMode === "apiOnly" ? (
             <section className="apiQuotaPanel apiQuotaPanel-single" aria-label={copy.accountCard.apiQuotaTitle}>
               <span>{copy.accountCard.balanceLabel}</span>
               <strong>{apiBalanceText}</strong>
             </section>
-          ) : resolvedApiQuotaMode === "platformBasic" ? (
+          ) : shouldShowApiQuotaPanel && resolvedApiQuotaMode === "platformBasic" ? (
             <section className="apiQuotaPanel" aria-label={copy.accountCard.apiQuotaTitle}>
               <div className="apiQuotaGrid">
                 <div className="apiQuotaMetric">
@@ -599,7 +631,7 @@ export function AccountCard({
                 </div>
               </div>
             </section>
-          ) : resolvedApiQuotaMode === "platformSubscription" ? (
+          ) : shouldShowApiQuotaPanel && resolvedApiQuotaMode === "platformSubscription" ? (
             <section className="apiQuotaPanel apiQuotaUsagePanel" aria-label={copy.accountCard.apiQuotaTitle}>
               <UsageDial
                 accent="hot"
@@ -618,7 +650,7 @@ export function AccountCard({
                 displayPercent={displayUsagePercent(apiTotalWindow)}
               />
             </section>
-          ) : (
+          ) : shouldShowApiQuotaPanel ? (
             <section className="apiQuotaPanel" aria-label={copy.accountCard.apiQuotaTitle}>
               <div className="apiQuotaGrid">
                 <div className="apiQuotaMetric">
@@ -631,7 +663,7 @@ export function AccountCard({
                 </div>
               </div>
             </section>
-          )}
+          ) : null}
           {selectedAccount.providerName ? (
             <div className="relayInfoRow">
               <span>{copy.accountCard.providerLabel}</span>
@@ -646,6 +678,11 @@ export function AccountCard({
             <span>{copy.accountCard.modelLabel}</span>
             <strong>{displayModelName(selectedAccount.modelName, hideAccountDetails)}</strong>
           </div>
+          {apiEnhancedLaunchEnabled ? (
+            <div className="accountLaunchModeHint isEnhanced">
+              <span>{copy.accountCard.enhancedLaunchLabel}</span>
+            </div>
+          ) : null}
         </div>
       ) : null}
 

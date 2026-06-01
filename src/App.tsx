@@ -1,4 +1,5 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from "react";
+import { Modal, Radio, Typography } from "antd";
 import "./App.css";
 import { AddAccountSection } from "./components/AddAccountSection";
 import { AddAccountDialog } from "./components/AddAccountDialog";
@@ -12,9 +13,9 @@ import { WindowTitleBar } from "./components/WindowTitleBar";
 import { useCodexController } from "./hooks/useCodexController";
 import { useI18n } from "./i18n/I18nProvider";
 import { useThemeMode } from "./hooks/useThemeMode";
-import type { AccountPoolConfig } from "./types/app";
+import type { AccountPoolConfig, AccountSummary, AccountsExportFormat } from "./types/app";
 
-type AppTab = "accounts" | "notifications" | "remoteControl" | "settings";
+type AppTab = "accounts" | "notifications" | "settings";
 type NotificationViewTab = "settings" | "pipelines" | "templates" | "tests" | "activity";
 const BROWSER_PREVIEW_WINDOW_PARAM = "codexdeckPreviewWindow";
 
@@ -30,11 +31,10 @@ const SettingsPanel = lazy(() =>
     })),
 );
 
-const RemoteControlPage = lazy(() =>
-    import("./components/RemoteControlPage").then((module) => ({
-        default: module.RemoteControlPage,
-    })),
-);
+type ExportDialogState = {
+    account?: AccountSummary;
+    accountKeys?: string[];
+};
 
 function createLocalId(prefix: string) {
     if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
@@ -129,6 +129,8 @@ function BrowserPreviewWindow() {
 function CodexDeckApp() {
     const [activeTab, setActiveTab] = useState<AppTab>("accounts");
     const [notificationView, setNotificationView] = useState<NotificationViewTab>("settings");
+    const [exportDialog, setExportDialog] = useState<ExportDialogState | null>(null);
+    const [exportFormat, setExportFormat] = useState<AccountsExportFormat>("codexDeck");
     const tauriRuntime = hasTauriRuntime();
     const { copy } = useI18n();
     const { themeMode, toggleTheme } = useThemeMode();
@@ -209,6 +211,37 @@ function CodexDeckApp() {
             { accountPools: normalizeAccountPools(accountPools, activeAccountKeys) },
             { silent: true, keepInteractive: true },
         );
+
+    const openExportDialog = (account?: AccountSummary) => {
+        setExportFormat("codexDeck");
+        setExportDialog({ account });
+    };
+
+    const openBulkExportDialog = (accountKeys: string[]) => {
+        const normalizedKeys = Array.from(
+            new Set(accountKeys.map((accountKey) => accountKey.trim()).filter(Boolean)),
+        );
+        if (normalizedKeys.length === 0) {
+            return;
+        }
+        setExportFormat("sub2api");
+        setExportDialog({ accountKeys: normalizedKeys });
+    };
+
+    const closeExportDialog = () => {
+        if (!exportingAccounts) {
+            setExportDialog(null);
+        }
+    };
+
+    const confirmExportDialog = async () => {
+        const target = exportDialog;
+        if (!target || exportingAccounts) {
+            return;
+        }
+        await onExportAccounts(target.account, exportFormat, target.accountKeys);
+        setExportDialog(null);
+    };
 
     const reassignAccountKeysToPool = (poolId: string, accountKeys: string[]) => {
         const normalizedKeys = sortAndNormalizeAccountKeys(accountKeys, activeAccountKeys);
@@ -352,6 +385,55 @@ function CodexDeckApp() {
                         onSkipVersion={() => void skipPendingUpdateVersion()}
                         onInstallNow={() => void installPendingUpdate()}
                     />
+                    <Modal
+                        title={copy.exportDialog.title}
+                        open={exportDialog !== null}
+                        onOk={() => void confirmExportDialog()}
+                        onCancel={closeExportDialog}
+                        okText={copy.exportDialog.ok}
+                        cancelText={copy.exportDialog.cancel}
+                        confirmLoading={exportingAccounts}
+                        destroyOnHidden
+                    >
+                        <div className="exportFormatDialog">
+                            <Typography.Text type="secondary">
+                                {exportDialog?.account
+                                    ? copy.exportDialog.singleDescription
+                                    : exportDialog?.accountKeys?.length
+                                      ? copy.exportDialog.selectedDescription(
+                                            exportDialog.accountKeys.length,
+                                        )
+                                    : copy.exportDialog.allDescription}
+                            </Typography.Text>
+                            <Radio.Group
+                                className="exportFormatOptions"
+                                value={exportFormat}
+                                onChange={(event) =>
+                                    setExportFormat(event.target.value as AccountsExportFormat)
+                                }
+                                options={[
+                                    {
+                                        value: "codexDeck",
+                                        label: (
+                                            <span className="exportFormatOption">
+                                                <strong>{copy.exportDialog.codexDeckTitle}</strong>
+                                                <span>{copy.exportDialog.codexDeckDescription}</span>
+                                            </span>
+                                        ),
+                                    },
+                                    {
+                                        value: "sub2api",
+                                        label: (
+                                            <span className="exportFormatOption">
+                                                <strong>{copy.exportDialog.sub2apiTitle}</strong>
+                                                <span>{copy.exportDialog.sub2apiDescription}</span>
+                                            </span>
+                                        ),
+                                    },
+                                ]}
+                            />
+                        </div>
+                    </Modal>
 
                     <section className="viewStage">
                         {activeTab === "accounts" ? (
@@ -362,7 +444,7 @@ function CodexDeckApp() {
                                         tokenUsage={tokenUsage}
                                         tokenUsageError={tokenUsageError}
                                         exportingAccounts={exportingAccounts}
-                                        onExportAccounts={() => void onExportAccounts()}
+                                        onExportAccounts={() => openExportDialog()}
                                     />
                                     <AddAccountSection
                                         onOpenAddDialog={onOpenAddDialog}
@@ -397,6 +479,7 @@ function CodexDeckApp() {
                                     notificationProviders={settings.notificationProviders}
                                     usageDisplayMode={settings.trayUsageDisplayMode}
                                     hideAccountDetails={hideAccountDetails}
+                                    apiEnhancedLaunchEnabled={settings.apiEnhancedLaunchEnabled}
                                     onRenamePool={(poolId, name) =>
                                         updateAccountPool(poolId, (pool) => ({ ...pool, name }))
                                     }
@@ -431,7 +514,8 @@ function CodexDeckApp() {
                                     }}
                                     onAssignAccountToPool={assignAccountToPool}
                                     onRemoveAccountFromAllPools={removeAccountFromAllPools}
-                                    onExport={(account) => void onExportAccounts(account)}
+                                    onExportAccountKeys={openBulkExportDialog}
+                                    onExport={(account) => openExportDialog(account)}
                                     onReauthorize={(account) => void onReauthorizeAccount(account)}
                                     onRename={(account, label) => onRenameAccountLabel(account, label)}
                                     onUpdateApiAccount={(account, input) =>
@@ -458,10 +542,6 @@ function CodexDeckApp() {
                                     onUpdateSettings={updateSettings}
                                 />
                             </Suspense>
-                        ) : activeTab === "remoteControl" ? (
-                            <Suspense fallback={<ViewLoadingFallback />}>
-                                <RemoteControlPage />
-                            </Suspense>
                         ) : (
                             <Suspense fallback={<ViewLoadingFallback />}>
                                 <SettingsPanel
@@ -473,8 +553,7 @@ function CodexDeckApp() {
                                     settings={settings}
                                     installedEditorApps={installedEditorApps}
                                     hasOpencodeDesktopApp={hasOpencodeDesktopApp}
-                                    savingSettings={savingSettings}
-                                    onUpdateSettings={(patch, options) => void updateSettings(patch, options)}
+                                    onUpdateSettings={updateSettings}
                                 />
                             </Suspense>
                         )}

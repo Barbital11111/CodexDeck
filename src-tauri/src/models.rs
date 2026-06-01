@@ -339,6 +339,8 @@ pub(crate) struct StoredAccount {
     #[serde(default)]
     pub(crate) balance_text: Option<String>,
     #[serde(default)]
+    pub(crate) balance_display_enabled: bool,
+    #[serde(default)]
     pub(crate) api_quota_mode: ApiQuotaMode,
     #[serde(default)]
     pub(crate) api_quota_today_used_text: Option<String>,
@@ -399,6 +401,7 @@ pub(crate) struct AccountSummary {
     pub(crate) api_base_url: Option<String>,
     pub(crate) model_name: Option<String>,
     pub(crate) balance_text: Option<String>,
+    pub(crate) balance_display_enabled: bool,
     pub(crate) api_quota_mode: ApiQuotaMode,
     pub(crate) api_quota_today_used_text: Option<String>,
     pub(crate) api_quota_remaining_text: Option<String>,
@@ -863,6 +866,8 @@ pub(crate) struct AppSettings {
     pub(crate) launch_codex_after_switch: bool,
     #[serde(default)]
     pub(crate) smart_switch_include_api: bool,
+    #[serde(default)]
+    pub(crate) api_enhanced_launch_enabled: bool,
     #[serde(default = "default_usage_auto_refresh_enabled")]
     pub(crate) usage_auto_refresh_enabled: bool,
     #[serde(default = "default_usage_auto_refresh_interval_secs")]
@@ -921,6 +926,7 @@ impl Default for AppSettings {
             tray_usage_display_mode: TrayUsageDisplayMode::Remaining,
             launch_codex_after_switch: true,
             smart_switch_include_api: false,
+            api_enhanced_launch_enabled: false,
             usage_auto_refresh_enabled: default_usage_auto_refresh_enabled(),
             usage_auto_refresh_interval_secs: default_usage_auto_refresh_interval_secs(),
             api_quota_auto_refresh_enabled: default_api_quota_auto_refresh_enabled(),
@@ -960,6 +966,7 @@ pub(crate) struct AppSettingsPatch {
     pub(crate) tray_usage_display_mode: Option<TrayUsageDisplayMode>,
     pub(crate) launch_codex_after_switch: Option<bool>,
     pub(crate) smart_switch_include_api: Option<bool>,
+    pub(crate) api_enhanced_launch_enabled: Option<bool>,
     pub(crate) usage_auto_refresh_enabled: Option<bool>,
     pub(crate) usage_auto_refresh_interval_secs: Option<u16>,
     pub(crate) api_quota_auto_refresh_enabled: Option<bool>,
@@ -1330,6 +1337,7 @@ impl StoredAccount {
             api_base_url: self.api_base_url.clone(),
             model_name: self.model_name.clone(),
             balance_text: self.balance_text.clone(),
+            balance_display_enabled: self.balance_display_enabled,
             api_quota_mode: self.api_quota_mode,
             api_quota_today_used_text: self.api_quota_today_used_text.clone(),
             api_quota_remaining_text: self.api_quota_remaining_text.clone(),
@@ -1478,13 +1486,10 @@ fn merge_duplicate_account_variant(left: StoredAccount, right: StoredAccount) ->
     if preferred.usage.is_none() {
         preferred.usage = alternate.usage.clone();
     }
-    if preferred.usage_error.is_none() {
+    if preferred.usage.is_none() && preferred.usage_error.is_none() {
         preferred.usage_error = alternate.usage_error.clone();
     }
-    if !preferred.auth_refresh_blocked && alternate.auth_refresh_blocked {
-        preferred.auth_refresh_blocked = true;
-    }
-    if preferred.auth_refresh_error.is_none() {
+    if preferred.auth_refresh_blocked && preferred.auth_refresh_error.is_none() {
         preferred.auth_refresh_error = alternate.auth_refresh_error.clone();
     }
     if preferred.auth_json.is_null() && !alternate.auth_json.is_null() {
@@ -1502,6 +1507,9 @@ fn merge_duplicate_account_variant(left: StoredAccount, right: StoredAccount) ->
     }
     if preferred.balance_text.is_none() {
         preferred.balance_text = alternate.balance_text.clone();
+    }
+    if !preferred.balance_display_enabled && alternate.balance_display_enabled {
+        preferred.balance_display_enabled = true;
     }
     if preferred.api_quota_mode == ApiQuotaMode::ApiOnly {
         preferred.api_quota_mode = alternate.api_quota_mode;
@@ -1663,6 +1671,7 @@ mod tests {
             proxy_endpoints: Vec::new(),
             model_name: None,
             balance_text: None,
+            balance_display_enabled: false,
             api_quota_mode: Default::default(),
             api_quota_today_used_text: None,
             api_quota_remaining_text: None,
@@ -1737,6 +1746,34 @@ mod tests {
     }
 
     #[test]
+    fn dedupe_account_variants_does_not_restore_stale_auth_error() {
+        let mut stale = stored_account("stale", "stale", "account-1", Some("team"), None, 100);
+        stale.usage_error = Some("授权过期，请重新登录授权。".to_string());
+        stale.auth_refresh_blocked = true;
+        stale.auth_refresh_error = Some("授权过期，请重新登录授权。".to_string());
+
+        let healthy = stored_account(
+            "healthy",
+            "healthy",
+            "account-1",
+            Some("team"),
+            Some("team"),
+            200,
+        );
+        let mut accounts = vec![stale, healthy];
+
+        let changed = dedupe_account_variants(&mut accounts);
+
+        assert!(changed);
+        assert_eq!(accounts.len(), 1);
+        assert_eq!(accounts[0].id, "healthy");
+        assert!(accounts[0].usage.is_some());
+        assert_eq!(accounts[0].usage_error, None);
+        assert!(!accounts[0].auth_refresh_blocked);
+        assert_eq!(accounts[0].auth_refresh_error, None);
+    }
+
+    #[test]
     fn resolved_plan_type_prefers_stored_plan_type_over_usage_plan_type() {
         let account = StoredAccount {
             id: "mixed".to_string(),
@@ -1756,6 +1793,7 @@ mod tests {
             proxy_endpoints: Vec::new(),
             model_name: None,
             balance_text: None,
+            balance_display_enabled: false,
             api_quota_mode: Default::default(),
             api_quota_today_used_text: None,
             api_quota_remaining_text: None,
@@ -1813,6 +1851,7 @@ mod tests {
             proxy_endpoints: Vec::new(),
             model_name: None,
             balance_text: None,
+            balance_display_enabled: false,
             api_quota_mode: Default::default(),
             api_quota_today_used_text: None,
             api_quota_remaining_text: None,
@@ -1864,6 +1903,7 @@ mod tests {
                 proxy_endpoints: Vec::new(),
                 model_name: None,
                 balance_text: None,
+                balance_display_enabled: false,
                 api_quota_mode: Default::default(),
                 api_quota_today_used_text: None,
                 api_quota_remaining_text: None,
@@ -1908,6 +1948,7 @@ mod tests {
                 proxy_endpoints: Vec::new(),
                 model_name: None,
                 balance_text: None,
+                balance_display_enabled: false,
                 api_quota_mode: Default::default(),
                 api_quota_today_used_text: None,
                 api_quota_remaining_text: None,
@@ -1969,6 +2010,7 @@ mod tests {
             proxy_endpoints: Vec::new(),
             model_name: None,
             balance_text: None,
+            balance_display_enabled: false,
             api_quota_mode: Default::default(),
             api_quota_today_used_text: None,
             api_quota_remaining_text: None,
@@ -2027,7 +2069,7 @@ mod tests {
             plan_type: Some("api".to_string()),
             auth_json: json!({}),
             api_base_url: Some("https://api.example.com/v1/".to_string()),
-            api_key: Some("test-key-relay".to_string()),
+            api_key: Some("sk-relay".to_string()),
             api_keys: Vec::new(),
             proxy_priority: None,
             proxy_weight: None,
@@ -2035,6 +2077,7 @@ mod tests {
             proxy_endpoints: Vec::new(),
             model_name: Some("gpt-5.4".to_string()),
             balance_text: None,
+            balance_display_enabled: false,
             api_quota_mode: Default::default(),
             api_quota_today_used_text: None,
             api_quota_remaining_text: None,
@@ -2074,7 +2117,7 @@ mod tests {
         assert_eq!(upstream.channels[0].model_name.as_deref(), Some("gpt-5.4"));
         assert_eq!(
             upstream.channels[0].keys[0].secret.as_deref(),
-            Some("test-key-relay")
+            Some("sk-relay")
         );
     }
 }

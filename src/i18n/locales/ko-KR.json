@@ -18,8 +18,6 @@
     "ariaLabel": "계정 개요",
     "accountCount": "계정 수",
     "currentActive": "현재 활성",
-    "tokensSession": "세션 Token",
-    "tokens24h": "24h Token",
     "tokens7d": "7d Token",
     "tokens30d": "30d Token",
     "tokensPending": "로컬 Codex token 로그 읽는 중",
@@ -28,6 +26,18 @@
     "tokensEvents": "Token 이벤트",
     "tokensFailedSources": "읽기 실패",
     "exportAll": "전체 내보내기"
+  },
+  "exportDialog": {
+    "title": "내보내기 형식 선택",
+    "allDescription": "내보낼 계정 파일 형식을 선택하세요.",
+    "selectedDescription": "{{count}}개 계정이 선택되었습니다. 내보낼 파일 형식을 선택하세요.",
+    "singleDescription": "이 계정의 내보내기 파일 형식을 선택하세요.",
+    "codexDeckTitle": "CodexDeck 백업 형식",
+    "codexDeckDescription": "CodexDeck 복원 또는 이전에 사용할 zip 백업을 내보냅니다.",
+    "sub2apiTitle": "Sub2API 가져오기 형식",
+    "sub2apiDescription": "sub2api에서 가져올 수 있는 계정 JSON을 내보냅니다. 전체 내보내기는 여러 계정을 하나의 파일로 합칩니다.",
+    "ok": "내보내기",
+    "cancel": "취소"
   },
   "addAccount": {
     "smartSwitch": "스마트 전환",
@@ -113,6 +123,7 @@
     "apiBadge": "API",
     "profileIncomplete": "Profile incomplete",
     "validationFailed": "Validation failed",
+    "enhancedLaunchLabel": "Enhanced mode",
     "providerLabel": "Provider",
     "endpointLabel": "Endpoint",
     "modelLabel": "Model",
@@ -171,6 +182,7 @@
     "reorder": "정렬",
     "refreshQuota": "쿼터 조회",
     "refreshQuotaEmpty": "이 그룹에는 조회 가능한 네이티브 계정이 없습니다",
+    "exportGroup": "일괄 내보내기",
     "renamePlaceholder": "그룹 이름 입력",
     "delete": "그룹 삭제",
     "deleteConfirmTitle": "이 그룹을 삭제할까요?",
@@ -436,6 +448,11 @@
       "label": "스마트 전환에 API 포함 (로그인 계정의 잔여 한도가 부족할 때)",
       "checkedText": "켜짐",
       "uncheckedText": "꺼짐"
+    },
+    "apiEnhancedLaunch": {
+      "label": "순수 API 기본 강화 실행",
+      "checkedText": "순수 API 전환 후 페이지 강화 주입",
+      "uncheckedText": "순수 API 일반 실행"
     },
     "autoRefresh": {
       "label": "사용량 자동 새로고침",

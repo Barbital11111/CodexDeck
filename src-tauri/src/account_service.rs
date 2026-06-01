@@ -6,8 +6,11 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use base64::Engine;
 use reqwest::StatusCode;
 use rfd::FileDialog;
+use serde::Deserialize;
+use serde::Serialize;
 use tauri::AppHandle;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
@@ -58,8 +61,25 @@ const DEACTIVATED_WORKSPACE_NOTICE: &str = "该账号已被踢出 team 组织，
 const DEACTIVATED_ACCOUNT_NOTICE: &str = "账号被封禁，请检查邮箱";
 const AUTH_EXPIRED_NOTICE: &str = "授权过期，请重新登录授权。";
 const EXPORT_ARCHIVE_ENTRY_NAME: &str = "accounts.json";
-const KEEPALIVE_REFRESH_WINDOW_SECS: i64 = 10 * 60;
+const SUB2API_EXPORT_TYPE: &str = "sub2api-data";
+const SUB2API_EXPORT_VERSION: u8 = 1;
+const OPENAI_CODEX_CLI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
+const KEEPALIVE_REFRESH_WINDOW_SECS: i64 = 24 * 60 * 60;
+const KEEPALIVE_REFRESH_INTERVAL_SECS: i64 = 7 * 24 * 60 * 60;
 const RELAY_KEY_PROBE_TIMEOUT_SECS: u64 = 12;
+
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum AccountsExportFormat {
+    CodexDeck,
+    Sub2api,
+}
+
+impl Default for AccountsExportFormat {
+    fn default() -> Self {
+        Self::CodexDeck
+    }
+}
 
 #[derive(Debug, Clone)]
 struct ResolvedApiQuotaFields {
@@ -74,8 +94,30 @@ struct ResolvedApiQuotaFields {
     subscription_expires_at: Option<i64>,
 }
 
+impl ResolvedApiQuotaFields {
+    fn empty() -> Self {
+        Self {
+            mode: Default::default(),
+            today_used_text: None,
+            remaining_text: None,
+            total_remaining_text: None,
+            total_tokens_text: None,
+            today_tokens_text: None,
+            daily_window: None,
+            total_window: None,
+            subscription_expires_at: None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
-struct ImportCandidate {
+enum ImportCandidate {
+    Chatgpt(ChatgptImportCandidate),
+    Relay(RelayImportCandidate),
+}
+
+#[derive(Debug, Clone)]
+struct ChatgptImportCandidate {
     source: String,
     auth_json: serde_json::Value,
     label: Option<String>,
@@ -84,7 +126,31 @@ struct ImportCandidate {
     email: Option<String>,
 }
 
-struct PreparedImport {
+#[derive(Debug, Clone)]
+struct RelayImportCandidate {
+    source: String,
+    label: String,
+    base_url: String,
+    api_key: String,
+    model_name: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+enum PreparedImport {
+    Chatgpt(PreparedChatgptImport),
+    Relay(PreparedRelayImport),
+}
+
+#[derive(Debug, Clone)]
+struct PreparedRelayImport {
+    label: String,
+    base_url: String,
+    api_key: String,
+    model_name: String,
+}
+
+#[derive(Debug, Clone)]
+struct PreparedChatgptImport {
     principal_id: String,
     auth_json: serde_json::Value,
     account_id: String,
@@ -94,9 +160,65 @@ struct PreparedImport {
     label: Option<String>,
 }
 
+impl ImportCandidate {
+    fn source(&self) -> &str {
+        match self {
+            Self::Chatgpt(candidate) => candidate.source.as_str(),
+            Self::Relay(candidate) => candidate.source.as_str(),
+        }
+    }
+}
+
 struct RelayKeyProbeFailure {
     status: Option<StatusCode>,
     message: String,
+}
+
+#[derive(Debug, Serialize)]
+struct Sub2apiDataPayload {
+    #[serde(rename = "type")]
+    data_type: &'static str,
+    version: u8,
+    exported_at: String,
+    proxies: Vec<Sub2apiDataProxy>,
+    accounts: Vec<Sub2apiDataAccount>,
+}
+
+#[derive(Debug, Serialize)]
+struct Sub2apiDataProxy {
+    proxy_key: String,
+    name: String,
+    protocol: String,
+    host: String,
+    port: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    username: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    password: Option<String>,
+    status: String,
+}
+
+#[derive(Debug, Serialize)]
+struct Sub2apiDataAccount {
+    name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    notes: Option<String>,
+    platform: String,
+    #[serde(rename = "type")]
+    account_type: String,
+    credentials: serde_json::Map<String, serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    extra: Option<serde_json::Map<String, serde_json::Value>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    proxy_key: Option<String>,
+    concurrency: u16,
+    priority: u16,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    rate_multiplier: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    expires_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    auto_pause_on_expired: Option<bool>,
 }
 
 fn build_account_summaries_for_store(
@@ -213,7 +335,7 @@ pub(crate) async fn create_api_account_internal(
     let model_name = profile_files::normalize_relay_model_name(&input.model_name)?;
     let (provider_id, provider_name) =
         infer_provider_metadata_from_base_url(Some(base_url.as_str()));
-    let quota_fields = resolve_create_api_quota_fields(&input, &label, &base_url).await;
+    let quota_fields = resolve_create_api_quota_fields(&input, &label, &base_url, &api_key).await;
     let tags = normalize_account_tags(input.tags);
 
     let (last_validated_at, balance_text, profile_last_validation_error, proxy_endpoints) = if input
@@ -266,6 +388,7 @@ pub(crate) async fn create_api_account_internal(
             proxy_endpoints,
             model_name: Some(model_name),
             balance_text,
+            balance_display_enabled: input.balance_display_enabled,
             api_quota_mode: quota_fields.mode,
             api_quota_today_used_text: quota_fields.today_used_text,
             api_quota_remaining_text: quota_fields.remaining_text,
@@ -363,7 +486,7 @@ pub(crate) async fn import_auth_json_accounts_internal(
             };
 
         for candidate in candidates {
-            let candidate_source = candidate.source.clone();
+            let candidate_source = candidate.source().to_string();
             match prepare_import_candidate(candidate).await {
                 Ok(prepared) => prepared_imports.push(prepared),
                 Err(error) => failures.push(ImportAccountFailure {
@@ -394,12 +517,20 @@ pub(crate) async fn import_auth_json_accounts_internal(
         let store_path = account_store_path_from_data_dir(&app_paths::app_data_dir(app)?);
 
         for prepared in prepared_imports {
-            let (summary, updated_existing) = upsert_prepared_import(
-                &mut store,
-                prepared,
-                current_account_key.as_deref(),
-                current_variant_key.as_deref(),
-            );
+            let (summary, updated_existing) = match prepared {
+                PreparedImport::Chatgpt(prepared) => upsert_prepared_import(
+                    &mut store,
+                    prepared,
+                    current_account_key.as_deref(),
+                    current_variant_key.as_deref(),
+                ),
+                PreparedImport::Relay(prepared) => upsert_prepared_relay_import(
+                    &mut store,
+                    prepared,
+                    current_account_key.as_deref(),
+                    current_variant_key.as_deref(),
+                ),
+            };
             touched_ids.insert(summary.id);
             if updated_existing {
                 updated_count += 1;
@@ -432,26 +563,55 @@ pub(crate) async fn export_accounts_zip_internal(
     app: &AppHandle,
     state: &AppState,
     account_key: Option<String>,
+    account_keys: Option<Vec<String>>,
+    format: Option<AccountsExportFormat>,
 ) -> Result<Option<String>, String> {
-    let selected_account_key = account_key
+    let format = format.unwrap_or_default();
+    let mut selected_account_keys = account_keys
+        .unwrap_or_default()
+        .into_iter()
+        .map(|item| item.trim().to_string())
+        .filter(|item| !item.is_empty())
+        .collect::<HashSet<_>>();
+    if let Some(account_key) = account_key
         .as_deref()
         .map(str::trim)
         .filter(|item| !item.is_empty())
-        .map(str::to_string);
-    let export_payload = {
+    {
+        selected_account_keys.insert(account_key.to_string());
+    }
+    let (default_file_name, export_payload) = {
         let _guard = state.store_lock.lock().await;
         let mut store = load_store(app)?;
-        if let Some(account_key) = selected_account_key.as_ref() {
+        if !selected_account_keys.is_empty() {
             store
                 .accounts
-                .retain(|account| account.account_key() == *account_key);
+                .retain(|account| selected_account_keys.contains(&account.account_key()));
         }
-        serde_json::to_vec_pretty(&store).map_err(|error| format!("序列化账号列表失败: {error}"))?
+        match format {
+            AccountsExportFormat::CodexDeck => (
+                format!("codexdeck-accounts-{}.zip", now_unix_seconds()),
+                serde_json::to_vec_pretty(&store)
+                    .map_err(|error| format!("序列化账号列表失败: {error}"))?,
+            ),
+            AccountsExportFormat::Sub2api => {
+                let payload = build_sub2api_data_payload(&store)?;
+                (
+                    format!("sub2api-accounts-{}.json", now_unix_seconds()),
+                    serde_json::to_vec_pretty(&payload)
+                        .map_err(|error| format!("序列化 Sub2API 导出失败: {error}"))?,
+                )
+            }
+        }
     };
-    let default_file_name = format!("codexdeck-accounts-{}.zip", now_unix_seconds());
 
-    tauri::async_runtime::spawn_blocking(move || {
-        export_accounts_zip_sync(&default_file_name, &export_payload)
+    tauri::async_runtime::spawn_blocking(move || match format {
+        AccountsExportFormat::CodexDeck => {
+            export_accounts_zip_sync(&default_file_name, &export_payload)
+        }
+        AccountsExportFormat::Sub2api => {
+            export_accounts_json_sync("导出 Sub2API 账号数据", &default_file_name, &export_payload)
+        }
     })
     .await
     .map_err(|error| format!("导出账号列表失败: {error}"))?
@@ -499,6 +659,363 @@ pub(crate) async fn delete_account_internal(
     Ok(())
 }
 
+fn build_sub2api_data_payload(store: &AccountsStore) -> Result<Sub2apiDataPayload, String> {
+    let exported_at = OffsetDateTime::now_utc()
+        .format(&Rfc3339)
+        .map_err(|error| format!("生成 Sub2API 导出时间失败: {error}"))?;
+    let accounts = store
+        .accounts
+        .iter()
+        .filter_map(account_to_sub2api_data_account)
+        .collect::<Vec<_>>();
+
+    Ok(Sub2apiDataPayload {
+        data_type: SUB2API_EXPORT_TYPE,
+        version: SUB2API_EXPORT_VERSION,
+        exported_at,
+        proxies: Vec::new(),
+        accounts,
+    })
+}
+
+fn account_to_sub2api_data_account(account: &StoredAccount) -> Option<Sub2apiDataAccount> {
+    match account.source_kind {
+        AccountSourceKind::Chatgpt => chatgpt_account_to_sub2api_data_account(account),
+        AccountSourceKind::Relay => relay_account_to_sub2api_data_account(account),
+    }
+}
+
+fn chatgpt_account_to_sub2api_data_account(account: &StoredAccount) -> Option<Sub2apiDataAccount> {
+    let tokens = account.auth_json.get("tokens")?.as_object()?;
+    let credentials = sub2api_openai_oauth_credentials(account, tokens);
+    if credentials
+        .get("access_token")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .is_none()
+        && credentials
+            .get("refresh_token")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+    {
+        return None;
+    }
+
+    Some(Sub2apiDataAccount {
+        name: account.label.clone(),
+        notes: Some("Imported from CodexDeck".to_string()),
+        platform: "openai".to_string(),
+        account_type: "oauth".to_string(),
+        credentials,
+        extra: sub2api_openai_oauth_extra(),
+        proxy_key: None,
+        concurrency: 3,
+        priority: 100,
+        rate_multiplier: None,
+        expires_at: None,
+        auto_pause_on_expired: Some(true),
+    })
+}
+
+fn relay_account_to_sub2api_data_account(account: &StoredAccount) -> Option<Sub2apiDataAccount> {
+    let api_key = account.primary_relay_api_key()?.trim();
+    if api_key.is_empty() {
+        return None;
+    }
+    let base_url = account
+        .api_base_url
+        .as_deref()?
+        .trim()
+        .trim_end_matches('/');
+    if base_url.is_empty() {
+        return None;
+    }
+
+    let mut credentials = serde_json::Map::new();
+    credentials.insert(
+        "api_key".to_string(),
+        serde_json::Value::String(api_key.to_string()),
+    );
+    credentials.insert(
+        "base_url".to_string(),
+        serde_json::Value::String(base_url.to_string()),
+    );
+    if let Some(model_name) = account
+        .model_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        credentials.insert(
+            "default_model".to_string(),
+            serde_json::Value::String(model_name.to_string()),
+        );
+    }
+
+    Some(Sub2apiDataAccount {
+        name: account.label.clone(),
+        notes: Some("Imported from CodexDeck".to_string()),
+        platform: "openai".to_string(),
+        account_type: "apikey".to_string(),
+        credentials,
+        extra: sub2api_openai_apikey_extra(account),
+        proxy_key: None,
+        concurrency: 3,
+        priority: 100,
+        rate_multiplier: None,
+        expires_at: None,
+        auto_pause_on_expired: Some(true),
+    })
+}
+
+fn sub2api_openai_oauth_credentials(
+    account: &StoredAccount,
+    tokens: &serde_json::Map<String, serde_json::Value>,
+) -> serde_json::Map<String, serde_json::Value> {
+    let mut credentials = serde_json::Map::new();
+    copy_string_field(tokens, &mut credentials, "access_token");
+    copy_string_field(tokens, &mut credentials, "refresh_token");
+    copy_string_field(tokens, &mut credentials, "id_token");
+    copy_string_field(tokens, &mut credentials, "account_id");
+
+    let id_token_claims = credentials
+        .get("id_token")
+        .and_then(serde_json::Value::as_str)
+        .and_then(jwt_claims);
+    let access_token_claims = credentials
+        .get("access_token")
+        .and_then(serde_json::Value::as_str)
+        .and_then(jwt_claims);
+
+    let client_id = id_token_claims
+        .as_ref()
+        .and_then(client_id_from_jwt_claims)
+        .unwrap_or(OPENAI_CODEX_CLI_CLIENT_ID);
+    insert_string_if_absent(&mut credentials, "client_id", client_id);
+
+    if let Some(access_token) = credentials
+        .get("access_token")
+        .and_then(serde_json::Value::as_str)
+    {
+        if let Some(expires_at) = jwt_expiration_rfc3339(access_token) {
+            credentials.insert(
+                "expires_at".to_string(),
+                serde_json::Value::String(expires_at),
+            );
+        }
+    }
+
+    if let Some(claims) = id_token_claims.as_ref() {
+        if let Some(email) = claims.get("email").and_then(serde_json::Value::as_str) {
+            insert_string_if_absent(&mut credentials, "email", email);
+        }
+        if let Some(auth_claims) = openai_auth_claims(claims) {
+            if let Some(value) = auth_claims
+                .get("chatgpt_account_id")
+                .and_then(serde_json::Value::as_str)
+            {
+                insert_string_if_absent(&mut credentials, "chatgpt_account_id", value);
+            }
+            if let Some(value) = auth_claims
+                .get("chatgpt_user_id")
+                .or_else(|| auth_claims.get("user_id"))
+                .and_then(serde_json::Value::as_str)
+            {
+                insert_string_if_absent(&mut credentials, "chatgpt_user_id", value);
+            }
+            if let Some(value) = auth_claims
+                .get("chatgpt_plan_type")
+                .and_then(serde_json::Value::as_str)
+            {
+                insert_string_if_absent(&mut credentials, "plan_type", value);
+            }
+            if let Some(value) = auth_claims.get("poid").and_then(serde_json::Value::as_str) {
+                insert_string_if_absent(&mut credentials, "organization_id", value);
+            }
+        }
+    }
+    if let Some(claims) = access_token_claims.as_ref() {
+        if let Some(value) = openai_auth_claims(claims)
+            .and_then(|auth_claims| auth_claims.get("poid"))
+            .and_then(serde_json::Value::as_str)
+        {
+            insert_string_if_absent(&mut credentials, "organization_id", value);
+        }
+    }
+
+    if let Some(email) = account
+        .email
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        credentials.insert(
+            "email".to_string(),
+            serde_json::Value::String(email.to_string()),
+        );
+    }
+    if let Some(plan_type) = account
+        .resolved_plan_type()
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        credentials.insert(
+            "plan_type".to_string(),
+            serde_json::Value::String(plan_type.to_string()),
+        );
+    }
+    if !account.account_id.trim().is_empty() {
+        credentials.insert(
+            "chatgpt_account_id".to_string(),
+            serde_json::Value::String(account.account_id.trim().to_string()),
+        );
+    }
+    if let Some(expires_at) = account.api_quota_subscription_expires_at {
+        if let Ok(expires_at) = OffsetDateTime::from_unix_timestamp(expires_at) {
+            if let Ok(subscription_expires_at) = expires_at.format(&Rfc3339) {
+                insert_string_if_absent(
+                    &mut credentials,
+                    "subscription_expires_at",
+                    &subscription_expires_at,
+                );
+            }
+        }
+    }
+
+    credentials
+}
+
+fn sub2api_openai_oauth_extra() -> Option<serde_json::Map<String, serde_json::Value>> {
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "openai_passthrough".to_string(),
+        serde_json::Value::Bool(true),
+    );
+    extra.insert("codex_cli_only".to_string(), serde_json::Value::Bool(true));
+    Some(extra)
+}
+
+fn sub2api_openai_apikey_extra(
+    account: &StoredAccount,
+) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let mut extra = serde_json::Map::new();
+    extra.insert(
+        "openai_passthrough".to_string(),
+        serde_json::Value::Bool(true),
+    );
+    if let Some(model_name) = account
+        .model_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        extra.insert(
+            "default_model".to_string(),
+            serde_json::Value::String(model_name.to_string()),
+        );
+    }
+    Some(extra)
+}
+
+fn copy_string_field(
+    from: &serde_json::Map<String, serde_json::Value>,
+    to: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) {
+    if let Some(value) = from
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        to.insert(
+            key.to_string(),
+            serde_json::Value::String(value.to_string()),
+        );
+    }
+}
+
+fn insert_string_if_absent(
+    target: &mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    value: &str,
+) {
+    let value = value.trim();
+    if value.is_empty() {
+        return;
+    }
+    if target
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|existing| !existing.is_empty())
+        .is_some()
+    {
+        return;
+    }
+    target.insert(
+        key.to_string(),
+        serde_json::Value::String(value.to_string()),
+    );
+}
+
+fn jwt_claims(token: &str) -> Option<serde_json::Value> {
+    let payload = token.split('.').nth(1)?;
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(payload)
+        .or_else(|_| {
+            let remainder = payload.len() % 4;
+            let padded = if remainder == 0 {
+                payload.to_string()
+            } else {
+                format!("{payload}{}", "=".repeat(4 - remainder))
+            };
+            base64::engine::general_purpose::URL_SAFE.decode(padded)
+        })
+        .ok()?;
+    serde_json::from_slice::<serde_json::Value>(&decoded).ok()
+}
+
+fn openai_auth_claims(
+    claims: &serde_json::Value,
+) -> Option<&serde_json::Map<String, serde_json::Value>> {
+    claims
+        .get("https://api.openai.com/auth")
+        .and_then(serde_json::Value::as_object)
+}
+
+fn client_id_from_jwt_claims(claims: &serde_json::Value) -> Option<&str> {
+    match claims.get("aud")? {
+        serde_json::Value::String(value) => {
+            let value = value.trim();
+            if value.is_empty() {
+                None
+            } else {
+                Some(value)
+            }
+        }
+        serde_json::Value::Array(items) => items
+            .iter()
+            .filter_map(serde_json::Value::as_str)
+            .map(str::trim)
+            .find(|value| !value.is_empty()),
+        _ => None,
+    }
+}
+
+fn jwt_expiration_rfc3339(token: &str) -> Option<String> {
+    let claims = jwt_claims(token)?;
+    let exp = claims.get("exp").and_then(serde_json::Value::as_i64)?;
+    OffsetDateTime::from_unix_timestamp(exp)
+        .ok()?
+        .format(&Rfc3339)
+        .ok()
+}
+
 pub(crate) async fn update_account_label_internal(
     app: &AppHandle,
     state: &AppState,
@@ -540,8 +1057,6 @@ pub(crate) async fn update_api_account_internal(
     let resolved_label = profile_files::normalize_relay_label(&input.label)?;
     let resolved_base_url = profile_files::normalize_relay_base_url(&input.base_url)?;
     let resolved_model_name = profile_files::normalize_relay_model_name(&input.model_name)?;
-    let quota_fields =
-        resolve_update_api_quota_fields(&input, &resolved_label, &resolved_base_url).await;
     let now = now_unix_seconds();
     let current_account_key = current_auth_account_key();
     let current_variant_key = current_auth_variant_key();
@@ -574,6 +1089,16 @@ pub(crate) async fn update_api_account_internal(
 
         let (provider_id, provider_name) =
             infer_provider_metadata_from_base_url(Some(resolved_base_url.as_str()));
+        let quota_api_key = maybe_new_api_key
+            .as_deref()
+            .or_else(|| account.primary_relay_api_key());
+        let quota_fields = resolve_update_api_quota_fields(
+            &input,
+            &resolved_label,
+            &resolved_base_url,
+            quota_api_key,
+        )
+        .await;
         let reset_proxy_capabilities = relay_profile_change_requires_proxy_reset(
             account,
             resolved_base_url.as_str(),
@@ -590,18 +1115,21 @@ pub(crate) async fn update_api_account_internal(
         }
         sync_primary_api_key_from_relay_key_pool(account);
         account.model_name = Some(resolved_model_name);
-        if input.balance_display_enabled == Some(false) {
-            account.balance_text = None;
+        let balance_display_enabled = input.balance_display_enabled.unwrap_or(true);
+        account.balance_display_enabled = balance_display_enabled;
+        if balance_display_enabled {
+            account.api_quota_mode = quota_fields.mode;
+            account.api_quota_today_used_text = quota_fields.today_used_text;
+            account.api_quota_remaining_text = quota_fields.remaining_text;
+            account.api_quota_total_remaining_text = quota_fields.total_remaining_text;
+            account.api_quota_total_tokens_text = quota_fields.total_tokens_text;
+            account.api_quota_today_tokens_text = quota_fields.today_tokens_text;
+            account.api_quota_daily_window = quota_fields.daily_window;
+            account.api_quota_total_window = quota_fields.total_window;
+            account.api_quota_subscription_expires_at = quota_fields.subscription_expires_at;
+        } else {
+            clear_api_quota_fields(account);
         }
-        account.api_quota_mode = quota_fields.mode;
-        account.api_quota_today_used_text = quota_fields.today_used_text;
-        account.api_quota_remaining_text = quota_fields.remaining_text;
-        account.api_quota_total_remaining_text = quota_fields.total_remaining_text;
-        account.api_quota_total_tokens_text = quota_fields.total_tokens_text;
-        account.api_quota_today_tokens_text = quota_fields.today_tokens_text;
-        account.api_quota_daily_window = quota_fields.daily_window;
-        account.api_quota_total_window = quota_fields.total_window;
-        account.api_quota_subscription_expires_at = quota_fields.subscription_expires_at;
         account.provider_id = provider_id;
         account.provider_name = provider_name;
         account.updated_at = now;
@@ -975,8 +1503,8 @@ async fn refresh_api_quota_internal(
 
     let mut snapshots: HashMap<String, Result<notification_service::ApiQuotaSnapshot, String>> =
         HashMap::with_capacity(targets.len());
-    for (account_key, provider) in targets {
-        let result = notification_service::fetch_api_quota_snapshot(provider).await;
+    for (account_key, target) in targets {
+        let result = fetch_api_quota_refresh_target(target).await;
         snapshots.insert(account_key, result);
     }
 
@@ -1016,10 +1544,49 @@ async fn refresh_api_quota_internal(
     ))
 }
 
+async fn fetch_api_quota_refresh_target(
+    target: ApiQuotaRefreshTarget,
+) -> Result<notification_service::ApiQuotaSnapshot, String> {
+    match target {
+        ApiQuotaRefreshTarget::PlatformProvider { provider, fallback } => {
+            let platform_result = notification_service::fetch_api_quota_snapshot(provider).await;
+            fetch_api_quota_refresh_target_with_platform_fallback(platform_result, fallback).await
+        }
+        ApiQuotaRefreshTarget::NewapiToken { base_url, api_key } => {
+            notification_service::fetch_newapi_token_quota_snapshot(&base_url, &api_key).await
+        }
+    }
+}
+
+async fn fetch_api_quota_refresh_target_with_platform_fallback(
+    platform_result: Result<notification_service::ApiQuotaSnapshot, String>,
+    fallback: Option<Box<ApiQuotaRefreshTarget>>,
+) -> Result<notification_service::ApiQuotaSnapshot, String> {
+    match platform_result {
+        Ok(snapshot) => Ok(snapshot),
+        Err(platform_error) => {
+            if let Some(ApiQuotaRefreshTarget::NewapiToken { base_url, api_key }) =
+                fallback.map(|target| *target)
+            {
+                match notification_service::fetch_newapi_token_quota_snapshot(&base_url, &api_key)
+                    .await
+                {
+                    Ok(snapshot) => Ok(snapshot),
+                    Err(newapi_error) => {
+                        Err(format!("{platform_error}；NewAPI 回退失败：{newapi_error}"))
+                    }
+                }
+            } else {
+                Err(platform_error)
+            }
+        }
+    }
+}
+
 fn build_api_quota_refresh_targets(
     store: &AccountsStore,
     account_key_filter: Option<&HashSet<String>>,
-) -> Vec<(String, crate::models::NotificationProviderConfig)> {
+) -> Vec<(String, ApiQuotaRefreshTarget)> {
     store
         .accounts
         .iter()
@@ -1029,10 +1596,64 @@ fn build_api_quota_refresh_targets(
             if account_key_filter.is_some_and(|filter| !filter.contains(&account_key)) {
                 return None;
             }
-            find_api_quota_provider_for_account(account, &store.settings.notification_providers)
-                .map(|provider| (account_key, provider))
+            if !account.balance_display_enabled {
+                return None;
+            }
+            let newapi_target = build_newapi_quota_refresh_target(account_key.clone(), account);
+            if has_api_key_quota_snapshot(account) {
+                return newapi_target;
+            }
+
+            let fallback = newapi_target.map(|(_, target)| Box::new(target));
+            let platform_target = find_api_quota_provider_for_account(
+                account,
+                &store.settings.notification_providers,
+            )
+            .map(|provider| {
+                (
+                    account_key,
+                    ApiQuotaRefreshTarget::PlatformProvider { provider, fallback },
+                )
+            });
+
+            platform_target
         })
         .collect()
+}
+
+enum ApiQuotaRefreshTarget {
+    PlatformProvider {
+        provider: crate::models::NotificationProviderConfig,
+        fallback: Option<Box<ApiQuotaRefreshTarget>>,
+    },
+    NewapiToken {
+        base_url: String,
+        api_key: String,
+    },
+}
+
+fn has_api_key_quota_snapshot(account: &StoredAccount) -> bool {
+    matches!(account.api_quota_mode, crate::models::ApiQuotaMode::ApiOnly)
+        && account.balance_display_enabled
+        && account.primary_relay_api_key().is_some()
+}
+
+fn build_newapi_quota_refresh_target(
+    account_key: String,
+    account: &StoredAccount,
+) -> Option<(String, ApiQuotaRefreshTarget)> {
+    account
+        .primary_relay_api_key()
+        .filter(|api_key| !api_key.trim().is_empty())
+        .map(|api_key| {
+            (
+                account_key,
+                ApiQuotaRefreshTarget::NewapiToken {
+                    base_url: account.api_base_url.clone().unwrap_or_default(),
+                    api_key: api_key.to_string(),
+                },
+            )
+        })
 }
 
 fn find_api_quota_provider_for_account(
@@ -1076,6 +1697,7 @@ fn apply_api_quota_snapshot(
     snapshot: &notification_service::ApiQuotaSnapshot,
     now: i64,
 ) {
+    account.balance_display_enabled = true;
     account.api_quota_mode = snapshot.mode;
     account.api_quota_today_used_text = snapshot
         .today_used_text
@@ -1114,6 +1736,33 @@ fn apply_api_quota_snapshot(
         .or_else(|| snapshot.total_remaining_text.clone())
         .or_else(|| account.balance_text.clone());
     account.updated_at = now;
+}
+
+fn clear_api_quota_fields(account: &mut StoredAccount) {
+    account.balance_text = None;
+    account.api_quota_mode = Default::default();
+    account.api_quota_today_used_text = None;
+    account.api_quota_remaining_text = None;
+    account.api_quota_total_remaining_text = None;
+    account.api_quota_total_tokens_text = None;
+    account.api_quota_today_tokens_text = None;
+    account.api_quota_daily_window = None;
+    account.api_quota_total_window = None;
+    account.api_quota_subscription_expires_at = None;
+    if account
+        .profile_last_validation_error
+        .as_deref()
+        .is_some_and(is_api_quota_error_message)
+    {
+        account.profile_last_validation_error = None;
+    }
+}
+
+fn is_api_quota_error_message(message: &str) -> bool {
+    message.contains("NewAPI 额度接口")
+        || message.contains("连接 NewAPI 额度接口失败")
+        || message.contains("API 平台连接失败")
+        || message.contains("API 平台 URL 无效")
 }
 
 async fn refresh_usage_internal(
@@ -1329,6 +1978,15 @@ fn auth_json_last_refresh_unix(auth_json: &serde_json::Value) -> Option<i64> {
     }
 }
 
+fn auth_tokens_need_keepalive_refresh(auth_json: &serde_json::Value) -> bool {
+    auth_tokens_expire_within(auth_json, KEEPALIVE_REFRESH_WINDOW_SECS)
+        || auth_json_last_refresh_unix(auth_json)
+            .map(|last_refresh| {
+                now_unix_seconds().saturating_sub(last_refresh) >= KEEPALIVE_REFRESH_INTERVAL_SECS
+            })
+            .unwrap_or(true)
+}
+
 async fn refresh_usage_for_target(
     app: &AppHandle,
     state: &AppState,
@@ -1342,10 +2000,7 @@ async fn refresh_usage_for_target(
     let mut auth_refresh_blocked = target.auth_refresh_blocked;
     let mut auth_refresh_error = target.auth_refresh_error.clone();
 
-    if force_auth_refresh
-        && !auth_refresh_blocked
-        && auth_tokens_expire_within(&working_auth_json, KEEPALIVE_REFRESH_WINDOW_SECS)
-    {
+    if force_auth_refresh && auth_tokens_need_keepalive_refresh(&working_auth_json) {
         match refresh_chatgpt_auth_tokens_serialized(&working_auth_json, &state.auth_refresh_lock)
             .await
         {
@@ -1381,7 +2036,9 @@ async fn refresh_usage_for_target(
         Err(err) => Err(err.clone()),
     };
 
-    if !auth_refresh_blocked && should_retry_with_token_refresh(&fetch_result) {
+    if (!auth_refresh_blocked || force_auth_refresh)
+        && should_retry_with_token_refresh(&fetch_result)
+    {
         match refresh_chatgpt_auth_tokens_serialized(&working_auth_json, &state.auth_refresh_lock)
             .await
         {
@@ -1833,7 +2490,7 @@ fn probe_failure_cooldown_until(status: Option<StatusCode>, now: i64) -> Option<
 async fn prepare_auth_json_import(
     auth_json: serde_json::Value,
     label: Option<String>,
-) -> Result<PreparedImport, String> {
+) -> Result<PreparedChatgptImport, String> {
     let extracted = extract_auth(&auth_json)?;
 
     // 用量拉取失败不阻断导入流程，避免账号无法入库。
@@ -1841,7 +2498,7 @@ async fn prepare_auth_json_import(
         .await
         .ok();
 
-    Ok(PreparedImport {
+    Ok(PreparedChatgptImport {
         principal_id: extracted.principal_id,
         auth_json,
         account_id: extracted.account_id,
@@ -1853,38 +2510,48 @@ async fn prepare_auth_json_import(
 }
 
 async fn prepare_import_candidate(candidate: ImportCandidate) -> Result<PreparedImport, String> {
-    let ImportCandidate {
-        auth_json,
-        label,
-        usage,
-        plan_type,
-        email,
-        ..
-    } = candidate;
+    match candidate {
+        ImportCandidate::Chatgpt(candidate) => {
+            let extracted = extract_auth(&candidate.auth_json)?;
 
-    let extracted = extract_auth(&auth_json)?;
+            // 用量拉取失败不阻断导入流程；若来自账号库备份，则保留备份内已有快照。
+            let usage = fetch_usage_snapshot(&extracted.access_token, &extracted.account_id)
+                .await
+                .ok()
+                .or(candidate.usage);
 
-    // 用量拉取失败不阻断导入流程；若来自账号库备份，则保留备份内已有快照。
-    let usage = fetch_usage_snapshot(&extracted.access_token, &extracted.account_id)
-        .await
-        .ok()
-        .or(usage);
+            Ok(PreparedImport::Chatgpt(PreparedChatgptImport {
+                principal_id: extracted.principal_id,
+                auth_json: candidate.auth_json,
+                account_id: extracted.account_id,
+                email: extracted.email.or(candidate.email),
+                plan_type: extracted.plan_type.or(candidate.plan_type),
+                usage,
+                label: candidate.label,
+            }))
+        }
+        ImportCandidate::Relay(candidate) => {
+            let label = profile_files::normalize_relay_label(&candidate.label)?;
+            let base_url = profile_files::normalize_relay_base_url(&candidate.base_url)?;
+            let api_key = profile_files::normalize_relay_api_key(&candidate.api_key)?;
+            let model_name = profile_files::normalize_relay_model_name(
+                candidate.model_name.as_deref().unwrap_or("gpt-5"),
+            )?;
 
-    Ok(PreparedImport {
-        principal_id: extracted.principal_id,
-        auth_json,
-        account_id: extracted.account_id,
-        email: extracted.email.or(email),
-        plan_type: extracted.plan_type.or(plan_type),
-        usage,
-        label,
-    })
+            Ok(PreparedImport::Relay(PreparedRelayImport {
+                label,
+                base_url,
+                api_key,
+                model_name,
+            }))
+        }
+    }
 }
 
 async fn commit_prepared_import(
     app: &AppHandle,
     state: &AppState,
-    prepared: PreparedImport,
+    prepared: PreparedChatgptImport,
 ) -> Result<AccountSummary, String> {
     let current_account_key = current_auth_account_key();
     let current_variant_key = current_auth_variant_key();
@@ -1937,6 +2604,25 @@ fn export_accounts_zip_sync(
 
     let export_path = ensure_zip_extension(selected_path);
     write_accounts_zip_archive(&export_path, export_payload)?;
+    Ok(Some(export_path.to_string_lossy().to_string()))
+}
+
+fn export_accounts_json_sync(
+    title: &str,
+    default_file_name: &str,
+    export_payload: &[u8],
+) -> Result<Option<String>, String> {
+    let Some(selected_path) = FileDialog::new()
+        .set_title(title)
+        .add_filter("JSON", &["json"])
+        .set_file_name(default_file_name)
+        .save_file()
+    else {
+        return Ok(None);
+    };
+
+    let export_path = ensure_json_extension(selected_path);
+    write_export_file_atomically(&export_path, export_payload)?;
     Ok(Some(export_path.to_string_lossy().to_string()))
 }
 
@@ -2023,6 +2709,79 @@ fn write_accounts_zip_archive(path: &Path, export_payload: &[u8]) -> Result<(), 
     write_result
 }
 
+fn write_export_file_atomically(path: &Path, export_payload: &[u8]) -> Result<(), String> {
+    let parent = path
+        .parent()
+        .ok_or_else(|| format!("无法解析导出目录 {}", path.display()))?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("创建导出目录失败 {}: {error}", parent.display()))?;
+
+    let temp_path = parent.join(format!(
+        ".{}.tmp-{}",
+        path.file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("accounts.json"),
+        uuid::Uuid::new_v4()
+    ));
+
+    let write_result = (|| -> Result<(), String> {
+        let mut export_file = fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temp_path)
+            .map_err(|error| format!("创建导出临时文件失败 {}: {error}", temp_path.display()))?;
+        export_file
+            .write_all(export_payload)
+            .map_err(|error| format!("写入导出文件失败 {}: {error}", temp_path.display()))?;
+        export_file
+            .sync_all()
+            .map_err(|error| format!("刷新导出文件失败 {}: {error}", temp_path.display()))?;
+        drop(export_file);
+        set_private_permissions(&temp_path);
+
+        #[cfg(target_family = "unix")]
+        {
+            fs::rename(&temp_path, path).map_err(|error| {
+                format!(
+                    "写入导出文件失败 {} -> {}: {error}",
+                    temp_path.display(),
+                    path.display()
+                )
+            })?;
+
+            let parent_dir = fs::File::open(parent)
+                .map_err(|error| format!("打开导出目录失败 {}: {error}", parent.display()))?;
+            parent_dir
+                .sync_all()
+                .map_err(|error| format!("刷新导出目录失败 {}: {error}", parent.display()))?;
+        }
+
+        #[cfg(not(target_family = "unix"))]
+        {
+            if path.exists() {
+                fs::remove_file(path)
+                    .map_err(|error| format!("删除旧导出文件失败 {}: {error}", path.display()))?;
+            }
+            fs::rename(&temp_path, path).map_err(|error| {
+                format!(
+                    "写入导出文件失败 {} -> {}: {error}",
+                    temp_path.display(),
+                    path.display()
+                )
+            })?;
+        }
+
+        set_private_permissions(path);
+        Ok(())
+    })();
+
+    if write_result.is_err() {
+        let _ = fs::remove_file(&temp_path);
+    }
+
+    write_result
+}
+
 fn ensure_zip_extension(path: PathBuf) -> PathBuf {
     let has_zip_extension = path
         .extension()
@@ -2037,13 +2796,27 @@ fn ensure_zip_extension(path: PathBuf) -> PathBuf {
     }
 }
 
+fn ensure_json_extension(path: PathBuf) -> PathBuf {
+    let has_json_extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.eq_ignore_ascii_case("json"))
+        .unwrap_or(false);
+
+    if has_json_extension {
+        path
+    } else {
+        path.with_extension("json")
+    }
+}
+
 fn upsert_prepared_import(
     store: &mut AccountsStore,
-    prepared: PreparedImport,
+    prepared: PreparedChatgptImport,
     current_account_key: Option<&str>,
     current_variant_key: Option<&str>,
 ) -> (AccountSummary, bool) {
-    let PreparedImport {
+    let PreparedChatgptImport {
         principal_id,
         auth_json,
         account_id,
@@ -2124,6 +2897,7 @@ fn upsert_prepared_import(
             proxy_endpoints: Vec::new(),
             model_name: None,
             balance_text: None,
+            balance_display_enabled: false,
             api_quota_mode: Default::default(),
             api_quota_today_used_text: None,
             api_quota_remaining_text: None,
@@ -2172,6 +2946,7 @@ fn upsert_prepared_import(
             proxy_endpoints: Vec::new(),
             model_name: None,
             balance_text: None,
+            balance_display_enabled: false,
             api_quota_mode: Default::default(),
             api_quota_today_used_text: None,
             api_quota_remaining_text: None,
@@ -2204,6 +2979,104 @@ fn upsert_prepared_import(
     }
 }
 
+fn upsert_prepared_relay_import(
+    store: &mut AccountsStore,
+    prepared: PreparedRelayImport,
+    current_account_key: Option<&str>,
+    current_variant_key: Option<&str>,
+) -> (AccountSummary, bool) {
+    let PreparedRelayImport {
+        label,
+        base_url,
+        api_key,
+        model_name,
+    } = prepared;
+
+    let now = now_unix_seconds();
+    let (provider_id, provider_name) =
+        infer_provider_metadata_from_base_url(Some(base_url.as_str()));
+
+    if let Some(existing) = store.accounts.iter_mut().find(|account| {
+        matches!(account.source_kind, AccountSourceKind::Relay)
+            && account.api_base_url.as_deref() == Some(base_url.as_str())
+            && account.primary_relay_api_key() == Some(api_key.as_str())
+    }) {
+        existing.label = label.clone();
+        existing.auth_json = profile_files::build_api_auth_json(&api_key);
+        existing.api_base_url = Some(base_url);
+        existing.api_key = Some(api_key.clone());
+        existing.model_name = Some(model_name);
+        existing.provider_id = provider_id;
+        existing.provider_name = provider_name;
+        existing.profile_last_validated_at = None;
+        existing.profile_last_validation_error = Some(
+            "已从 Sub2API 导入并跳过接口探测，仅启用 /v1/chat/completions；如需 Responses/Compact，请在 Key 池中手动开启。"
+                .to_string(),
+        );
+        existing.proxy_endpoints = vec![ProxyEndpointCapability::ChatCompletions];
+        existing.updated_at = now;
+        replace_primary_relay_proxy_key(existing, &label, &api_key, now);
+        sync_primary_api_key_from_relay_key_pool(existing);
+        return (
+            existing.to_summary(current_account_key, current_variant_key),
+            true,
+        );
+    }
+
+    let id = uuid::Uuid::new_v4().to_string();
+    let stored = StoredAccount {
+        id: id.clone(),
+        label: label.clone(),
+        source_kind: AccountSourceKind::Relay,
+        principal_id: None,
+        email: None,
+        account_id: profile_files::relay_account_id(&id),
+        plan_type: None,
+        auth_json: profile_files::build_api_auth_json(&api_key),
+        api_base_url: Some(base_url),
+        api_key: Some(api_key.clone()),
+        api_keys: vec![relay_proxy_key(&id, &label, &api_key, now)],
+        proxy_priority: None,
+        proxy_weight: None,
+        proxy_key_selection_mode: None,
+        proxy_endpoints: vec![ProxyEndpointCapability::ChatCompletions],
+        model_name: Some(model_name),
+        balance_text: None,
+        balance_display_enabled: false,
+        api_quota_mode: Default::default(),
+        api_quota_today_used_text: None,
+        api_quota_remaining_text: None,
+        api_quota_total_remaining_text: None,
+        api_quota_total_tokens_text: None,
+        api_quota_today_tokens_text: None,
+        api_quota_daily_window: None,
+        api_quota_total_window: None,
+        api_quota_subscription_expires_at: None,
+        provider_id,
+        provider_name,
+        tags: Vec::new(),
+        profile_auth_path: None,
+        profile_config_path: None,
+        profile_auth_ready: false,
+        profile_config_ready: false,
+        profile_integrity_error: None,
+        profile_last_validated_at: None,
+        profile_last_validation_error: Some(
+            "已从 Sub2API 导入并跳过接口探测，仅启用 /v1/chat/completions；如需 Responses/Compact，请在 Key 池中手动开启。"
+                .to_string(),
+        ),
+        added_at: now,
+        updated_at: now,
+        usage: None,
+        usage_error: None,
+        auth_refresh_blocked: false,
+        auth_refresh_error: None,
+    };
+    let summary = stored.to_summary(current_account_key, current_variant_key);
+    store.accounts.push(stored);
+    (summary, false)
+}
+
 fn apply_prepared_import_to_account(
     existing: &mut StoredAccount,
     principal_id: String,
@@ -2233,8 +3106,8 @@ fn apply_prepared_import_to_account(
     existing.auth_refresh_error = None;
 }
 
-fn apply_reauthorized_account(existing: &mut StoredAccount, prepared: PreparedImport) {
-    let PreparedImport {
+fn apply_reauthorized_account(existing: &mut StoredAccount, prepared: PreparedChatgptImport) {
+    let PreparedChatgptImport {
         principal_id,
         auth_json,
         account_id,
@@ -2272,7 +3145,7 @@ fn apply_reauthorized_account(existing: &mut StoredAccount, prepared: PreparedIm
 
 fn validate_reauthorization_target(
     existing: &StoredAccount,
-    prepared: &PreparedImport,
+    prepared: &PreparedChatgptImport,
 ) -> Result<(), String> {
     if let (Some(existing_email), Some(new_email)) =
         (existing.email.as_deref(), prepared.email.as_deref())
@@ -2322,6 +3195,10 @@ fn expand_import_value(
     source: &str,
     label_override: Option<&str>,
 ) -> Result<Vec<ImportCandidate>, String> {
+    if looks_like_sub2api_data_payload(&parsed) {
+        return expand_sub2api_data_import(parsed, source, label_override);
+    }
+
     if looks_like_accounts_store(&parsed) {
         return expand_accounts_store_import(parsed, source, label_override);
     }
@@ -2341,28 +3218,28 @@ fn expand_import_value(
             let candidates = if looks_like_stored_account(&item) {
                 import_stored_account_candidates(item, &item_source, label_override)?
             } else {
-                vec![ImportCandidate {
+                vec![ImportCandidate::Chatgpt(ChatgptImportCandidate {
                     source: item_source,
                     auth_json: normalize_imported_auth_json(item),
                     label: normalize_custom_label(label_override.map(ToString::to_string)),
                     usage: None,
                     plan_type: None,
                     email: None,
-                }]
+                })]
             };
             expanded.extend(candidates);
         }
         return Ok(expanded);
     }
 
-    Ok(vec![ImportCandidate {
+    Ok(vec![ImportCandidate::Chatgpt(ChatgptImportCandidate {
         source: source.to_string(),
         auth_json: normalize_imported_auth_json(parsed),
         label: normalize_custom_label(label_override.map(ToString::to_string)),
         usage: None,
         plan_type: None,
         email: None,
-    }])
+    })])
 }
 
 fn expand_accounts_store_import(
@@ -2426,7 +3303,7 @@ fn import_stored_account_candidates(
         .or_else(|| root.get("account_id"))
         .and_then(serde_json::Value::as_str);
 
-    Ok(vec![ImportCandidate {
+    Ok(vec![ImportCandidate::Chatgpt(ChatgptImportCandidate {
         source: describe_account_backup_source(
             source,
             normalize_custom_label(stored_label.clone())
@@ -2440,7 +3317,211 @@ fn import_stored_account_candidates(
         usage,
         plan_type,
         email,
-    }])
+    })])
+}
+
+fn looks_like_sub2api_data_payload(value: &serde_json::Value) -> bool {
+    let Some(root) = value.as_object() else {
+        return false;
+    };
+
+    if root
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .is_some_and(|value| value.eq_ignore_ascii_case(SUB2API_EXPORT_TYPE))
+    {
+        return true;
+    }
+
+    root.get("accounts")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|accounts| accounts.iter().any(looks_like_sub2api_account))
+}
+
+fn looks_like_sub2api_account(value: &serde_json::Value) -> bool {
+    let Some(root) = value.as_object() else {
+        return false;
+    };
+    root.get("credentials")
+        .and_then(serde_json::Value::as_object)
+        .is_some()
+        && root
+            .get("platform")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+        && root
+            .get("type")
+            .and_then(serde_json::Value::as_str)
+            .is_some()
+}
+
+fn expand_sub2api_data_import(
+    parsed: serde_json::Value,
+    source: &str,
+    label_override: Option<&str>,
+) -> Result<Vec<ImportCandidate>, String> {
+    let Some(root) = parsed.as_object() else {
+        return Err("Sub2API 数据格式无效（根节点不是对象）".to_string());
+    };
+    let Some(accounts) = root.get("accounts").and_then(serde_json::Value::as_array) else {
+        return Err("Sub2API 数据缺少 accounts 数组".to_string());
+    };
+    if accounts.is_empty() {
+        return Err("Sub2API 数据里没有可导入的账号".to_string());
+    }
+
+    let mut expanded = Vec::with_capacity(accounts.len());
+    for (index, account) in accounts.iter().enumerate() {
+        let item_source = format!("{source} / #{}", index + 1);
+        expanded.push(import_sub2api_account_candidate(
+            account,
+            &item_source,
+            label_override,
+        )?);
+    }
+    Ok(expanded)
+}
+
+fn import_sub2api_account_candidate(
+    account: &serde_json::Value,
+    source: &str,
+    label_override: Option<&str>,
+) -> Result<ImportCandidate, String> {
+    let Some(root) = account.as_object() else {
+        return Err("Sub2API 账号格式无效（不是对象）".to_string());
+    };
+    let platform = root
+        .get("platform")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if !platform.eq_ignore_ascii_case("openai") {
+        return Err(format!("暂不支持导入 Sub2API 平台 {platform}"));
+    }
+
+    let account_type = root
+        .get("type")
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    let credentials = root
+        .get("credentials")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| "Sub2API 账号缺少 credentials".to_string())?;
+    let stored_label = root
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .map(ToString::to_string);
+    let label = normalize_custom_label(label_override.map(ToString::to_string))
+        .or_else(|| normalize_custom_label(stored_label.clone()));
+    let described_source = describe_account_backup_source(
+        source,
+        label.as_deref().or_else(|| {
+            credentials
+                .get("email")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+        }),
+    );
+
+    if account_type.eq_ignore_ascii_case("oauth") {
+        return import_sub2api_oauth_candidate(credentials, described_source, label);
+    }
+
+    if account_type.eq_ignore_ascii_case("apikey") || account_type.eq_ignore_ascii_case("api_key") {
+        return import_sub2api_apikey_candidate(credentials, described_source, label);
+    }
+
+    Err(format!("暂不支持导入 Sub2API 账号类型 {account_type}"))
+}
+
+fn import_sub2api_oauth_candidate(
+    credentials: &serde_json::Map<String, serde_json::Value>,
+    source: String,
+    label: Option<String>,
+) -> Result<ImportCandidate, String> {
+    let access_token = required_sub2api_string(credentials, "access_token")?;
+    let id_token = required_sub2api_string(credentials, "id_token")?;
+    let refresh_token = optional_sub2api_string(credentials, "refresh_token");
+    let account_id = optional_sub2api_string(credentials, "chatgpt_account_id")
+        .or_else(|| optional_sub2api_string(credentials, "account_id"));
+
+    let mut tokens = serde_json::Map::new();
+    tokens.insert(
+        "access_token".to_string(),
+        serde_json::Value::String(access_token),
+    );
+    tokens.insert("id_token".to_string(), serde_json::Value::String(id_token));
+    if let Some(refresh_token) = refresh_token {
+        tokens.insert(
+            "refresh_token".to_string(),
+            serde_json::Value::String(refresh_token),
+        );
+    }
+    if let Some(account_id) = account_id {
+        tokens.insert(
+            "account_id".to_string(),
+            serde_json::Value::String(account_id),
+        );
+    }
+
+    let mut auth_json = serde_json::Map::new();
+    auth_json.insert(
+        "auth_mode".to_string(),
+        serde_json::Value::String("chatgpt".to_string()),
+    );
+    auth_json.insert("tokens".to_string(), serde_json::Value::Object(tokens));
+    if let Some(last_refresh) = credentials.get("last_refresh").cloned() {
+        auth_json.insert("last_refresh".to_string(), last_refresh);
+    }
+
+    Ok(ImportCandidate::Chatgpt(ChatgptImportCandidate {
+        source,
+        auth_json: normalize_imported_auth_json(serde_json::Value::Object(auth_json)),
+        label,
+        usage: None,
+        plan_type: optional_sub2api_string(credentials, "plan_type"),
+        email: optional_sub2api_string(credentials, "email"),
+    }))
+}
+
+fn import_sub2api_apikey_candidate(
+    credentials: &serde_json::Map<String, serde_json::Value>,
+    source: String,
+    label: Option<String>,
+) -> Result<ImportCandidate, String> {
+    let api_key = required_sub2api_string(credentials, "api_key")?;
+    let base_url = required_sub2api_string(credentials, "base_url")?;
+    let model_name = optional_sub2api_string(credentials, "default_model")
+        .or_else(|| optional_sub2api_string(credentials, "model"));
+
+    Ok(ImportCandidate::Relay(RelayImportCandidate {
+        source,
+        label: label.unwrap_or_else(|| "Sub2API API".to_string()),
+        base_url,
+        api_key,
+        model_name,
+    }))
+}
+
+fn required_sub2api_string(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Result<String, String> {
+    optional_sub2api_string(object, key).ok_or_else(|| format!("Sub2API 账号缺少 {key}"))
+}
+
+fn optional_sub2api_string(
+    object: &serde_json::Map<String, serde_json::Value>,
+    key: &str,
+) -> Option<String> {
+    object
+        .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string)
 }
 
 fn looks_like_accounts_store(value: &serde_json::Value) -> bool {
@@ -2491,6 +3572,7 @@ async fn resolve_create_api_quota_fields(
     input: &crate::models::CreateApiAccountInput,
     label: &str,
     base_url: &str,
+    api_key: &str,
 ) -> ResolvedApiQuotaFields {
     let fallback = ResolvedApiQuotaFields {
         mode: input.api_quota_mode,
@@ -2518,8 +3600,10 @@ async fn resolve_create_api_quota_fields(
         fallback,
         label,
         base_url,
+        Some(api_key),
         input.platform_login_email.as_deref(),
         input.platform_login_password.as_deref(),
+        input.balance_display_enabled,
     )
     .await
 }
@@ -2528,6 +3612,7 @@ async fn resolve_update_api_quota_fields(
     input: &crate::models::UpdateApiAccountInput,
     label: &str,
     base_url: &str,
+    api_key: Option<&str>,
 ) -> ResolvedApiQuotaFields {
     let fallback = ResolvedApiQuotaFields {
         mode: input.api_quota_mode,
@@ -2555,8 +3640,10 @@ async fn resolve_update_api_quota_fields(
         fallback,
         label,
         base_url,
+        api_key,
         input.platform_login_email.as_deref(),
         input.platform_login_password.as_deref(),
+        input.balance_display_enabled.unwrap_or(true),
     )
     .await
 }
@@ -2565,13 +3652,48 @@ async fn resolve_platform_api_quota_fields(
     fallback: ResolvedApiQuotaFields,
     label: &str,
     base_url: &str,
+    api_key: Option<&str>,
     email: Option<&str>,
     password: Option<&str>,
+    balance_display_enabled: bool,
 ) -> ResolvedApiQuotaFields {
-    let Some(email) = email.map(str::trim).filter(|value| !value.is_empty()) else {
+    if !balance_display_enabled {
+        return ResolvedApiQuotaFields::empty();
+    }
+
+    let email = email.map(str::trim).filter(|value| !value.is_empty());
+    let password = password.map(str::trim).filter(|value| !value.is_empty());
+
+    if let Some(api_key) = api_key
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .filter(|_| email.is_none() || password.is_none())
+    {
+        if let Ok(snapshot) =
+            notification_service::fetch_newapi_token_quota_snapshot(base_url, api_key).await
+        {
+            return ResolvedApiQuotaFields {
+                mode: snapshot.mode,
+                today_used_text: snapshot.today_used_text.or(fallback.today_used_text),
+                remaining_text: snapshot.remaining_text.or(fallback.remaining_text),
+                total_remaining_text: snapshot
+                    .total_remaining_text
+                    .or(fallback.total_remaining_text),
+                total_tokens_text: snapshot.total_tokens_text.or(fallback.total_tokens_text),
+                today_tokens_text: snapshot.today_tokens_text.or(fallback.today_tokens_text),
+                daily_window: snapshot.daily_window.or(fallback.daily_window),
+                total_window: snapshot.total_window.or(fallback.total_window),
+                subscription_expires_at: snapshot
+                    .subscription_expires_at
+                    .or(fallback.subscription_expires_at),
+            };
+        }
+    }
+
+    let Some(email) = email else {
         return fallback;
     };
-    let Some(password) = password.map(str::trim).filter(|value| !value.is_empty()) else {
+    let Some(password) = password else {
         return fallback;
     };
 
@@ -2649,25 +3771,42 @@ fn normalize_import_source(source: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::auth_tokens_need_keepalive_refresh;
     use super::build_account_summaries_for_store;
+    use super::build_api_quota_refresh_targets;
     use super::build_refresh_targets;
+    use super::build_sub2api_data_payload;
     use super::expand_import_json_content;
     use super::probe_failure_message;
     use super::relay_profile_change_requires_proxy_reset;
     use super::sync_primary_api_key_from_relay_key_pool;
     use super::upsert_prepared_import;
-    use super::PreparedImport;
+    use super::upsert_prepared_relay_import;
+    use super::ChatgptImportCandidate;
+    use super::ImportCandidate;
+    use super::PreparedChatgptImport;
+    use super::PreparedRelayImport;
     use crate::models::AccountSourceKind;
     use crate::models::AccountsStore;
     use crate::models::ActiveHybridProfile;
+    use crate::models::ApiQuotaMode;
+    use crate::models::NotificationProviderConfig;
+    use crate::models::ProxyEndpointCapability;
     use crate::models::ProxyHealthStatus;
     use crate::models::ProxyKey;
     use crate::models::StoredAccount;
     use crate::models::UsageSnapshot;
     use crate::models::UsageWindow;
     use crate::utils::now_unix_seconds;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
     use reqwest::StatusCode;
     use serde_json::json;
+
+    fn jwt_with_exp(exp: i64) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#));
+        format!("header.{payload}.signature")
+    }
 
     fn usage_snapshot(plan_type: &str) -> UsageSnapshot {
         UsageSnapshot {
@@ -2687,14 +3826,70 @@ mod tests {
         }
     }
 
+    fn chatgpt_account_for_export() -> StoredAccount {
+        StoredAccount {
+            id: "chatgpt-export".to_string(),
+            label: "ChatGPT Export".to_string(),
+            source_kind: AccountSourceKind::Chatgpt,
+            principal_id: Some("export@example.com".to_string()),
+            email: Some("export@example.com".to_string()),
+            account_id: "workspace-export".to_string(),
+            plan_type: Some("pro".to_string()),
+            auth_json: json!({
+                "auth_mode": "chatgpt",
+                "tokens": {
+                    "access_token": jwt_with_exp(1_800_000_000),
+                    "refresh_token": "refresh-export",
+                    "id_token": "id-export",
+                    "account_id": "workspace-export"
+                }
+            }),
+            api_base_url: None,
+            api_key: None,
+            api_keys: Vec::new(),
+            proxy_priority: None,
+            proxy_weight: None,
+            proxy_key_selection_mode: None,
+            proxy_endpoints: Vec::new(),
+            model_name: None,
+            balance_text: None,
+            balance_display_enabled: false,
+            api_quota_mode: Default::default(),
+            api_quota_today_used_text: None,
+            api_quota_remaining_text: None,
+            api_quota_total_remaining_text: None,
+            api_quota_total_tokens_text: None,
+            api_quota_today_tokens_text: None,
+            api_quota_daily_window: None,
+            api_quota_total_window: None,
+            api_quota_subscription_expires_at: None,
+            provider_id: None,
+            provider_name: None,
+            tags: Vec::new(),
+            profile_auth_path: None,
+            profile_config_path: None,
+            profile_auth_ready: false,
+            profile_config_ready: false,
+            profile_integrity_error: None,
+            profile_last_validated_at: None,
+            profile_last_validation_error: None,
+            added_at: 1,
+            updated_at: 2,
+            usage: None,
+            usage_error: None,
+            auth_refresh_blocked: false,
+            auth_refresh_error: None,
+        }
+    }
+
     fn prepared_import(
         principal_id: &str,
         account_id: &str,
         email: &str,
         label: &str,
         plan_type: &str,
-    ) -> PreparedImport {
-        PreparedImport {
+    ) -> PreparedChatgptImport {
+        PreparedChatgptImport {
             principal_id: principal_id.to_string(),
             auth_json: json!({ "kind": label }),
             account_id: account_id.to_string(),
@@ -2702,6 +3897,13 @@ mod tests {
             plan_type: Some(plan_type.to_string()),
             usage: Some(usage_snapshot(plan_type)),
             label: Some(label.to_string()),
+        }
+    }
+
+    fn only_chatgpt_candidate(candidates: &[ImportCandidate]) -> &ChatgptImportCandidate {
+        match candidates {
+            [ImportCandidate::Chatgpt(candidate)] => candidate,
+            _ => panic!("expected one ChatGPT import candidate"),
         }
     }
 
@@ -2716,7 +3918,7 @@ mod tests {
             plan_type: Some("api".to_string()),
             auth_json: json!({}),
             api_base_url: Some("https://api.example.com/v1".to_string()),
-            api_key: Some("test-key-settings".to_string()),
+            api_key: Some("sk-settings".to_string()),
             api_keys: Vec::new(),
             proxy_priority: None,
             proxy_weight: None,
@@ -2724,6 +3926,7 @@ mod tests {
             proxy_endpoints: Vec::new(),
             model_name: Some("gpt-5.4".to_string()),
             balance_text: None,
+            balance_display_enabled: false,
             api_quota_mode: Default::default(),
             api_quota_today_used_text: None,
             api_quota_remaining_text: None,
@@ -2752,6 +3955,189 @@ mod tests {
         }
     }
 
+    #[test]
+    fn sub2api_export_maps_chatgpt_oauth_account() {
+        let mut store = AccountsStore::default();
+        store.accounts.push(chatgpt_account_for_export());
+
+        let payload = build_sub2api_data_payload(&store).expect("payload");
+        let value = serde_json::to_value(payload).expect("json");
+        let account = value["accounts"][0].as_object().expect("account");
+
+        assert_eq!(value["type"], "sub2api-data");
+        assert_eq!(value["version"], 1);
+        assert_eq!(account["name"], "ChatGPT Export");
+        assert_eq!(account["platform"], "openai");
+        assert_eq!(account["type"], "oauth");
+        assert_eq!(account["concurrency"], 3);
+        assert_eq!(account["priority"], 100);
+        assert_eq!(
+            account["credentials"]["access_token"],
+            jwt_with_exp(1_800_000_000)
+        );
+        assert_eq!(account["credentials"]["refresh_token"], "refresh-export");
+        assert_eq!(account["credentials"]["id_token"], "id-export");
+        assert_eq!(
+            account["credentials"]["client_id"],
+            "app_EMoamEEZ73f0CkXaXp7hrann"
+        );
+        assert_eq!(account["credentials"]["email"], "export@example.com");
+        assert_eq!(account["credentials"]["plan_type"], "pro");
+        assert_eq!(
+            account["credentials"]["chatgpt_account_id"],
+            "workspace-export"
+        );
+        assert_eq!(account["credentials"]["expires_at"], "2027-01-15T08:00:00Z");
+        assert_eq!(account["extra"]["openai_passthrough"], true);
+        assert_eq!(account["extra"]["codex_cli_only"], true);
+    }
+
+    #[test]
+    fn sub2api_export_maps_relay_account_as_openai_apikey() {
+        let mut store = AccountsStore::default();
+        store.accounts.push(relay_account_for_tests());
+
+        let payload = build_sub2api_data_payload(&store).expect("payload");
+        let value = serde_json::to_value(payload).expect("json");
+        let account = value["accounts"][0].as_object().expect("account");
+
+        assert_eq!(account["name"], "Relay Settings");
+        assert_eq!(account["platform"], "openai");
+        assert_eq!(account["type"], "apikey");
+        assert_eq!(account["concurrency"], 3);
+        assert_eq!(account["credentials"]["api_key"], "sk-settings");
+        assert_eq!(
+            account["credentials"]["base_url"],
+            "https://api.example.com/v1"
+        );
+        assert_eq!(account["credentials"]["default_model"], "gpt-5.4");
+        assert_eq!(account["extra"]["openai_passthrough"], true);
+    }
+
+    fn notification_provider_for_tests(base_url: &str) -> NotificationProviderConfig {
+        NotificationProviderConfig {
+            id: "provider-1".to_string(),
+            name: "Provider".to_string(),
+            kind: Default::default(),
+            enabled: true,
+            cost_multiplier: crate::models::default_notification_cost_multiplier(),
+            base_url: base_url.to_string(),
+            email: "api@example.com".to_string(),
+            password: Some("secret".to_string()),
+            created_at: 1,
+            updated_at: 1,
+            last_test_at: None,
+            last_test_error: None,
+        }
+    }
+
+    #[test]
+    fn api_quota_refresh_prefers_sub2api_provider_when_bound() {
+        let mut account = relay_account_for_tests();
+        account.api_quota_mode = ApiQuotaMode::PlatformBasic;
+        account.balance_display_enabled = true;
+        account.balance_text = None;
+
+        let mut store = AccountsStore::default();
+        store
+            .settings
+            .notification_providers
+            .push(notification_provider_for_tests("https://api.example.com"));
+        store.accounts.push(account);
+
+        let targets = build_api_quota_refresh_targets(&store, None);
+
+        assert_eq!(targets.len(), 1);
+        match &targets[0].1 {
+            super::ApiQuotaRefreshTarget::PlatformProvider { fallback, .. } => {
+                assert!(fallback.is_some());
+            }
+            _ => panic!("expected platform provider refresh target"),
+        }
+    }
+
+    #[test]
+    fn api_quota_refresh_uses_newapi_for_api_key_balance_accounts_before_first_snapshot() {
+        let mut account = relay_account_for_tests();
+        account.api_quota_mode = ApiQuotaMode::ApiOnly;
+        account.balance_display_enabled = true;
+        account.balance_text = None;
+
+        let mut store = AccountsStore::default();
+        store
+            .settings
+            .notification_providers
+            .push(notification_provider_for_tests("https://api.example.com"));
+        store.accounts.push(account);
+
+        let targets = build_api_quota_refresh_targets(&store, None);
+
+        assert_eq!(targets.len(), 1);
+        assert!(matches!(
+            targets[0].1,
+            super::ApiQuotaRefreshTarget::NewapiToken { .. }
+        ));
+    }
+
+    #[test]
+    fn api_quota_refresh_keeps_manual_platform_account_without_api_key_fallback() {
+        let mut account = relay_account_for_tests();
+        account.api_quota_mode = ApiQuotaMode::PlatformBasic;
+        account.balance_display_enabled = true;
+        account.api_key = None;
+        account.api_keys.clear();
+
+        let mut store = AccountsStore::default();
+        store
+            .settings
+            .notification_providers
+            .push(notification_provider_for_tests("https://api.example.com"));
+        store.accounts.push(account);
+
+        let targets = build_api_quota_refresh_targets(&store, None);
+
+        assert_eq!(targets.len(), 1);
+        match &targets[0].1 {
+            super::ApiQuotaRefreshTarget::PlatformProvider { fallback, .. } => {
+                assert!(fallback.is_none());
+            }
+            _ => panic!("expected platform provider refresh target"),
+        }
+    }
+
+    #[test]
+    fn api_quota_refresh_does_not_probe_newapi_for_manual_or_sub2api_accounts() {
+        let mut account = relay_account_for_tests();
+        account.api_quota_mode = ApiQuotaMode::PlatformBasic;
+        account.balance_text = None;
+
+        let mut store = AccountsStore::default();
+        store.accounts.push(account);
+
+        let targets = build_api_quota_refresh_targets(&store, None);
+
+        assert!(targets.is_empty());
+    }
+
+    #[test]
+    fn api_quota_refresh_skips_disabled_balance_display_even_with_stale_balance() {
+        let mut account = relay_account_for_tests();
+        account.api_quota_mode = ApiQuotaMode::ApiOnly;
+        account.balance_display_enabled = false;
+        account.balance_text = Some("750000".to_string());
+
+        let mut store = AccountsStore::default();
+        store
+            .settings
+            .notification_providers
+            .push(notification_provider_for_tests("https://api.example.com"));
+        store.accounts.push(account);
+
+        let targets = build_api_quota_refresh_targets(&store, None);
+
+        assert!(targets.is_empty());
+    }
+
     fn chatgpt_account_for_tests() -> StoredAccount {
         StoredAccount {
             id: "chatgpt-settings".to_string(),
@@ -2771,6 +4157,7 @@ mod tests {
             proxy_endpoints: Vec::new(),
             model_name: None,
             balance_text: None,
+            balance_display_enabled: false,
             api_quota_mode: Default::default(),
             api_quota_today_used_text: None,
             api_quota_remaining_text: None,
@@ -2831,7 +4218,7 @@ mod tests {
             ProxyKey {
                 id: "bad".to_string(),
                 label: Some("bad".to_string()),
-                secret: Some("test-key-bad".to_string()),
+                secret: Some("sk-bad".to_string()),
                 enabled: true,
                 priority: 100,
                 weight: 100,
@@ -2845,7 +4232,7 @@ mod tests {
             ProxyKey {
                 id: "good".to_string(),
                 label: Some("good".to_string()),
-                secret: Some("test-key-good".to_string()),
+                secret: Some("sk-good".to_string()),
                 enabled: true,
                 priority: 100,
                 weight: 100,
@@ -2860,7 +4247,7 @@ mod tests {
 
         sync_primary_api_key_from_relay_key_pool(&mut account);
 
-        assert_eq!(account.api_key.as_deref(), Some("test-key-good"));
+        assert_eq!(account.api_key.as_deref(), Some("sk-good"));
     }
 
     #[test]
@@ -2889,7 +4276,7 @@ mod tests {
             &account,
             "https://api.example.com/v1",
             "gpt-5.4",
-            Some("test-key-changed"),
+            Some("sk-changed"),
         ));
     }
 
@@ -2931,19 +4318,20 @@ mod tests {
         let candidates = expand_import_json_content(&raw, "accounts.json", None).unwrap();
 
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].label.as_deref(), Some("Alpha"));
-        assert_eq!(candidates[0].email.as_deref(), Some("alpha@example.com"));
-        assert_eq!(candidates[0].plan_type.as_deref(), Some("team"));
+        let candidate = only_chatgpt_candidate(&candidates);
+        assert_eq!(candidate.label.as_deref(), Some("Alpha"));
+        assert_eq!(candidate.email.as_deref(), Some("alpha@example.com"));
+        assert_eq!(candidate.plan_type.as_deref(), Some("team"));
         assert_eq!(
-            candidates[0]
+            candidate
                 .usage
                 .as_ref()
                 .and_then(|usage| usage.plan_type.as_deref()),
             Some("team")
         );
-        assert_eq!(candidates[0].source, "accounts.json / #1 / Alpha");
+        assert_eq!(candidate.source, "accounts.json / #1 / Alpha");
         assert_eq!(
-            candidates[0]
+            candidate
                 .auth_json
                 .get("tokens")
                 .and_then(serde_json::Value::as_object)
@@ -2976,8 +4364,9 @@ mod tests {
         let candidates = expand_import_json_content(&raw, "account.json", None).unwrap();
 
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].label.as_deref(), Some("Solo"));
-        assert_eq!(candidates[0].source, "account.json / Solo");
+        let candidate = only_chatgpt_candidate(&candidates);
+        assert_eq!(candidate.label.as_deref(), Some("Solo"));
+        assert_eq!(candidate.source, "account.json / Solo");
     }
 
     #[test]
@@ -2993,9 +4382,10 @@ mod tests {
         let candidates = expand_import_json_content(&raw, "auth.json", None).unwrap();
 
         assert_eq!(candidates.len(), 1);
-        assert_eq!(candidates[0].source, "auth.json");
+        let candidate = only_chatgpt_candidate(&candidates);
+        assert_eq!(candidate.source, "auth.json");
         assert_eq!(
-            candidates[0]
+            candidate
                 .auth_json
                 .get("tokens")
                 .and_then(serde_json::Value::as_object)
@@ -3003,6 +4393,91 @@ mod tests {
                 .and_then(serde_json::Value::as_str),
             Some("access-1")
         );
+    }
+
+    #[test]
+    fn expand_import_json_content_supports_sub2api_oauth_data() {
+        let raw = json!({
+            "exported_at": "2026-05-24T00:00:00Z",
+            "proxies": [],
+            "accounts": [
+                {
+                    "name": "Sub2 OAuth",
+                    "platform": "openai",
+                    "type": "oauth",
+                    "credentials": {
+                        "access_token": "access-sub2",
+                        "refresh_token": "refresh-sub2",
+                        "id_token": "id-sub2",
+                        "chatgpt_account_id": "workspace-sub2",
+                        "email": "sub2@example.com",
+                        "plan_type": "team"
+                    }
+                }
+            ]
+        })
+        .to_string();
+
+        let candidates = expand_import_json_content(&raw, "sub2api.json", None).unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        let candidate = only_chatgpt_candidate(&candidates);
+        assert_eq!(candidate.source, "sub2api.json / #1 / Sub2 OAuth");
+        assert_eq!(candidate.label.as_deref(), Some("Sub2 OAuth"));
+        assert_eq!(candidate.email.as_deref(), Some("sub2@example.com"));
+        assert_eq!(candidate.plan_type.as_deref(), Some("team"));
+        assert_eq!(
+            candidate
+                .auth_json
+                .get("tokens")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|tokens| tokens.get("account_id"))
+                .and_then(serde_json::Value::as_str),
+            Some("workspace-sub2")
+        );
+        assert_eq!(
+            candidate
+                .auth_json
+                .get("tokens")
+                .and_then(serde_json::Value::as_object)
+                .and_then(|tokens| tokens.get("refresh_token"))
+                .and_then(serde_json::Value::as_str),
+            Some("refresh-sub2")
+        );
+    }
+
+    #[test]
+    fn expand_import_json_content_supports_sub2api_apikey_data() {
+        let raw = json!({
+            "type": "sub2api-data",
+            "version": 1,
+            "accounts": [
+                {
+                    "name": "Sub2 API",
+                    "platform": "openai",
+                    "type": "apikey",
+                    "credentials": {
+                        "api_key": "sk-sub2",
+                        "base_url": "https://api.example.com/v1",
+                        "default_model": "gpt-5.4"
+                    }
+                }
+            ]
+        })
+        .to_string();
+
+        let candidates = expand_import_json_content(&raw, "sub2api.json", None).unwrap();
+
+        assert_eq!(candidates.len(), 1);
+        let candidate = match &candidates[..] {
+            [ImportCandidate::Relay(candidate)] => candidate,
+            _ => panic!("expected one Relay import candidate"),
+        };
+        assert_eq!(candidate.source, "sub2api.json / #1 / Sub2 API");
+        assert_eq!(candidate.label, "Sub2 API");
+        assert_eq!(candidate.api_key, "sk-sub2");
+        assert_eq!(candidate.base_url, "https://api.example.com/v1");
+        assert_eq!(candidate.model_name.as_deref(), Some("gpt-5.4"));
     }
 
     #[test]
@@ -3026,6 +4501,7 @@ mod tests {
             proxy_endpoints: Vec::new(),
             model_name: None,
             balance_text: None,
+            balance_display_enabled: false,
             api_quota_mode: Default::default(),
             api_quota_today_used_text: None,
             api_quota_remaining_text: None,
@@ -3080,7 +4556,7 @@ mod tests {
     #[test]
     fn upsert_prepared_import_prefers_auth_plan_type_over_usage_plan_type() {
         let mut store = AccountsStore::default();
-        let prepared = PreparedImport {
+        let prepared = PreparedChatgptImport {
             principal_id: "shared@example.com".to_string(),
             auth_json: json!({ "kind": "team-auth" }),
             account_id: "account-1".to_string(),
@@ -3101,6 +4577,35 @@ mod tests {
                 .as_ref()
                 .and_then(|usage| usage.plan_type.as_deref()),
             Some("plus")
+        );
+    }
+
+    #[test]
+    fn upsert_prepared_relay_import_creates_relay_account() {
+        let mut store = AccountsStore::default();
+        let prepared = PreparedRelayImport {
+            label: "Sub2 API".to_string(),
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key: "sk-sub2".to_string(),
+            model_name: "gpt-5.4".to_string(),
+        };
+
+        let (summary, updated_existing) =
+            upsert_prepared_relay_import(&mut store, prepared, None, None);
+
+        assert!(!updated_existing);
+        assert!(matches!(summary.source_kind, AccountSourceKind::Relay));
+        assert_eq!(summary.label, "Sub2 API");
+        assert_eq!(
+            summary.api_base_url.as_deref(),
+            Some("https://api.example.com/v1")
+        );
+        assert_eq!(summary.model_name.as_deref(), Some("gpt-5.4"));
+        assert_eq!(store.accounts.len(), 1);
+        assert_eq!(store.accounts[0].api_key.as_deref(), Some("sk-sub2"));
+        assert_eq!(
+            store.accounts[0].proxy_endpoints,
+            vec![ProxyEndpointCapability::ChatCompletions]
         );
     }
 
@@ -3169,6 +4674,7 @@ mod tests {
             proxy_endpoints: Vec::new(),
             model_name: None,
             balance_text: None,
+            balance_display_enabled: false,
             api_quota_mode: Default::default(),
             api_quota_today_used_text: None,
             api_quota_remaining_text: None,
@@ -3256,6 +4762,7 @@ mod tests {
             proxy_endpoints: Vec::new(),
             model_name: None,
             balance_text: None,
+            balance_display_enabled: false,
             api_quota_mode: Default::default(),
             api_quota_today_used_text: None,
             api_quota_remaining_text: None,
@@ -3314,18 +4821,86 @@ mod tests {
     }
 
     #[test]
+    fn keepalive_refreshes_one_day_before_access_token_expiry() {
+        let now = now_unix_seconds();
+        let soon_expiring_auth = json!({
+            "auth_mode": "chatgpt",
+            "last_refresh": now,
+            "tokens": {
+                "access_token": jwt_with_exp(now + 23 * 60 * 60),
+                "id_token": jwt_with_exp(now + 23 * 60 * 60),
+                "refresh_token": "old-refresh",
+                "account_id": "account-1"
+            }
+        });
+        let fresh_auth = json!({
+            "auth_mode": "chatgpt",
+            "last_refresh": now,
+            "tokens": {
+                "access_token": jwt_with_exp(now + 25 * 60 * 60),
+                "id_token": jwt_with_exp(now + 25 * 60 * 60),
+                "refresh_token": "old-refresh",
+                "account_id": "account-1"
+            }
+        });
+
+        assert!(auth_tokens_need_keepalive_refresh(&soon_expiring_auth));
+        assert!(!auth_tokens_need_keepalive_refresh(&fresh_auth));
+    }
+
+    #[test]
+    fn keepalive_rotates_refresh_token_after_seven_days_even_when_access_token_is_fresh() {
+        let now = now_unix_seconds();
+        let stale_rotation_auth = json!({
+            "auth_mode": "chatgpt",
+            "last_refresh": now - 7 * 24 * 60 * 60,
+            "tokens": {
+                "access_token": jwt_with_exp(now + 10 * 24 * 60 * 60),
+                "id_token": jwt_with_exp(now + 10 * 24 * 60 * 60),
+                "refresh_token": "old-refresh",
+                "account_id": "account-1"
+            }
+        });
+        let recent_rotation_auth = json!({
+            "auth_mode": "chatgpt",
+            "last_refresh": now - 6 * 24 * 60 * 60,
+            "tokens": {
+                "access_token": jwt_with_exp(now + 10 * 24 * 60 * 60),
+                "id_token": jwt_with_exp(now + 10 * 24 * 60 * 60),
+                "refresh_token": "old-refresh",
+                "account_id": "account-1"
+            }
+        });
+        let missing_rotation_timestamp_auth = json!({
+            "auth_mode": "chatgpt",
+            "tokens": {
+                "access_token": jwt_with_exp(now + 10 * 24 * 60 * 60),
+                "id_token": jwt_with_exp(now + 10 * 24 * 60 * 60),
+                "refresh_token": "old-refresh",
+                "account_id": "account-1"
+            }
+        });
+
+        assert!(auth_tokens_need_keepalive_refresh(&stale_rotation_auth));
+        assert!(!auth_tokens_need_keepalive_refresh(&recent_rotation_auth));
+        assert!(auth_tokens_need_keepalive_refresh(
+            &missing_rotation_timestamp_auth
+        ));
+    }
+
+    #[test]
     fn probe_failure_message_redacts_upstream_body() {
         let key_prefix = "s";
-        let secret_value = format!("{key_prefix}k-probe-secret-redacted-fixture");
+        let secret_value = format!("{key_prefix}k-probe-secret-1234567890");
         let local_path = ["D:", "\\workspace\\secret"].concat();
-        let upstream = ["https://", "api.redacted.example.invalid/v1"].concat();
+        let upstream = ["https://", "api.secret.example.com/v1"].concat();
         let body = format!("failed with {secret_value} {local_path} {upstream}");
 
         let message = probe_failure_message(StatusCode::BAD_GATEWAY, &body);
 
         assert!(!message.contains(&secret_value));
         assert!(!message.contains(&local_path));
-        assert!(!message.contains("api.redacted.example.invalid"));
+        assert!(!message.contains("api.secret.example.com"));
         assert!(message.contains("[已隐藏密钥]"));
         assert!(message.contains("[已隐藏本地路径]"));
     }

@@ -90,11 +90,6 @@
   overflow: visible;
 }
 
-.accountUngroupedGrid .accountCardSelector {
-  top: 12px;
-  left: 12px;
-}
-
 .accountGroupEmptyText {
   margin: 0;
   color: var(--subtle);
@@ -773,35 +768,6 @@
   width: min(100%, var(--account-card-width, 312px));
   min-height: 390px;
   height: auto;
-}
-
-.accountCardSlot.isSelected .accountCard {
-  border-color: color-mix(in srgb, var(--brand-hot) 48%, var(--brand-cool) 52%);
-  box-shadow:
-    0 14px 28px rgba(28, 43, 68, 0.08),
-    0 0 0 1px color-mix(in srgb, var(--brand-hot) 22%, transparent);
-}
-
-.accountCardSelector {
-  position: absolute;
-  top: -8px;
-  left: -8px;
-  z-index: 3;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  border-radius: 999px;
-  border: 1px solid color-mix(in srgb, var(--line) 82%, var(--surface-tint) 18%);
-  background: color-mix(in srgb, var(--card) 96%, transparent);
-  box-shadow: 0 6px 14px rgba(18, 34, 54, 0.08);
-}
-
-.accountCardSelector input {
-  width: 14px;
-  height: 14px;
-  accent-color: var(--button-primary-bg);
 }
 
 .referenceCardSlot,
@@ -1656,6 +1622,37 @@
   white-space: normal;
   word-break: break-word;
   overflow-wrap: anywhere;
+}
+
+.accountLaunchModeHint {
+  width: fit-content;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--line) 76%, var(--surface-tint) 24%);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--card) 70%, var(--surface-tint) 30%);
+}
+
+.accountLaunchModeHint span {
+  min-width: 0;
+  color: var(--subtle);
+  font: 720 0.68rem/1.15 var(--font-ui);
+  letter-spacing: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.accountLaunchModeHint.isEnhanced {
+  border-color: color-mix(in srgb, var(--tone-a) 38%, var(--line) 62%);
+  background: color-mix(in srgb, var(--tone-a) 11%, var(--card) 89%);
+}
+
+.accountLaunchModeHint.isEnhanced span {
+  color: color-mix(in srgb, var(--tone-a) 66%, var(--ink) 34%);
 }
 
 .accountMetaPanel {

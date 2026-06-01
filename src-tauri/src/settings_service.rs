@@ -149,6 +149,9 @@ pub(crate) async fn update_app_settings_internal(
         if let Some(value) = patch.smart_switch_include_api {
             store.settings.smart_switch_include_api = value;
         }
+        if let Some(value) = patch.api_enhanced_launch_enabled {
+            store.settings.api_enhanced_launch_enabled = value;
+        }
         if let Some(value) = patch.usage_auto_refresh_enabled {
             store.settings.usage_auto_refresh_enabled = value;
         }

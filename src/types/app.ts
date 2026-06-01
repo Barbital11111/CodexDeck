@@ -28,26 +28,20 @@ export type CodexTokenTotals = {
   totalTokens: number;
 };
 
-export type CodexTokenSessionUsage = {
-  startedAt: number | null;
-  updatedAt: number;
-  total: CodexTokenTotals;
-};
-
 export type CodexTokenUsageSnapshot = {
   updatedAt: number;
   sourcePathCount: number;
   failedPathCount: number;
   eventCount: number;
-  last24h: CodexTokenTotals;
   last7d: CodexTokenTotals;
   last30d: CodexTokenTotals;
-  latestSession: CodexTokenSessionUsage | null;
 };
 
 export type AccountSourceKind = "chatgpt" | "relay";
 
 export type ApiQuotaMode = "apiOnly" | "platformBasic" | "platformSubscription" | "admin";
+
+export type AccountsExportFormat = "codexDeck" | "sub2api";
 
 export type AccountSummary = {
   id: string;
@@ -60,6 +54,7 @@ export type AccountSummary = {
   apiBaseUrl: string | null;
   modelName: string | null;
   balanceText: string | null;
+  balanceDisplayEnabled: boolean;
   apiQuotaMode: ApiQuotaMode;
   apiQuotaTodayUsedText?: string | null;
   apiQuotaRemainingText?: string | null;
@@ -293,6 +288,7 @@ export type AppSettings = {
   trayUsageDisplayMode: TrayUsageDisplayMode;
   launchCodexAfterSwitch: boolean;
   smartSwitchIncludeApi: boolean;
+  apiEnhancedLaunchEnabled: boolean;
   usageAutoRefreshEnabled: boolean;
   usageAutoRefreshIntervalSecs: number;
   apiQuotaAutoRefreshEnabled: boolean;

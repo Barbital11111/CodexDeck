@@ -785,7 +785,7 @@ async function testBotConnection(bot: NotificationBotConfig) {
 async function discoverTelegramChats(botToken: string) {
   if (isPreviewRuntime()) {
     return {
-      botUsername: "codexdeck_demo_bot",
+      botUsername: "codex_switch_demo_bot",
       chats: [
         {
           id: "123456789",

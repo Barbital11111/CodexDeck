@@ -1,105 +1,121 @@
-# CodexDeck
+# Codex Switch
 
-CodexDeck 是一个面向 Codex 使用者的桌面工作台，用来集中管理 Codex 账号、API 中转配置、额度状态和通知链路。
+Codex Switch 是一个基于 **React + Tauri** 的桌面工具，用来管理 Codex 账号、OpenAI 兼容 API 配置、账号 profile 切换、用量查看和后续额度通知。
 
-它适合同时维护多个 Codex OAuth 账号、多个 API 平台，或者希望把账号状态、额度查询、API 配置和通知规则放到同一个本地控制台里管理的使用场景。
+项目边界：
 
-![CodexDeck 账号工作台](docs/images/accounts-overview.png)
+- 管理 OAuth 账号与外部 API 配置
+- 为每个账号/API 维护独立 `auth.json` 与 `config.toml` profile
+- 一键切换当前 Codex 配置并启动 Codex
+- 查看账号用量，支持智能切换与分组
+- 预留通知中心，用于后续接入额度预警、恢复提醒和状态汇总
+- 不再内置本地网关、Sub2API Docker、cloudflared 或远程反代部署
 
-## 主要能力
-
-- 管理 Codex OAuth 账号、账号分组和 API 中转配置。
-- 在账号和 API profile 之间快速切换，减少手动修改本地配置文件。
-- 查看 Codex 账号额度；API 平台绑定账号后，也可以显示可查询到的用量和余额。
-- 通过数据源、发送渠道、消息模板和计划规则创建通知链路。
-- 接入外部远程控制安装版 runtime，在 CodexDeck 中启动控制台、查看连接信息并安装手机 APK。
-
-## 使用流程
-
-### 账号与 API 工作台
-
-账号列表会把 Codex 账号和 API 中转条目放在同一个工作区里。API 条目可以是仅 API Key 的配置，也可以绑定平台账号，用于显示余额、订阅额度或管理员统计信息。
-
-![账号与 API 工作台](docs/images/accounts-overview.png)
-
-### 导入账号
-
-CodexDeck 支持 OAuth 网页登录、同步当前设备登录态、上传账号文件，以及直接导入 API。
-
-![首次使用添加账号](docs/images/first-use-add-account.png)
-
-![OAuth 账号导入](docs/images/account-import-oauth.png)
-
-导入 API 时，只需要填写名称、Base URL、API Key 和模型名称即可保存为独立 profile。
-
-![API 基础导入](docs/images/api-import-basic.png)
-
-如果开启余额显示，可以额外填写平台账号信息，用于后续查询 API 平台的余额或用量。
-
-![API 余额显示](docs/images/api-import-quota.png)
-
-### 创建通知链路
-
-通知链路由几个可复用模块组成：
-
-1. 添加额度或用量数据源。
-2. 添加 Telegram Bot、Webhook 等发送渠道。
-3. 选择内置模板，或编辑自定义消息模板。
-4. 创建通知规则，设置每日定时、间隔推送或手动触发，并在保存前发送测试消息。
-
-![通知中心概览](docs/images/notification-home.png)
-
-![通知数据源](docs/images/notification-data-sources.png)
-
-![新建通知规则](docs/images/notification-rule-drawer.png)
-
-### 远程控制
-
-远程控制页会接入外部安装版 runtime。CodexDeck 只作为外壳，负责启动/停止控制台、展示运行状态、最近日志、控制台地址、连接地址、连接码和手机 APK 安装入口。
-
-普通 Codex 不会被手机端接管；手机端连接的是安装版受控 Codex。
+仓库地址：<https://github.com/Barbital11111/codex-switch>
 
 ## 当前状态
 
-CodexDeck 2.0.4 覆盖账号管理、API profile 管理、额度可视化、通知规则、provider 写入修复，以及外部远程控制安装版 runtime 接入。
+Codex Switch 正在从早期 Codex Tools 分支重构独立化。旧本地网关运行面已经移除；如果你需要 Sub2API、mihomo 或其他网关，请把它们作为外部服务部署，然后在 Codex Switch 中按普通 API 配置填写：
 
-API 中转 profile 会固定写入 `codexdeck_api` provider，并禁用 responses websocket。切回普通 Codex 账号时，会同步线程 provider 回 `openai`，以降低会话不可见风险。
+```text
+Base URL: http://<你的网关地址>/v1
+API Key:  <外部网关生成的 Key>
+```
 
-## 本地开发
+## 快速启动（本地开发）
+
+### 环境准备
+
+- Node.js 20+
+- Rust stable
+- Windows 或 macOS
+
+### 安装依赖
 
 ```bash
 npm install
-npm run dev
 ```
 
-桌面端预览：
+### 启动桌面应用（推荐隔离预览）
 
 ```bash
 npm run dev:desktop
 ```
 
-远程控制开发/打包需要一份外部安装版 runtime。源码仓库只保留适配层，不提交 runtime 内容。打包时需要显式传入 runtime 来源，或设置环境变量：
+该命令会把开发预览使用的数据隔离到仓库内 `.dev-runtime/`，避免本地调试时覆盖正式安装版保存的账号、profile 与 `~/.codex` 配置。
 
-```powershell
-$env:CODEXDECK_REMOTE_RUNTIME_SOURCE = "<runtime-install-root>"
-```
-
-打包脚本会把 runtime staged 到：
-
-```text
-src-tauri/resources/codex-command-runtime/
-```
-
-该目录除 `.gitkeep` 外被 `.gitignore` 忽略，不进入源码仓库；发布脚本会排除运行态日志、设备状态、受控 Codex 用户数据和 pid 文件。
-
-常用验证：
+如果你只想看浏览器页面，也可以使用：
 
 ```bash
-npm run lint
+npm run dev
+```
+
+## 主要功能
+
+### 账号管理
+
+- 支持 OAuth 登录导入
+- 支持上传单个或多个 `.json` 文件批量导入
+- 支持导入导出的 `accounts.json` 备份
+- 导入结束后会恢复当前本机登录态，不覆盖你正在使用的账号
+
+### API 配置
+
+- 支持 OpenAI 兼容 `Base URL + API Key + Model` 配置
+- 保存前会检测 `/responses` 等接口能力
+- 切换时自动写入独立 profile
+- 可用于连接外部 NAS/Sub2API/自建网关
+
+### 用量查看与智能切换
+
+- 展示账号 **5h**、**1week** 用量窗口和计划类型
+- 支持手动刷新和后台自动刷新
+- 支持按余量排序和智能切换到更合适的账号
+- 为后续通知中心提供数据基础
+
+### 切换账号并联动本机环境
+
+- 一键切换账号并启动 Codex
+- 找不到桌面应用时自动回退到 `codex app`
+- 可选同步 Opencode OpenAI 授权
+- 可选在切换后重启已选编辑器
+
+## 过渡安装策略
+
+当前构建采用“覆盖旧安装优先”的过渡策略：
+
+```text
+安装器产品名: Codex Tools
+应用窗口/界面: Codex Switch
+应用身份:     com.carry.codex-tools
+数据目录:     %APPDATA%\com.carry.codex-tools
+```
+
+这样做是为了让 Windows/NSIS 能识别本机已安装的 Codex Tools 1.9.3，并用 1.9.4 过渡包直接覆盖安装，而不是并排安装一个新程序。后续如果要切换到真正独立的 `io.github.barbital11111.codex-switch` 身份，需要单独做迁移包，避免丢失用户账号和 profile。
+
+过渡包不会迁移旧网关/Docker runtime 数据，账号相关数据继续使用原目录：
+
+- `accounts.json`
+- `accounts.json.last-good.json`
+- `accounts.json.prev-good.json`
+- `profiles/`
+
+开发预览仍使用仓库内 `.dev-runtime/` 隔离目录，并会优先从正式安装版的旧数据目录复制账号与 profile 副本。
+
+## 打包与发布
+
+常用验证命令：
+
+```bash
+npx tsc --noEmit
+npm run lint -- --max-warnings=0
 npm run build
+cargo check --manifest-path src-tauri/Cargo.toml
 cargo test --manifest-path src-tauri/Cargo.toml
 ```
 
+发布前必须执行脱敏检查，确认没有本地路径、邮箱、token、API key、auth 文件、`.env`、Docker runtime 数据或私有订阅泄露。
+
 ## License
 
-MIT
+MIT，详见 [LICENSE](LICENSE)。

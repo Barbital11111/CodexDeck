@@ -17,7 +17,7 @@ Tauri updater 必须使用一对固定的签名密钥：
 可以使用 Tauri CLI 生成一套新密钥：
 
 ```powershell
-npx @tauri-apps/cli signer generate -w "$env:USERPROFILE\\.tauri\\codexdeck-updater.key"
+npx @tauri-apps/cli signer generate -w "$env:USERPROFILE\\.tauri\\codex-tools-updater.key"
 ```
 
 如果你丢失了当前已发布版本对应的私钥，**这批已经安装的用户就无法继续通过应用内更新升级**。这种情况下只能：
@@ -68,7 +68,7 @@ git push origin v1.8.3
 
 仓库已经内置一个本地脚本，会默认读取：
 
-- `%USERPROFILE%\.tauri\codexdeck-updater.key`
+- `%USERPROFILE%\.tauri\codex-tools-updater.key`
 
 直接执行：
 

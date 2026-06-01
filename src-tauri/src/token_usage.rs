@@ -5,6 +5,7 @@ use std::io::BufReader;
 use std::path::Path;
 use std::path::PathBuf;
 
+use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
 use time::format_description::well_known::Rfc3339;
@@ -14,9 +15,10 @@ use crate::app_paths;
 use crate::utils::now_unix_seconds;
 
 const DAY_SECONDS: i64 = 24 * 60 * 60;
+const TOKEN_USAGE_CACHE_FILE: &str = "token-usage-daily-cache.json";
 const MAX_REASONABLE_SINGLE_TOKEN_DELTA: u64 = 10_000_000;
 
-#[derive(Debug, Clone, Default, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CodexTokenTotals {
     pub(crate) input_tokens: u64,
@@ -26,25 +28,22 @@ pub(crate) struct CodexTokenTotals {
     pub(crate) total_tokens: u64,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct CodexTokenSessionUsage {
-    pub(crate) started_at: Option<i64>,
-    pub(crate) updated_at: i64,
-    pub(crate) total: CodexTokenTotals,
-}
-
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CodexTokenUsageSnapshot {
     pub(crate) updated_at: i64,
     pub(crate) source_path_count: usize,
     pub(crate) failed_path_count: usize,
     pub(crate) event_count: usize,
-    pub(crate) last_24h: CodexTokenTotals,
     pub(crate) last_7d: CodexTokenTotals,
     pub(crate) last_30d: CodexTokenTotals,
-    pub(crate) latest_session: Option<CodexTokenSessionUsage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CodexTokenUsageCache {
+    cache_day: i64,
+    snapshot: CodexTokenUsageSnapshot,
 }
 
 #[derive(Debug, Clone)]
@@ -54,21 +53,81 @@ struct ParsedTokenEvent {
     total: Option<CodexTokenTotals>,
 }
 
-#[derive(Debug, Default)]
-struct ParsedSession {
-    started_at: Option<i64>,
-    updated_at: Option<i64>,
-    total: CodexTokenTotals,
-    fallback_total: CodexTokenTotals,
-}
-
 pub(crate) fn collect_codex_token_usage_snapshot() -> Result<CodexTokenUsageSnapshot, String> {
+    let now = now_unix_seconds();
+    if let Some(snapshot) = read_cached_snapshot(now) {
+        return Ok(snapshot);
+    }
+
     let codex_dir = app_paths::codex_dir()?;
     let roots = [
         codex_dir.join("sessions"),
         codex_dir.join("archived_sessions"),
     ];
-    Ok(scan_codex_token_usage_roots(&roots, now_unix_seconds()))
+    let snapshot = scan_codex_token_usage_roots(&roots, now);
+    if let Err(error) = write_cached_snapshot(&snapshot) {
+        log::warn!("写入 Codex token 用量缓存失败: {error}");
+    }
+    Ok(snapshot)
+}
+
+fn read_cached_snapshot(now: i64) -> Option<CodexTokenUsageSnapshot> {
+    let cache_path = token_usage_cache_path().ok()?;
+    let content = fs::read_to_string(cache_path).ok()?;
+    let cache = serde_json::from_str::<CodexTokenUsageCache>(&content).ok()?;
+    if cache.cache_day == cache_day(now) {
+        return Some(cache.snapshot);
+    }
+    None
+}
+
+fn write_cached_snapshot(snapshot: &CodexTokenUsageSnapshot) -> Result<(), String> {
+    let cache_path = token_usage_cache_path()?;
+    if let Some(parent) = cache_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("创建 Codex token 用量缓存目录失败: {error}"))?;
+    }
+    let cache = CodexTokenUsageCache {
+        cache_day: cache_day(snapshot.updated_at),
+        snapshot: snapshot.clone(),
+    };
+    let serialized = serde_json::to_string_pretty(&cache)
+        .map_err(|error| format!("序列化 Codex token 用量缓存失败: {error}"))?;
+    fs::write(cache_path, serialized)
+        .map_err(|error| format!("写入 Codex token 用量缓存失败: {error}"))
+}
+
+fn token_usage_cache_path() -> Result<PathBuf, String> {
+    let data_dir = app_data_dir_without_tauri_handle()?;
+    Ok(data_dir.join(TOKEN_USAGE_CACHE_FILE))
+}
+
+fn app_data_dir_without_tauri_handle() -> Result<PathBuf, String> {
+    #[cfg(debug_assertions)]
+    {
+        if let Some(path) = env_path("CODEX_SWITCH_DEV_DATA_DIR")
+            .or_else(|| env_path("CODEX_TOOLS_DEV_DATA_DIR"))
+        {
+            return Ok(path);
+        }
+    }
+
+    dirs::data_dir()
+        .map(|path| path.join("com.carry.codex-tools"))
+        .ok_or_else(|| "无法读取应用数据目录".to_string())
+}
+
+fn env_path(name: &str) -> Option<PathBuf> {
+    let value = std::env::var(name).ok()?;
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(trimmed))
+}
+
+fn cache_day(timestamp: i64) -> i64 {
+    timestamp.div_euclid(DAY_SECONDS)
 }
 
 fn scan_codex_token_usage_roots(roots: &[PathBuf], now: i64) -> CodexTokenUsageSnapshot {
@@ -83,13 +142,10 @@ fn scan_codex_token_usage_roots(roots: &[PathBuf], now: i64) -> CodexTokenUsageS
         source_path_count: files.len(),
         failed_path_count,
         event_count: 0,
-        last_24h: CodexTokenTotals::default(),
         last_7d: CodexTokenTotals::default(),
         last_30d: CodexTokenTotals::default(),
-        latest_session: None,
     };
 
-    let last_24h_start = now.saturating_sub(DAY_SECONDS);
     let last_7d_start = now.saturating_sub(7 * DAY_SECONDS);
     let last_30d_start = now.saturating_sub(30 * DAY_SECONDS);
 
@@ -110,12 +166,6 @@ fn scan_codex_token_usage_roots(roots: &[PathBuf], now: i64) -> CodexTokenUsageS
                 if !session.is_subagent_session {
                     add_window_delta_from_events(
                         &events,
-                        last_24h_start,
-                        now,
-                        &mut snapshot.last_24h,
-                    );
-                    add_window_delta_from_events(
-                        &events,
                         last_7d_start,
                         now,
                         &mut snapshot.last_7d,
@@ -126,19 +176,6 @@ fn scan_codex_token_usage_roots(roots: &[PathBuf], now: i64) -> CodexTokenUsageS
                         now,
                         &mut snapshot.last_30d,
                     );
-                }
-
-                if !session.is_subagent_session {
-                    if let Some(latest_session) = session.latest_session {
-                        let should_replace = snapshot
-                            .latest_session
-                            .as_ref()
-                            .map(|current| latest_session.updated_at > current.updated_at)
-                            .unwrap_or(true);
-                        if should_replace {
-                            snapshot.latest_session = Some(latest_session);
-                        }
-                    }
                 }
             }
             Err(_) => {
@@ -153,7 +190,6 @@ fn scan_codex_token_usage_roots(roots: &[PathBuf], now: i64) -> CodexTokenUsageS
 struct ParsedTokenSessionFile {
     session_id: Option<String>,
     events: Vec<ParsedTokenEvent>,
-    latest_session: Option<CodexTokenSessionUsage>,
     is_subagent_session: bool,
 }
 
@@ -161,7 +197,6 @@ fn parse_token_session_file(path: &Path) -> Result<ParsedTokenSessionFile, Strin
     let file = fs::File::open(path).map_err(|error| format!("读取 Codex 日志失败: {error}"))?;
     let reader = BufReader::new(file);
     let mut events = Vec::new();
-    let mut session = ParsedSession::default();
     let mut session_id = None;
     let mut is_subagent_session = false;
 
@@ -180,14 +215,12 @@ fn parse_token_session_file(path: &Path) -> Result<ParsedTokenSessionFile, Strin
             continue;
         };
 
-        session.observe(&event);
         events.push(event);
     }
 
     Ok(ParsedTokenSessionFile {
         session_id,
         events,
-        latest_session: session.into_latest_session(),
         is_subagent_session,
     })
 }
@@ -435,53 +468,8 @@ impl CodexTokenTotals {
         }
     }
 
-    fn is_empty(&self) -> bool {
-        self.total_tokens == 0
-            && self.input_tokens == 0
-            && self.output_tokens == 0
-            && self.cached_input_tokens == 0
-            && self.reasoning_output_tokens == 0
-    }
-
     fn is_reasonable_single_delta(&self) -> bool {
         self.total_tokens <= MAX_REASONABLE_SINGLE_TOKEN_DELTA
-    }
-}
-
-impl ParsedSession {
-    fn observe(&mut self, event: &ParsedTokenEvent) {
-        self.started_at = Some(
-            self.started_at
-                .map(|current| current.min(event.timestamp))
-                .unwrap_or(event.timestamp),
-        );
-        self.updated_at = Some(
-            self.updated_at
-                .map(|current| current.max(event.timestamp))
-                .unwrap_or(event.timestamp),
-        );
-
-        if let Some(total) = event.total.as_ref() {
-            self.total = total.clone();
-        }
-        if let Some(last) = event.last.as_ref() {
-            self.fallback_total.add(last);
-        }
-    }
-
-    fn into_latest_session(self) -> Option<CodexTokenSessionUsage> {
-        let updated_at = self.updated_at?;
-        let total = if self.total.is_empty() {
-            self.fallback_total
-        } else {
-            self.total
-        };
-
-        Some(CodexTokenSessionUsage {
-            started_at: self.started_at,
-            updated_at,
-            total,
-        })
     }
 }
 
@@ -593,16 +581,7 @@ mod tests {
 
         assert_eq!(snapshot.source_path_count, 1);
         assert_eq!(snapshot.event_count, 2);
-        assert_eq!(snapshot.last_24h.total_tokens, 250);
         assert_eq!(snapshot.last_7d.total_tokens, 350);
-        assert_eq!(
-            snapshot
-                .latest_session
-                .expect("latest session")
-                .total
-                .total_tokens,
-            350
-        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -629,16 +608,7 @@ mod tests {
         );
 
         assert_eq!(snapshot.event_count, 3);
-        assert_eq!(snapshot.last_24h.total_tokens, 250);
         assert_eq!(snapshot.last_7d.total_tokens, 350);
-        assert_eq!(
-            snapshot
-                .latest_session
-                .expect("latest session")
-                .total
-                .total_tokens,
-            350
-        );
 
         let _ = fs::remove_dir_all(root);
     }
@@ -664,7 +634,6 @@ mod tests {
         );
 
         assert_eq!(snapshot.event_count, 2);
-        assert_eq!(snapshot.last_24h.total_tokens, 1_200);
         assert_eq!(snapshot.last_7d.total_tokens, 1_200);
 
         let _ = fs::remove_dir_all(root);
@@ -690,7 +659,6 @@ mod tests {
             1_777_361_000,
         );
 
-        assert_eq!(snapshot.last_24h.total_tokens, 350);
         assert_eq!(snapshot.last_7d.total_tokens, 350);
 
         let _ = fs::remove_dir_all(root);
@@ -717,7 +685,6 @@ mod tests {
             1_777_361_000,
         );
 
-        assert_eq!(snapshot.last_24h.total_tokens, 0);
         assert_eq!(snapshot.last_7d.total_tokens, 0);
 
         let _ = fs::remove_dir_all(root);
@@ -750,7 +717,7 @@ mod tests {
 
         assert_eq!(snapshot.source_path_count, 2);
         assert_eq!(snapshot.event_count, 2);
-        assert_eq!(snapshot.last_24h.total_tokens, 350);
+        assert_eq!(snapshot.last_7d.total_tokens, 350);
 
         let _ = fs::remove_dir_all(root);
     }
@@ -775,7 +742,6 @@ mod tests {
             1_777_361_000,
         );
 
-        assert_eq!(snapshot.last_24h.total_tokens, 350);
         assert_eq!(snapshot.last_7d.total_tokens, 350);
 
         let _ = fs::remove_dir_all(root);
@@ -802,9 +768,7 @@ mod tests {
             1_777_361_000,
         );
 
-        assert_eq!(snapshot.last_24h.total_tokens, 0);
         assert_eq!(snapshot.last_7d.total_tokens, 0);
-        assert!(snapshot.latest_session.is_none());
 
         let _ = fs::remove_dir_all(root);
     }
@@ -841,18 +805,16 @@ mod tests {
 
         assert_eq!(snapshot.source_path_count, 2);
         assert_eq!(snapshot.event_count, 4);
-        assert_eq!(snapshot.last_24h.total_tokens, 250);
         assert_eq!(snapshot.last_7d.total_tokens, 350);
-        assert_eq!(
-            snapshot
-                .latest_session
-                .expect("latest session")
-                .total
-                .total_tokens,
-            350
-        );
 
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cache_day_uses_utc_day_boundaries() {
+        assert_eq!(cache_day(0), 0);
+        assert_eq!(cache_day(DAY_SECONDS - 1), 0);
+        assert_eq!(cache_day(DAY_SECONDS), 1);
     }
 
     fn unique_temp_dir() -> PathBuf {
@@ -861,7 +823,7 @@ mod tests {
             .expect("system time")
             .as_nanos();
         std::env::temp_dir().join(format!(
-            "codexdeck-token-usage-{}-{nanos}",
+            "codex-tools-token-usage-{}-{nanos}",
             std::process::id()
         ))
     }

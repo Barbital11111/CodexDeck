@@ -20,14 +20,6 @@ export function MetaStrip({
   const { copy, locale } = useI18n();
   const tokenMetrics = [
     {
-      label: copy.metaStrip.tokensSession,
-      value: tokenUsage?.latestSession?.total.totalTokens ?? null,
-    },
-    {
-      label: copy.metaStrip.tokens24h,
-      value: tokenUsage?.last24h.totalTokens ?? null,
-    },
-    {
       label: copy.metaStrip.tokens7d,
       value: tokenUsage?.last7d.totalTokens ?? null,
     },

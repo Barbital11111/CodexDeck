@@ -1,9 +1,7 @@
 param(
   [string]$Bundles = "nsis,msi",
-  [string]$SigningKeyPath = "$env:USERPROFILE\.tauri\codexdeck-updater.key",
+  [string]$SigningKeyPath = "$env:USERPROFILE\.tauri\codex-tools-updater.key",
   [string]$SigningKeyPassword,
-  [string]$RemoteRuntimeSource,
-  [switch]$SkipRemoteRuntimeStage,
   [switch]$PrepareManualRelease,
   [string]$Tag,
   [string]$NotesPath,
@@ -17,10 +15,8 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $tauriConfigPath = Join-Path $repoRoot "src-tauri/tauri.conf.json"
-$frontendDistRoot = Join-Path $repoRoot "dist"
 $bundleRoot = Join-Path $repoRoot "src-tauri/target/release/bundle"
 $buildLogRoot = Join-Path $repoRoot "src-tauri/target/release/build-logs"
-$remoteRuntimeStageRoot = Join-Path $repoRoot "src-tauri/resources/codex-command-runtime"
 
 function Get-RequestedBundles {
   param([string]$BundleList)
@@ -100,324 +96,6 @@ function Write-LogTail {
     Write-Host "Log tail: $Path" -ForegroundColor DarkGray
     Get-Content -LiteralPath $Path -Tail 80
   }
-}
-
-function Resolve-FullPath {
-  param([string]$Path)
-
-  $expanded = [Environment]::ExpandEnvironmentVariables($Path)
-  $parent = Split-Path -Parent $expanded
-  if (-not [string]::IsNullOrWhiteSpace($parent) -and (Test-Path -LiteralPath $parent)) {
-    $name = Split-Path -Leaf $expanded
-    return Join-Path (Resolve-Path -LiteralPath $parent).Path $name
-  }
-  return [System.IO.Path]::GetFullPath($expanded)
-}
-
-function Get-RustPathRemapFlags {
-  $prefixes = [ordered]@{}
-
-  $repoFullPath = Resolve-FullPath $repoRoot
-  $prefixes[$repoFullPath] = "[codexdeck]"
-
-  if (-not [string]::IsNullOrWhiteSpace($env:CARGO_HOME)) {
-    $cargoHome = Resolve-FullPath $env:CARGO_HOME
-    $prefixes[$cargoHome] = "[cargo-home]"
-  }
-  elseif (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
-    $cargoHome = Resolve-FullPath (Join-Path $env:USERPROFILE ".cargo")
-    $prefixes[$cargoHome] = "[cargo-home]"
-  }
-
-  if (-not [string]::IsNullOrWhiteSpace($env:RUSTUP_HOME)) {
-    $rustupHome = Resolve-FullPath $env:RUSTUP_HOME
-    $prefixes[$rustupHome] = "[rustup-home]"
-  }
-  elseif (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
-    $rustupHome = Resolve-FullPath (Join-Path $env:USERPROFILE ".rustup")
-    $prefixes[$rustupHome] = "[rustup-home]"
-  }
-
-  if (-not [string]::IsNullOrWhiteSpace($env:USERPROFILE)) {
-    $userProfile = Resolve-FullPath $env:USERPROFILE
-    $prefixes[$userProfile] = "[user-home]"
-  }
-
-  $prefixes.GetEnumerator() |
-    Sort-Object { $_.Key.Length } -Descending |
-    ForEach-Object { "--remap-path-prefix=$($_.Key)=$($_.Value)" }
-}
-
-function Set-RustPathRemapping {
-  param([string]$PreviousRustFlags)
-
-  $remapFlags = @(Get-RustPathRemapFlags)
-  if ($remapFlags.Count -eq 0) {
-    return
-  }
-
-  $parts = @()
-  if (-not [string]::IsNullOrWhiteSpace($PreviousRustFlags)) {
-    $parts += $PreviousRustFlags.Trim()
-  }
-  $parts += $remapFlags
-  $env:RUSTFLAGS = ($parts -join " ")
-
-  Write-Host "Rust path remapping enabled for release build." -ForegroundColor Green
-}
-
-function Get-DefaultRemoteRuntimeSource {
-  if (-not [string]::IsNullOrWhiteSpace($env:CODEXDECK_REMOTE_RUNTIME_SOURCE)) {
-    return $env:CODEXDECK_REMOTE_RUNTIME_SOURCE
-  }
-
-  throw "Remote runtime source is required. Pass -RemoteRuntimeSource or set CODEXDECK_REMOTE_RUNTIME_SOURCE."
-}
-
-function Assert-RepoChildPath {
-  param(
-    [string]$Path,
-    [string]$ExpectedLeaf,
-    [string]$Label
-  )
-
-  $fullPath = Resolve-FullPath $Path
-  $repoFullPath = Resolve-FullPath $repoRoot
-  if (-not $fullPath.StartsWith($repoFullPath, [StringComparison]::OrdinalIgnoreCase)) {
-    throw "Refuse to clean $Label outside repository: $fullPath"
-  }
-  if ((Split-Path -Leaf $fullPath) -ne $ExpectedLeaf) {
-    throw "Refuse to clean unexpected $Label path: $fullPath"
-  }
-  $fullPath
-}
-
-function Clear-FrontendDist {
-  if (-not (Test-Path -LiteralPath $frontendDistRoot)) {
-    return
-  }
-
-  $distFullPath = Assert-RepoChildPath -Path $frontendDistRoot -ExpectedLeaf "dist" -Label "frontend dist"
-  Remove-Item -LiteralPath $distFullPath -Recurse -Force
-  Write-Host "Cleared frontend dist: $distFullPath" -ForegroundColor Green
-}
-
-function Clear-RemoteRuntimeStageRoot {
-  param([string]$StageRoot)
-
-  New-Item -ItemType Directory -Force -Path $StageRoot | Out-Null
-  Get-ChildItem -LiteralPath $StageRoot -Force |
-    Where-Object { $_.Name -ne ".gitkeep" } |
-    ForEach-Object {
-      Remove-Item -LiteralPath $_.FullName -Recurse -Force
-    }
-}
-
-function Test-BlockedRemoteRuntimePath {
-  param(
-    [string]$RelativePath,
-    [bool]$IsDirectory
-  )
-
-  $normalized = $RelativePath.Replace("\", "/").Trim("/")
-  foreach ($blockedDir in @(
-    "runtime/logs",
-    "runtime/device-state",
-    "runtime/codex-user-data",
-    "runtime/codex-desktop-app"
-  )) {
-    if ($normalized.Equals($blockedDir, [StringComparison]::OrdinalIgnoreCase)) {
-      return $true
-    }
-    if ($IsDirectory -and $normalized.StartsWith("$blockedDir/", [StringComparison]::OrdinalIgnoreCase)) {
-      return $true
-    }
-  }
-
-  if ($normalized.Equals("runtime/bridge.pid", [StringComparison]::OrdinalIgnoreCase)) {
-    return $true
-  }
-  if ($normalized.Equals("runtime/relay.pid", [StringComparison]::OrdinalIgnoreCase)) {
-    return $true
-  }
-  return $false
-}
-
-function Copy-RemoteRuntimeTree {
-  param(
-    [string]$Source,
-    [string]$Destination,
-    [string]$RelativePath = ""
-  )
-
-  New-Item -ItemType Directory -Force -Path $Destination | Out-Null
-  Get-ChildItem -LiteralPath $Source -Force | ForEach-Object {
-    $childRelativePath = if ([string]::IsNullOrWhiteSpace($RelativePath)) {
-      $_.Name
-    } else {
-      Join-Path $RelativePath $_.Name
-    }
-
-    if (Test-BlockedRemoteRuntimePath -RelativePath $childRelativePath -IsDirectory $_.PSIsContainer) {
-      return
-    }
-
-    $target = Join-Path $Destination $_.Name
-    if ($_.PSIsContainer) {
-      Copy-RemoteRuntimeTree -Source $_.FullName -Destination $target -RelativePath $childRelativePath
-    } else {
-      Copy-Item -LiteralPath $_.FullName -Destination $target -Force
-    }
-  }
-}
-
-function Protect-RemoteRuntimeSensitiveSource {
-  param([string]$StageRoot)
-
-  $forbiddenTerms = @(
-    ("pairing" + "Payload" + "Json"),
-    ("macIdentity" + "PublicKey")
-  )
-
-  Get-ChildItem -LiteralPath $StageRoot -Recurse -File -Include "*.js", "*.cjs", "*.mjs" |
-    ForEach-Object {
-      $raw = [System.IO.File]::ReadAllText($_.FullName, [System.Text.UTF8Encoding]::new($false))
-      $containsForbiddenTerm = $false
-      foreach ($term in $forbiddenTerms) {
-        if ($raw.Contains($term)) {
-          $containsForbiddenTerm = $true
-          break
-        }
-      }
-      if (-not $containsForbiddenTerm) {
-        return
-      }
-
-      $encoded = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($raw))
-      $wrapped = "const __codexDeckRuntimeSource = `"$encoded`";`n" +
-        "eval(Buffer.from(__codexDeckRuntimeSource, `"base64`").toString(`"utf8`"));`n"
-      [System.IO.File]::WriteAllText($_.FullName, $wrapped, [System.Text.UTF8Encoding]::new($false))
-    }
-}
-
-function Use-WindowsPowerShellLaunchers {
-  param([string]$StageRoot)
-
-  Get-ChildItem -LiteralPath $StageRoot -File -Filter "*.cmd" |
-    ForEach-Object {
-      $raw = [System.IO.File]::ReadAllText($_.FullName, [System.Text.UTF8Encoding]::new($false))
-      $updated = $raw -replace "(?im)(^|[ \t])pwsh(\.exe)?(?=[ \t])", '$1powershell.exe'
-      if ($updated -ne $raw) {
-        [System.IO.File]::WriteAllText($_.FullName, $updated, [System.Text.UTF8Encoding]::new($false))
-      }
-    }
-}
-
-function Assert-RemoteRuntimeManifest {
-  param([string]$StageRoot)
-
-  $manifestPath = Join-Path $StageRoot "INSTALL-MANIFEST.json"
-  if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) {
-    throw "Remote runtime manifest is missing: $manifestPath"
-  }
-
-  $manifest = Get-Content -Raw -LiteralPath $manifestPath | ConvertFrom-Json
-  if ($manifest.repoRoot -ne "[redacted]") {
-    throw "Remote runtime manifest repoRoot is not redacted."
-  }
-  if ($manifest.installRoot -ne ".") {
-    throw "Remote runtime manifest installRoot must be '.'."
-  }
-  if ($manifest.localPathsRedacted -ne $true) {
-    throw "Remote runtime manifest localPathsRedacted must be true."
-  }
-  if ($manifest.runtimeStateIncluded -ne $false) {
-    throw "Remote runtime manifest runtimeStateIncluded must be false."
-  }
-  foreach ($field in @("bundledNodeSource", "bundledAdbSource")) {
-    $value = [string]$manifest.$field
-    $localUserMarker = ("96" + "434")
-    if ($value -match "[A-Za-z]:\\|/Users/|/home/|Users\\|$localUserMarker") {
-      throw "Remote runtime manifest $field still contains a local path."
-    }
-  }
-}
-
-function Assert-RemoteRuntimeNoForbiddenContent {
-  param([string]$StageRoot)
-
-  foreach ($relativePath in @(
-    "runtime\logs",
-    "runtime\device-state",
-    "runtime\codex-user-data",
-    "runtime\codex-desktop-app",
-    "runtime\bridge.pid",
-    "runtime\relay.pid"
-  )) {
-    $path = Join-Path $StageRoot $relativePath
-    if (Test-Path -LiteralPath $path) {
-      throw "Remote runtime package contains forbidden runtime state path: $relativePath"
-    }
-  }
-
-  $forbiddenTerms = @(
-    ("D:" + "\AI\"),
-    ("C:\Users\" + ("96" + "434")),
-    ("96" + "434"),
-    ("pairing" + "Payload" + "Json"),
-    ("macIdentity" + "PublicKey"),
-    ("2MSVJ" + "9XJT5"),
-    ("fb340d46-2c66-4169-" + "bd7c-6379b44344a4"),
-    ("7ae9a2a0-e454-4e9a-" + "b122-25d999c8b5ac")
-  )
-
-  $rg = Get-Command rg -ErrorAction SilentlyContinue
-  if ($null -ne $rg) {
-    foreach ($term in $forbiddenTerms) {
-      $matches = @(& $rg.Source --fixed-strings --line-number --hidden -a $term $StageRoot 2>$null)
-      if ($matches.Count -gt 0) {
-        throw "Remote runtime package contains forbidden text '$term': $($matches[0])"
-      }
-    }
-    return
-  }
-
-  $textFiles = Get-ChildItem -LiteralPath $StageRoot -Recurse -File -Force |
-    Where-Object { $_.Length -lt 5MB }
-  foreach ($term in $forbiddenTerms) {
-    $match = $textFiles | Select-String -SimpleMatch -Pattern $term -List -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($null -ne $match) {
-      throw "Remote runtime package contains forbidden text '$term': $($match.Path)"
-    }
-  }
-}
-
-function Sync-RemoteRuntimeResource {
-  if ($SkipRemoteRuntimeStage) {
-    Write-Host "Skipping remote runtime resource staging." -ForegroundColor Yellow
-    return
-  }
-
-  if ([string]::IsNullOrWhiteSpace($RemoteRuntimeSource)) {
-    $RemoteRuntimeSource = Get-DefaultRemoteRuntimeSource
-  }
-
-  $source = Resolve-FullPath $RemoteRuntimeSource
-  if (-not (Test-Path -LiteralPath (Join-Path $source "INSTALL-MANIFEST.json") -PathType Leaf)) {
-    throw "Remote runtime source is missing INSTALL-MANIFEST.json: $source"
-  }
-
-  $stageFullPath = Assert-RepoChildPath -Path $remoteRuntimeStageRoot -ExpectedLeaf "codex-command-runtime" -Label "remote runtime stage"
-  Clear-RemoteRuntimeStageRoot -StageRoot $stageFullPath
-  Copy-RemoteRuntimeTree -Source $source -Destination $stageFullPath
-  Use-WindowsPowerShellLaunchers -StageRoot $stageFullPath
-  Protect-RemoteRuntimeSensitiveSource -StageRoot $stageFullPath
-  Assert-RemoteRuntimeManifest -StageRoot $stageFullPath
-  Assert-RemoteRuntimeNoForbiddenContent -StageRoot $stageFullPath
-
-  Write-Host "Remote runtime resource staged:" -ForegroundColor Green
-  Write-Host "  Source: $source"
-  Write-Host "  Stage:  $stageFullPath"
 }
 
 function Invoke-TauriSigner {
@@ -623,11 +301,9 @@ if ($null -eq $decodedKey -or $decodedKey -notmatch "(minisign|rsign).+secret ke
 
 $previousPrivateKey = [Environment]::GetEnvironmentVariable("TAURI_SIGNING_PRIVATE_KEY", "Process")
 $previousPassword = [Environment]::GetEnvironmentVariable("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", "Process")
-$previousRustFlags = [Environment]::GetEnvironmentVariable("RUSTFLAGS", "Process")
 
 try {
   $env:TAURI_SIGNING_PRIVATE_KEY = $privateKeyEnvValue
-  Set-RustPathRemapping -PreviousRustFlags $previousRustFlags
 
   if (-not [string]::IsNullOrEmpty($SigningKeyPassword)) {
     $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $SigningKeyPassword
@@ -642,8 +318,6 @@ try {
   Write-Host "  Bundles:  $Bundles"
   Write-Host ""
 
-  Sync-RemoteRuntimeResource
-  Clear-FrontendDist
   Invoke-TauriBuild -BundleList $Bundles
 
   if ($PrepareManualRelease) {
@@ -688,12 +362,5 @@ finally {
   }
   else {
     $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $previousPassword
-  }
-
-  if ($null -eq $previousRustFlags) {
-    Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
-  }
-  else {
-    $env:RUSTFLAGS = $previousRustFlags
   }
 }

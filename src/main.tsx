@@ -4,12 +4,12 @@ import { ConfigProvider } from "antd";
 import "antd/dist/reset.css";
 import App from "./App.tsx";
 import { I18nProvider } from "./i18n/I18nProvider";
-import { codexDeckAntdTheme } from "./theme/codexDeckTokens";
+import { codexSwitchAntdTheme } from "./theme/codexSwitchTokens";
 import "./index.css";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <ConfigProvider theme={codexDeckAntdTheme}>
+    <ConfigProvider theme={codexSwitchAntdTheme}>
       <I18nProvider>
         <App />
       </I18nProvider>

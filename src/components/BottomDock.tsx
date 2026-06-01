@@ -1,6 +1,6 @@
 import { useI18n } from "../i18n/I18nProvider";
 
-type AppTab = "accounts" | "notifications" | "remoteControl" | "settings";
+type AppTab = "accounts" | "notifications" | "settings";
 type NotificationViewTab = "settings" | "pipelines" | "templates" | "tests" | "activity";
 
 type BottomDockProps = {
@@ -47,18 +47,6 @@ function SettingsIcon() {
   );
 }
 
-function RemoteControlIcon() {
-  return (
-    <svg className="bottomDockIcon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-      <path d="M5 6.5A2.5 2.5 0 0 1 7.5 4h9A2.5 2.5 0 0 1 19 6.5v6A2.5 2.5 0 0 1 16.5 15h-9A2.5 2.5 0 0 1 5 12.5v-6Z" />
-      <path d="M8 19h8" />
-      <path d="M12 15v4" />
-      <path d="M8.2 9.5h.01" />
-      <path d="M11.7 9.5h4.1" />
-    </svg>
-  );
-}
-
 export function BottomDock({
   activeTab,
   onSelectTab,
@@ -68,7 +56,6 @@ export function BottomDock({
   const { copy } = useI18n();
   const accountActive = activeTab === "accounts";
   const notificationsActive = activeTab === "notifications";
-  const remoteControlActive = activeTab === "remoteControl";
   const settingsActive = activeTab === "settings";
   const notificationItems: Array<{ id: NotificationViewTab; label: string }> = [
     { id: "settings", label: "通知概览" },
@@ -133,15 +120,6 @@ export function BottomDock({
             ))}
           </div>
         ) : null}
-        <button
-          className={`bottomDockButton${remoteControlActive ? " isActive" : ""}`}
-          onClick={() => onSelectTab("remoteControl")}
-          aria-label="远程控制"
-          title="远程控制"
-        >
-          <RemoteControlIcon />
-          <span className="bottomDockLabel">远程控制</span>
-        </button>
       </div>
       <div className="dockSection">
         <span className="dockSectionLabel">工具箱</span>

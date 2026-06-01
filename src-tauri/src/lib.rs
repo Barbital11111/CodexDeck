@@ -2,13 +2,13 @@ mod account_service;
 mod app_paths;
 mod auth;
 mod cli;
+mod codex_enhanced;
 mod editor_apps;
 mod i18n;
 mod models;
 mod notification_service;
 mod opencode;
 mod profile_files;
-mod remote_control;
 mod session_provider_sync;
 mod settings_service;
 mod state;
@@ -483,8 +483,17 @@ async fn export_accounts_zip(
     app: AppHandle,
     state: State<'_, AppState>,
     account_key: Option<String>,
+    account_keys: Option<Vec<String>>,
+    format: Option<account_service::AccountsExportFormat>,
 ) -> Result<Option<String>, String> {
-    account_service::export_accounts_zip_internal(&app, state.inner(), account_key).await
+    account_service::export_accounts_zip_internal(
+        &app,
+        state.inner(),
+        account_key,
+        account_keys,
+        format,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -742,79 +751,6 @@ fn open_external_url(url: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn remote_detect_runtime(
-    app: AppHandle,
-) -> Result<remote_control::RemoteRuntimeDetection, String> {
-    remote_control::detect_runtime(&app).await
-}
-
-#[tauri::command]
-async fn remote_start_console(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<remote_control::RemoteCommandResult, String> {
-    let _guard = state.remote_runtime_lock.lock().await;
-    remote_control::start_console(&app).await
-}
-
-#[tauri::command]
-async fn remote_stop_console(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<remote_control::RemoteCommandResult, String> {
-    let _guard = state.remote_runtime_lock.lock().await;
-    remote_control::stop_console(&app).await
-}
-
-#[tauri::command]
-async fn remote_restart_console(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<remote_control::RemoteCommandResult, String> {
-    let _guard = state.remote_runtime_lock.lock().await;
-    remote_control::restart_console(&app).await
-}
-
-#[tauri::command]
-async fn remote_get_status() -> Result<remote_control::RemoteStatusSnapshot, String> {
-    remote_control::get_status().await
-}
-
-#[tauri::command]
-async fn remote_get_runtime() -> Result<remote_control::RemoteJsonSnapshot, String> {
-    remote_control::get_runtime_info().await
-}
-
-#[tauri::command]
-async fn remote_get_capabilities() -> Result<remote_control::RemoteJsonSnapshot, String> {
-    remote_control::get_capabilities().await
-}
-
-#[tauri::command]
-async fn remote_get_logs() -> Result<remote_control::RemoteLogsSnapshot, String> {
-    remote_control::get_logs().await
-}
-
-#[tauri::command]
-async fn remote_open_panel() -> Result<(), String> {
-    remote_control::open_panel().await
-}
-
-#[tauri::command]
-async fn remote_install_mobile_apk(
-    app: AppHandle,
-    state: State<'_, AppState>,
-) -> Result<remote_control::RemoteCommandResult, String> {
-    let _guard = state.remote_runtime_lock.lock().await;
-    remote_control::install_mobile_apk(&app).await
-}
-
-#[tauri::command]
-async fn remote_open_logs(app: AppHandle) -> Result<(), String> {
-    remote_control::open_logs(&app).await
-}
-
-#[tauri::command]
 async fn pick_codex_launch_path(
     kind: String,
     current_path: Option<String>,
@@ -912,6 +848,7 @@ async fn cancel_oauth_login(state: State<'_, AppState>) -> Result<(), String> {
 mod tests {
     use super::bind_oauth_callback_listener;
     use super::build_oauth_callback_url;
+    use super::is_auth_related_usage_error;
     use std::net::TcpListener;
 
     #[test]
@@ -941,6 +878,18 @@ mod tests {
 
         assert_ne!(resolved_port, preferred_port);
     }
+
+    #[test]
+    fn auth_related_usage_error_detects_stale_oauth_failures() {
+        assert!(is_auth_related_usage_error("授权过期，请重新登录授权。"));
+        assert!(is_auth_related_usage_error(
+            "401 Unauthorized: Encountered invalidated oauth token for user"
+        ));
+        assert!(is_auth_related_usage_error(
+            "令牌刷新失败: refresh_token_reused"
+        ));
+        assert!(!is_auth_related_usage_error("连接 NewAPI 额度接口失败"));
+    }
 }
 
 #[tauri::command]
@@ -968,16 +917,6 @@ async fn switch_account_and_launch(
     if matches!(account.source_kind, models::AccountSourceKind::Chatgpt)
         && auth::auth_tokens_need_refresh(&account.auth_json)
     {
-        if account.auth_refresh_blocked {
-            return Err(format!(
-                "切换账号前刷新登录令牌失败: {}",
-                account
-                    .auth_refresh_error
-                    .clone()
-                    .unwrap_or_else(|| "授权过期，请重新登录授权。".to_string())
-            ));
-        }
-
         let refreshed_auth = match auth::refresh_chatgpt_auth_tokens_serialized(
             &account.auth_json,
             &state.auth_refresh_lock,
@@ -1037,6 +976,7 @@ async fn switch_account_and_launch(
         stored_account.updated_at = refreshed_at;
         stored_account.auth_refresh_blocked = false;
         stored_account.auth_refresh_error = None;
+        clear_stale_auth_usage_error(stored_account);
         profile_files::sync_account_profile_in_store_path(
             &store::account_store_path_from_data_dir(&app_paths::app_data_dir(&app)?),
             stored_account,
@@ -1052,6 +992,9 @@ async fn switch_account_and_launch(
     let effective_restart_targets =
         restart_editor_targets.unwrap_or_else(|| store.settings.restart_editor_targets.clone());
     let configured_codex_launch_path = store.settings.codex_launch_path.clone();
+    let should_use_api_enhanced_launch =
+        matches!(account.source_kind, models::AccountSourceKind::Relay)
+            && store.settings.api_enhanced_launch_enabled;
     // 向后兼容：旧前端未传参数时仍按“切换并启动”处理。
     let should_launch_codex = launch_codex.unwrap_or(true);
     {
@@ -1149,6 +1092,25 @@ async fn switch_account_and_launch(
 
     // 切换时强制结束旧实例，避免触发“是否退出”确认弹窗。
     force_stop_running_codex();
+
+    if should_use_api_enhanced_launch {
+        let result = codex_enhanced::launch_codex_with_enhancements(
+            configured_codex_launch_path.as_deref(),
+            workspace_path.as_deref(),
+        )
+        .await?;
+        return Ok(SwitchAccountResult {
+            account_id: account.account_id,
+            launched_app_path: result.launched_app_path,
+            used_fallback_cli: result.used_fallback_cli,
+            opencode_synced,
+            opencode_sync_error,
+            opencode_desktop_restarted,
+            opencode_desktop_restart_error,
+            restarted_editor_apps,
+            editor_restart_error,
+        });
+    }
 
     let mut app_launch_error = None;
     if let Some(path) = cli::find_configured_codex_app_path(configured_codex_launch_path.as_deref())
@@ -1260,16 +1222,6 @@ async fn switch_hybrid_account_and_launch(
         return Err("混合模式需要选择一个 ChatGPT 官方账号。".to_string());
     }
     if auth::auth_tokens_need_refresh(&chatgpt_account.auth_json) {
-        if chatgpt_account.auth_refresh_blocked {
-            return Err(format!(
-                "切换混合模式前刷新登录令牌失败: {}",
-                chatgpt_account
-                    .auth_refresh_error
-                    .clone()
-                    .unwrap_or_else(|| "授权过期，请重新登录授权。".to_string())
-            ));
-        }
-
         let refreshed_auth = match auth::refresh_chatgpt_auth_tokens_serialized(
             &chatgpt_account.auth_json,
             &state.auth_refresh_lock,
@@ -1331,6 +1283,7 @@ async fn switch_hybrid_account_and_launch(
         stored_account.updated_at = refreshed_at;
         stored_account.auth_refresh_blocked = false;
         stored_account.auth_refresh_error = None;
+        clear_stale_auth_usage_error(stored_account);
         profile_files::sync_account_profile_in_store_path(
             &store::account_store_path_from_data_dir(&app_paths::app_data_dir(&app)?),
             stored_account,
@@ -1575,6 +1528,29 @@ fn normalize_switch_refresh_error(raw_error: &str) -> String {
     raw_error.to_string()
 }
 
+fn clear_stale_auth_usage_error(account: &mut models::StoredAccount) {
+    if account
+        .usage_error
+        .as_deref()
+        .is_some_and(is_auth_related_usage_error)
+    {
+        account.usage_error = None;
+    }
+}
+
+fn is_auth_related_usage_error(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    message.contains("授权过期")
+        || normalized.contains("401")
+        || normalized.contains("unauthorized")
+        || normalized.contains("invalid_token")
+        || normalized.contains("token_revoked")
+        || normalized.contains("invalidated oauth token")
+        || normalized.contains("refresh_token")
+        || normalized.contains("provided authentication token is expired")
+        || normalized.contains("token is expired")
+}
+
 fn force_stop_running_codex() {
     #[cfg(target_os = "macos")]
     {
@@ -1759,17 +1735,6 @@ pub fn run() {
             list_installed_editor_apps,
             is_opencode_desktop_app_installed,
             open_external_url,
-            remote_detect_runtime,
-            remote_start_console,
-            remote_stop_console,
-            remote_restart_console,
-            remote_get_status,
-            remote_get_runtime,
-            remote_get_capabilities,
-            remote_get_logs,
-            remote_open_panel,
-            remote_install_mobile_apk,
-            remote_open_logs,
             pick_codex_launch_path,
             prepare_oauth_login,
             complete_oauth_callback_login,

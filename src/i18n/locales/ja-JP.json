@@ -18,8 +18,6 @@
     "ariaLabel": "アカウント概要",
     "accountCount": "アカウント数",
     "currentActive": "現在アクティブ",
-    "tokensSession": "セッション Token",
-    "tokens24h": "24h Token",
     "tokens7d": "7d Token",
     "tokens30d": "30d Token",
     "tokensPending": "ローカル Codex token ログを読み取り中",
@@ -28,6 +26,18 @@
     "tokensEvents": "Token イベント",
     "tokensFailedSources": "読み取り失敗",
     "exportAll": "すべてエクスポート"
+  },
+  "exportDialog": {
+    "title": "エクスポート形式を選択",
+    "allDescription": "エクスポートするアカウントファイル形式を選択してください。",
+    "selectedDescription": "{{count}} 件のアカウントを選択中です。エクスポート形式を選択してください。",
+    "singleDescription": "このアカウントのエクスポート形式を選択してください。",
+    "codexDeckTitle": "CodexDeck バックアップ形式",
+    "codexDeckDescription": "CodexDeck の復元や移行に使える zip バックアップを出力します。",
+    "sub2apiTitle": "Sub2API インポート形式",
+    "sub2apiDescription": "sub2api にインポートできるアカウント JSON を出力します。すべて出力すると複数アカウントを 1 つのファイルにまとめます。",
+    "ok": "エクスポート",
+    "cancel": "キャンセル"
   },
   "addAccount": {
     "smartSwitch": "スマート切替",
@@ -113,6 +123,7 @@
     "apiBadge": "API",
     "profileIncomplete": "Profile incomplete",
     "validationFailed": "Validation failed",
+    "enhancedLaunchLabel": "Enhanced mode",
     "providerLabel": "Provider",
     "endpointLabel": "Endpoint",
     "modelLabel": "Model",
@@ -171,6 +182,7 @@
     "reorder": "並べ替え",
     "refreshQuota": "配額を更新",
     "refreshQuotaEmpty": "このグループに更新可能なネイティブアカウントはありません",
+    "exportGroup": "一括エクスポート",
     "renamePlaceholder": "グループ名を入力",
     "delete": "グループを削除",
     "deleteConfirmTitle": "このグループを削除しますか？",
@@ -436,6 +448,11 @@
       "label": "スマート切替に API を含める（ログイン済みアカウントの残量不足時）",
       "checkedText": "オン",
       "uncheckedText": "オフ"
+    },
+    "apiEnhancedLaunch": {
+      "label": "純 API の既定を拡張起動にする",
+      "checkedText": "純 API 切替後にページ拡張を注入",
+      "uncheckedText": "純 API は通常起動"
     },
     "autoRefresh": {
       "label": "Auto refresh usage in background",
