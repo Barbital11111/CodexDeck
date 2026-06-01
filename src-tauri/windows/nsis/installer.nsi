@@ -70,7 +70,6 @@ Var NoShortcutMode
 Var WixMode
 Var OldMainBinaryName
 Var PreviousUninstKey
-Var RestoredInstallDir
 
 Name "${PRODUCTNAME}"
 BrandingText "${COPYRIGHT}"
@@ -214,6 +213,11 @@ Function PageReinstall
   StrCpy $PreviousUninstKey "${UNINSTKEY}"
   ReadRegStr $R0 SHCTX "$PreviousUninstKey" ""
   ReadRegStr $R1 SHCTX "$PreviousUninstKey" "UninstallString"
+  ${If} "$R0$R1" == ""
+    StrCpy $PreviousUninstKey "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex Tools"
+    ReadRegStr $R0 SHCTX "$PreviousUninstKey" ""
+    ReadRegStr $R1 SHCTX "$PreviousUninstKey" "UninstallString"
+  ${EndIf}
   ${IfThen} "$R0$R1" == "" ${|} Abort ${|}
 
   ; Compare this installar version with the existing installation
@@ -363,6 +367,9 @@ Function PageLeaveReinstall
       ExecWait '$R1' $0
     ${Else}
       ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
+      ${If} $4 == ""
+        ReadRegStr $4 SHCTX "${MANUKEY}\Codex Tools" ""
+      ${EndIf}
       ReadRegStr $R1 SHCTX "$PreviousUninstKey" "UninstallString"
       ${IfThen} $UpdateMode = 1 ${|} StrCpy $R1 "$R1 /UPDATE" ${|} ; append /UPDATE
       ${IfThen} $PassiveMode = 1 ${|} StrCpy $R1 "$R1 /P" ${|} ; append /P
@@ -396,12 +403,20 @@ FunctionEnd
 
 Function CloseKnownCodexShellProcesses
   !insertmacro CheckIfAppIsRunning "app.exe" "${PRODUCTNAME}"
+  !insertmacro CheckIfAppIsRunning "Codex Tools.exe" "${PRODUCTNAME}"
+  !insertmacro CheckIfAppIsRunning "Codex Switch.exe" "${PRODUCTNAME}"
   !insertmacro CheckIfAppIsRunning "CodexDeck.exe" "${PRODUCTNAME}"
 FunctionEnd
 
 Function RemoveLegacyMainBinaries
   ${If} "${MAINBINARYNAME}.exe" != "app.exe"
     Delete "$INSTDIR\app.exe"
+  ${EndIf}
+  ${If} "${MAINBINARYNAME}.exe" != "Codex Tools.exe"
+    Delete "$INSTDIR\Codex Tools.exe"
+  ${EndIf}
+  ${If} "${MAINBINARYNAME}.exe" != "Codex Switch.exe"
+    Delete "$INSTDIR\Codex Switch.exe"
   ${EndIf}
   ${If} "${MAINBINARYNAME}.exe" != "CodexDeck.exe"
     Delete "$INSTDIR\CodexDeck.exe"
@@ -410,12 +425,20 @@ FunctionEnd
 
 Function un.CloseKnownCodexShellProcesses
   !insertmacro CheckIfAppIsRunning "app.exe" "${PRODUCTNAME}"
+  !insertmacro CheckIfAppIsRunning "Codex Tools.exe" "${PRODUCTNAME}"
+  !insertmacro CheckIfAppIsRunning "Codex Switch.exe" "${PRODUCTNAME}"
   !insertmacro CheckIfAppIsRunning "CodexDeck.exe" "${PRODUCTNAME}"
 FunctionEnd
 
 Function un.RemoveLegacyMainBinaries
   ${If} "${MAINBINARYNAME}.exe" != "app.exe"
     Delete "$INSTDIR\app.exe"
+  ${EndIf}
+  ${If} "${MAINBINARYNAME}.exe" != "Codex Tools.exe"
+    Delete "$INSTDIR\Codex Tools.exe"
+  ${EndIf}
+  ${If} "${MAINBINARYNAME}.exe" != "Codex Switch.exe"
+    Delete "$INSTDIR\Codex Switch.exe"
   ${EndIf}
   ${If} "${MAINBINARYNAME}.exe" != "CodexDeck.exe"
     Delete "$INSTDIR\CodexDeck.exe"
@@ -760,6 +783,16 @@ Section Install
   WriteRegStr SHCTX "${UNINSTKEY}" "HelpLink" "${HOMEPAGE}"
   !endif
 
+  ; Clean up the legacy registration after migrating the visible product name.
+  DeleteRegKey SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex Tools"
+  DeleteRegKey SHCTX "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex Switch"
+  DeleteRegKey /ifempty SHCTX "${MANUKEY}\Codex Tools"
+  DeleteRegKey /ifempty SHCTX "${MANUKEY}\Codex Switch"
+  DeleteRegKey /ifempty SHCTX "Software\carry\Codex Tools"
+  DeleteRegKey /ifempty SHCTX "Software\carry\Codex Switch"
+  DeleteRegKey /ifempty SHCTX "Software\com.carry\Codex Tools"
+  DeleteRegKey /ifempty SHCTX "Software\com.carry\Codex Switch"
+
   ; Create start menu shortcut
   !insertmacro MUI_STARTMENU_WRITE_BEGIN Application
     Call CreateOrUpdateStartMenuShortcut
@@ -937,121 +970,28 @@ Section Uninstall
   ${EndIf}
 SectionEnd
 
-Function UseInstallLocationCandidate
-  ${If} $4 == ""
-    Return
-  ${EndIf}
-
-  ${If} ${FileExists} "$4\${MAINBINARYNAME}.exe"
-  ${OrIf} ${FileExists} "$4\CodexDeck.exe"
-  ${OrIf} ${FileExists} "$4\app.exe"
-  ${OrIf} ${FileExists} "$4\uninstall.exe"
-    StrCpy $INSTDIR $4
-    StrCpy $RestoredInstallDir 1
-  ${EndIf}
-FunctionEnd
-
-Function UseInstallLocationFromUninstallString
-  ${If} $4 == ""
-    Return
-  ${EndIf}
-
-  StrCpy $5 $4 1
-  ${If} $5 == '"'
-    StrCpy $4 $4 "" 1
-    ${StrLoc} $5 $4 '"' ">"
-    ${If} $5 != ""
-      StrCpy $4 $4 $5
-    ${EndIf}
-  ${Else}
-    ${StrLoc} $5 $4 " " ">"
-    ${If} $5 != ""
-      StrCpy $4 $4 $5
-    ${EndIf}
-  ${EndIf}
-
-  ${GetParent} "$4" $4
-  Call UseInstallLocationCandidate
-FunctionEnd
-
-Function RestoreInstallLocationFromUninstallKey
-  Pop $7
-
-  ReadRegStr $4 SHCTX "$7" "InstallLocation"
-  StrCpy $5 $4 1
-  ${If} $5 == '"'
-    StrCpy $4 $4 "" 1
-    StrLen $5 $4
-    IntOp $5 $5 - 1
-    ${If} $5 >= 0
-      StrCpy $6 $4 1 $5
-      ${If} $6 == '"'
-        StrCpy $4 $4 $5
-      ${EndIf}
-    ${EndIf}
-  ${EndIf}
-  Call UseInstallLocationCandidate
-  ${If} $RestoredInstallDir == 1
-    Return
-  ${EndIf}
-
-  ReadRegStr $4 SHCTX "$7" "UninstallString"
-  Call UseInstallLocationFromUninstallString
-FunctionEnd
-
 Function RestorePreviousInstallLocation
-  StrCpy $RestoredInstallDir 0
-
-  Push "${UNINSTKEY}"
-  Call RestoreInstallLocationFromUninstallKey
-  ${If} $RestoredInstallDir == 1
-    Return
-  ${EndIf}
-
-  Push "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexDeck"
-  Call RestoreInstallLocationFromUninstallKey
-  ${If} $RestoredInstallDir == 1
-    Return
-  ${EndIf}
-
-  Push "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex Tools"
-  Call RestoreInstallLocationFromUninstallKey
-  ${If} $RestoredInstallDir == 1
-    Return
-  ${EndIf}
-
-  Push "Software\Microsoft\Windows\CurrentVersion\Uninstall\CodexSwitch"
-  Call RestoreInstallLocationFromUninstallKey
-  ${If} $RestoredInstallDir == 1
-    Return
-  ${EndIf}
-
-  Push "Software\Microsoft\Windows\CurrentVersion\Uninstall\Codex Switch"
-  Call RestoreInstallLocationFromUninstallKey
-  ${If} $RestoredInstallDir == 1
-    Return
-  ${EndIf}
-
   ReadRegStr $4 SHCTX "${MANUPRODUCTKEY}" ""
-  Call UseInstallLocationCandidate
-  ${If} $RestoredInstallDir == 1
-    Return
+  ${If} $4 == ""
+    ReadRegStr $4 SHCTX "${MANUKEY}\Codex Tools" ""
   ${EndIf}
-
-  ReadRegStr $4 SHCTX "Software\carry\${PRODUCTNAME}" ""
-  Call UseInstallLocationCandidate
-  ${If} $RestoredInstallDir == 1
-    Return
+  ${If} $4 == ""
+    ReadRegStr $4 SHCTX "${MANUKEY}\Codex Switch" ""
   ${EndIf}
-
-  ReadRegStr $4 SHCTX "Software\github\${PRODUCTNAME}" ""
-  Call UseInstallLocationCandidate
-  ${If} $RestoredInstallDir == 1
-    Return
+  ${If} $4 == ""
+    ReadRegStr $4 SHCTX "Software\carry\Codex Tools" ""
   ${EndIf}
-
-  StrCpy $4 "$LOCALAPPDATA\${PRODUCTNAME}"
-  Call UseInstallLocationCandidate
+  ${If} $4 == ""
+    ReadRegStr $4 SHCTX "Software\carry\Codex Switch" ""
+  ${EndIf}
+  ${If} $4 == ""
+    ReadRegStr $4 SHCTX "Software\com.carry\Codex Tools" ""
+  ${EndIf}
+  ${If} $4 == ""
+    ReadRegStr $4 SHCTX "Software\com.carry\Codex Switch" ""
+  ${EndIf}
+  StrCmp $4 "" +2 0
+    StrCpy $INSTDIR $4
 FunctionEnd
 
 Function Skip
@@ -1066,6 +1006,11 @@ Function un.SkipIfPassive
 FunctionEnd
 
 Function CreateOrUpdateStartMenuShortcut
+  ; Keep the legacy shortcut name alive during the brand migration.
+  ; Windows pinned Start tiles often keep pointing at the old .lnk path.
+  CreateShortcut "$SMPROGRAMS\Codex Tools.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+  !insertmacro SetLnkAppUserModelId "$SMPROGRAMS\Codex Tools.lnk"
+
   ; We used to use product name as MAINBINARYNAME
   ; migrate old shortcuts to target the new MAINBINARYNAME
   StrCpy $R0 0
@@ -1108,6 +1053,12 @@ Function CreateOrUpdateStartMenuShortcut
 FunctionEnd
 
 Function CreateOrUpdateDesktopShortcut
+  ; Keep the legacy desktop shortcut path valid if users pinned it elsewhere.
+  ${If} ${FileExists} "$DESKTOP\Codex Tools.lnk"
+    CreateShortcut "$DESKTOP\Codex Tools.lnk" "$INSTDIR\${MAINBINARYNAME}.exe"
+    !insertmacro SetLnkAppUserModelId "$DESKTOP\Codex Tools.lnk"
+  ${EndIf}
+
   ; We used to use product name as MAINBINARYNAME
   ; migrate old shortcuts to target the new MAINBINARYNAME
   !insertmacro IsShortcutTarget "$DESKTOP\${PRODUCTNAME}.lnk" "$INSTDIR\$OldMainBinaryName"

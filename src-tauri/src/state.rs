@@ -15,12 +15,10 @@ pub(crate) struct OauthCallbackListenerHandle {
 /// - `store_lock` 保证账号存储读写的串行化。
 /// - `pending_oauth_login` 维护当前 OAuth 授权会话。
 /// - `oauth_listener` 维护本地 OAuth 回调监听线程。
-/// - `remote_runtime_lock` 保证远控运行时启动、停止、重启脚本串行执行。
 pub(crate) struct AppState {
     pub(crate) store_lock: Arc<Mutex<()>>,
     pub(crate) auth_refresh_lock: Arc<Mutex<()>>,
     pub(crate) oauth_flow_lock: Arc<Mutex<()>>,
-    pub(crate) remote_runtime_lock: Arc<Mutex<()>>,
     pub(crate) pending_oauth_login: Mutex<Option<PendingOauthLogin>>,
     pub(crate) oauth_listener: Mutex<Option<OauthCallbackListenerHandle>>,
 }
@@ -31,7 +29,6 @@ impl Default for AppState {
             store_lock: Arc::new(Mutex::new(())),
             auth_refresh_lock: Arc::new(Mutex::new(())),
             oauth_flow_lock: Arc::new(Mutex::new(())),
-            remote_runtime_lock: Arc::new(Mutex::new(())),
             pending_oauth_login: Mutex::new(None),
             oauth_listener: Mutex::new(None),
         }

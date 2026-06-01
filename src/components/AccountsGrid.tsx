@@ -54,8 +54,6 @@ function compareAccountGroups(left: AccountGroup, right: AccountGroup): number {
 type AccountsGridProps = {
   accounts: AccountSummary[];
   loading: boolean;
-  selectionMode: boolean;
-  selectedAccountKeys: string[];
   exportingAccounts: boolean;
   switchingId: string | null;
   renamingAccountId: string | null;
@@ -63,7 +61,7 @@ type AccountsGridProps = {
   notificationProviders: NotificationProviderConfig[];
   usageDisplayMode: TrayUsageDisplayMode;
   hideAccountDetails: boolean;
-  onToggleSelected: (accountKey: string) => void;
+  apiEnhancedLaunchEnabled: boolean;
   onExport: (account: AccountSummary) => void;
   onReauthorize: (account: AccountSummary) => void;
   onRename: (account: AccountSummary, label: string) => Promise<boolean>;
@@ -77,8 +75,6 @@ type AccountsGridProps = {
 export function AccountsGrid({
   accounts,
   loading,
-  selectionMode,
-  selectedAccountKeys,
   exportingAccounts,
   switchingId,
   renamingAccountId,
@@ -86,7 +82,7 @@ export function AccountsGrid({
   notificationProviders,
   usageDisplayMode,
   hideAccountDetails,
-  onToggleSelected,
+  apiEnhancedLaunchEnabled,
   onExport,
   onReauthorize,
   onRename,
@@ -135,19 +131,8 @@ export function AccountsGrid({
       {groupedAccounts.map((group) => (
         <div
           key={group.id}
-          className={`accountCardSlot${
-            selectionMode && selectedAccountKeys.includes(group.id) ? " isSelected" : ""
-          }`}
+          className="accountCardSlot"
         >
-          {selectionMode ? (
-            <label className="accountCardSelector">
-              <input
-                type="checkbox"
-                checked={selectedAccountKeys.includes(group.id)}
-                onChange={() => onToggleSelected(group.id)}
-              />
-            </label>
-          ) : null}
           <AccountCard
             accounts={group.variants}
             exportingAccounts={exportingAccounts}
@@ -157,6 +142,7 @@ export function AccountsGrid({
             notificationProviders={notificationProviders}
             usageDisplayMode={usageDisplayMode}
             hideAccountDetails={hideAccountDetails}
+            apiEnhancedLaunchEnabled={apiEnhancedLaunchEnabled}
             onExport={onExport}
             onReauthorize={onReauthorize}
             onRename={onRename}

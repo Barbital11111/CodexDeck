@@ -994,7 +994,7 @@ mod tests {
     use uuid::Uuid;
 
     fn temp_store_path() -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("codexdeck-profile-test-{}", Uuid::new_v4()));
+        let dir = std::env::temp_dir().join(format!("codex-tools-profile-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir.join("accounts.json")
     }
@@ -1095,7 +1095,7 @@ responses_websockets_v2 = true
             ),
             "https://relay.example.com/v1",
             "gpt-5.5",
-            "sk-hybrid-secret",
+            "test-hybrid-token",
         );
 
         assert!(config.contains(r#"cli_auth_credentials_store = "file""#));
@@ -1107,7 +1107,7 @@ responses_websockets_v2 = true
         assert!(config.contains(r#"base_url = "https://relay.example.com/v1""#));
         assert!(config.contains(r#"wire_api = "responses""#));
         assert!(config.contains("requires_openai_auth = true"));
-        assert!(config.contains(r#"experimental_bearer_token = "sk-hybrid-secret""#));
+        assert!(config.contains(r#"experimental_bearer_token = "test-hybrid-token""#));
         assert!(config.contains("supports_websockets = false"));
         assert!(config.contains("experimental_feature = true"));
         assert!(config.contains("responses_websockets = false"));
@@ -1124,7 +1124,7 @@ custom_setting = "keep"
 command = "node"
 args = ["server.js"]
 
-[projects."D:\\AI\\Project"]
+[projects."C:\\Workspace\\Project"]
 trust_level = "trusted"
 
 [features]
@@ -1135,7 +1135,7 @@ responses_websockets = true
             Some(active),
             "https://relay.example.com/v1",
             "gpt-5.5",
-            "sk-hybrid-secret",
+            "test-hybrid-token",
         );
 
         let merged = merge_active_codex_profile_config(Some(active), &profile);
@@ -1145,10 +1145,10 @@ responses_websockets = true
         assert!(!merged.contains("openai_base_url"));
         assert!(merged.contains("[mcp_servers.filesystem]"));
         assert!(merged.contains(r#"args = ["server.js"]"#));
-        assert!(merged.contains(r#"[projects."D:\\AI\\Project"]"#));
+        assert!(merged.contains(r#"[projects."C:\\Workspace\\Project"]"#));
         assert!(merged.contains(r#"trust_level = "trusted""#));
         assert!(merged.contains(r#"custom_setting = "keep""#));
-        assert!(merged.contains(r#"experimental_bearer_token = "sk-hybrid-secret""#));
+        assert!(merged.contains(r#"experimental_bearer_token = "test-hybrid-token""#));
         assert!(merged.contains("responses_websockets = false"));
         assert!(merged.contains("responses_websockets_v2 = false"));
     }
@@ -1318,9 +1318,9 @@ model = "relay-model"
 
     #[test]
     fn relay_validation_error_body_is_redacted_before_truncation() {
-        let secret_key = ["sk", "profile-secret-redacted-fixture"].join("-");
+        let secret_key = ["sk", "profile-secret-1234567890"].join("-");
         let local_path = ["D:", "\\workspace\\secret"].concat();
-        let upstream = ["https://", "api.redacted.example.invalid/v1"].concat();
+        let upstream = ["https://", "api.secret.example.com/v1"].concat();
         let redacted = crate::utils::redact_sensitive_text(&format!(
             "failed {secret_key} {local_path} {upstream}"
         ));
@@ -1328,7 +1328,7 @@ model = "relay-model"
 
         assert!(!message.contains(&secret_key));
         assert!(!message.contains(&local_path));
-        assert!(!message.contains("api.redacted.example.invalid"));
+        assert!(!message.contains("api.secret.example.com"));
         assert!(message.contains("[已隐藏密钥]"));
         assert!(message.contains("[已隐藏本地路径]"));
     }
@@ -1368,7 +1368,7 @@ model = "relay-model"
                 .headers()
                 .get("authorization")
                 .and_then(|value| value.to_str().ok())
-                == Some("Bearer test-key-probe");
+                == Some("Bearer sk-probe");
             if !authorized {
                 return (
                     StatusCode::UNAUTHORIZED,
@@ -1401,7 +1401,7 @@ model = "relay-model"
 
         let result = validate_relay_target(
             &format!("http://{addr}/v1"),
-            "test-key-probe",
+            "sk-probe",
             "upstream-chat-model",
         )
         .await
@@ -1427,7 +1427,7 @@ model = "relay-model"
                 .headers()
                 .get("authorization")
                 .and_then(|value| value.to_str().ok())
-                == Some("Bearer test-key-probe");
+                == Some("Bearer sk-probe");
             if !authorized {
                 return (
                     StatusCode::UNAUTHORIZED,
@@ -1471,13 +1471,10 @@ model = "relay-model"
             let _ = axum::serve(listener, app).await;
         });
 
-        let result = validate_relay_target(
-            &format!("http://{addr}/v1"),
-            "test-key-probe",
-            "upstream-model",
-        )
-        .await
-        .expect("validate responses-only relay");
+        let result =
+            validate_relay_target(&format!("http://{addr}/v1"), "sk-probe", "upstream-model")
+                .await
+                .expect("validate responses-only relay");
 
         assert_eq!(result.endpoints, vec![ProxyEndpointCapability::Responses]);
     }

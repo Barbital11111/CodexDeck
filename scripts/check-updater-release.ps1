@@ -21,54 +21,7 @@ $apiUrl = if ($Tag -eq "latest") {
   "https://api.github.com/repos/$Repository/releases/tags/$Tag"
 }
 
-function Get-GitHubHeaders {
-  param([switch]$Download)
-
-  $headers = @{
-    Accept = if ($Download) { "application/octet-stream" } else { "application/vnd.github+json" }
-    "X-GitHub-Api-Version" = "2022-11-28"
-  }
-
-  $token = $env:GITHUB_TOKEN
-  if ([string]::IsNullOrWhiteSpace($token)) {
-    $gh = Get-Command gh -ErrorAction SilentlyContinue
-    if ($null -ne $gh) {
-      $token = (& $gh.Source auth token 2>$null)
-    }
-  }
-
-  if (-not [string]::IsNullOrWhiteSpace($token)) {
-    $headers.Authorization = "Bearer $($token.Trim())"
-  }
-
-  $headers
-}
-
-function Get-Utf8ResponseText {
-  param($Response)
-
-  if ($null -ne $Response.RawContentStream) {
-    try {
-      if ($Response.RawContentStream.CanSeek) {
-        $Response.RawContentStream.Position = 0
-      }
-      $memory = [System.IO.MemoryStream]::new()
-      $Response.RawContentStream.CopyTo($memory)
-      return [System.Text.UTF8Encoding]::new($true).GetString($memory.ToArray()).TrimStart([char]0xFEFF)
-    }
-    catch {
-    }
-  }
-
-  if ($Response.Content -is [byte[]]) {
-    return [System.Text.UTF8Encoding]::new($true).GetString($Response.Content).TrimStart([char]0xFEFF)
-  }
-
-  ([string]$Response.Content).TrimStart([char]0xFEFF)
-}
-
-$headers = Get-GitHubHeaders
-$release = Invoke-RestMethod -Uri $apiUrl -Headers $headers
+$release = Invoke-RestMethod -Uri $apiUrl
 $assetNames = @($release.assets | ForEach-Object { $_.name })
 
 Write-Host "Release: $($release.tag_name)  $($release.html_url)"
@@ -97,11 +50,5 @@ Write-Host ($(if ($hasMsiSig) { "OK" } else { "缺失" })) -ForegroundColor $(if
 if ($latestAsset) {
   Write-Host ""
   Write-Host "latest.json:"
-  $latestJsonUrl = if ($headers.Authorization) {
-    $latestAsset.url
-  } else {
-    $latestAsset.browser_download_url
-  }
-  $latestResponse = Invoke-WebRequest -Uri $latestJsonUrl -Headers (Get-GitHubHeaders -Download)
-  Get-Utf8ResponseText -Response $latestResponse | ConvertFrom-Json | ConvertTo-Json -Depth 6
+  Invoke-RestMethod -Uri $latestAsset.browser_download_url | ConvertTo-Json -Depth 6
 }

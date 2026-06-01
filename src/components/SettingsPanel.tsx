@@ -61,9 +61,13 @@ type SettingsPanelProps = {
   settings: AppSettings;
   installedEditorApps: InstalledEditorApp[];
   hasOpencodeDesktopApp: boolean;
-  savingSettings: boolean;
-  onUpdateSettings: (patch: Partial<AppSettings>, options?: UpdateSettingsOptions) => void;
+  onUpdateSettings: (
+    patch: Partial<AppSettings>,
+    options?: UpdateSettingsOptions,
+  ) => void | Promise<void>;
 };
+
+type SettingPendingKey = keyof AppSettings;
 
 export function SettingsPanel({
   themeMode,
@@ -74,13 +78,13 @@ export function SettingsPanel({
   settings,
   installedEditorApps,
   hasOpencodeDesktopApp,
-  savingSettings,
   onUpdateSettings,
 }: SettingsPanelProps) {
   const { copy, locale, localeOptions, setLocale } = useI18n();
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [pickingCodexLaunchPathKind, setPickingCodexLaunchPathKind] = useState<"file" | "directory" | null>(null);
   const [contextWindowInput, setContextWindowInput] = useState("");
+  const [pendingSettings, setPendingSettings] = useState<Partial<Record<SettingPendingKey, boolean>>>({});
   const languageLabel = copy.topBar.languagePicker;
   const languageOptions = localeOptions.map((item) => ({
     id: item.code,
@@ -101,8 +105,42 @@ export function SettingsPanel({
     contextWindowInputMin,
     contextWindowInputMax,
   );
+  const isSettingPending = (...keys: SettingPendingKey[]) =>
+    keys.some((key) => Boolean(pendingSettings[key]));
+  const updateSetting = (
+    keys: SettingPendingKey | SettingPendingKey[],
+    patch: Partial<AppSettings>,
+    options?: UpdateSettingsOptions,
+  ) => {
+    const pendingKeys = Array.isArray(keys) ? keys : [keys];
+    setPendingSettings((current) => {
+      const next = { ...current };
+      for (const key of pendingKeys) {
+        next[key] = true;
+      }
+      return next;
+    });
+
+    const updateOptions = {
+      ...options,
+      keepInteractive: options?.keepInteractive ?? true,
+    };
+
+    return Promise.resolve()
+      .then(() => onUpdateSettings(patch, updateOptions))
+      .finally(() => {
+        setPendingSettings((current) => {
+          const next = { ...current };
+          for (const key of pendingKeys) {
+            delete next[key];
+          }
+          return next;
+        });
+      });
+  };
+  const contextWindowPending = isSettingPending("codexContextWindowK");
   const contextWindowApplyDisabled =
-    savingSettings ||
+    contextWindowPending ||
     !contextWindowDraft.valid;
   const versionValue = appVersion ? `v${appVersion}` : "...";
   const optionButtonType = (active: boolean): "primary" | "default" => (active ? "primary" : "default");
@@ -128,7 +166,7 @@ export function SettingsPanel({
   }, [settings.codexContextWindowK]);
 
   const pickCodexLaunchPath = async (kind: "file" | "directory") => {
-    if (savingSettings || pickingCodexLaunchPathKind) {
+    if (isSettingPending("codexLaunchPath") || pickingCodexLaunchPathKind) {
       return;
     }
 
@@ -141,7 +179,7 @@ export function SettingsPanel({
       if (!selected) {
         return;
       }
-      onUpdateSettings({ codexLaunchPath: selected });
+      await updateSetting("codexLaunchPath", { codexLaunchPath: selected });
     } finally {
       setPickingCodexLaunchPathKind(null);
     }
@@ -159,7 +197,8 @@ export function SettingsPanel({
       return;
     }
 
-    onUpdateSettings(
+    void updateSetting(
+      "codexContextWindowK",
       { codexContextWindowK: nextValue },
       { silent: true, keepInteractive: true },
     );
@@ -197,27 +236,27 @@ export function SettingsPanel({
             <div className="modeGroup" role="radiogroup" aria-label={copy.settings.trayUsageDisplay.groupAriaLabel}>
               <Button
                 type={optionButtonType(settings.trayUsageDisplayMode === "remaining")}
-                disabled={savingSettings}
-                loading={savingSettings}
-                onClick={() => onUpdateSettings({ trayUsageDisplayMode: "remaining" })}
+                disabled={isSettingPending("trayUsageDisplayMode")}
+                loading={isSettingPending("trayUsageDisplayMode")}
+                onClick={() => void updateSetting("trayUsageDisplayMode", { trayUsageDisplayMode: "remaining" })}
                 aria-pressed={settings.trayUsageDisplayMode === "remaining"}
               >
                 {copy.settings.trayUsageDisplay.remaining}
               </Button>
               <Button
                 type={optionButtonType(settings.trayUsageDisplayMode === "used")}
-                disabled={savingSettings}
-                loading={savingSettings}
-                onClick={() => onUpdateSettings({ trayUsageDisplayMode: "used" })}
+                disabled={isSettingPending("trayUsageDisplayMode")}
+                loading={isSettingPending("trayUsageDisplayMode")}
+                onClick={() => void updateSetting("trayUsageDisplayMode", { trayUsageDisplayMode: "used" })}
                 aria-pressed={settings.trayUsageDisplayMode === "used"}
               >
                 {copy.settings.trayUsageDisplay.used}
               </Button>
               <Button
                 type={optionButtonType(settings.trayUsageDisplayMode === "hidden")}
-                disabled={savingSettings}
-                loading={savingSettings}
-                onClick={() => onUpdateSettings({ trayUsageDisplayMode: "hidden" })}
+                disabled={isSettingPending("trayUsageDisplayMode")}
+                loading={isSettingPending("trayUsageDisplayMode")}
+                onClick={() => void updateSetting("trayUsageDisplayMode", { trayUsageDisplayMode: "hidden" })}
                 aria-pressed={settings.trayUsageDisplayMode === "hidden"}
               >
                 {copy.settings.trayUsageDisplay.hidden}
@@ -229,32 +268,44 @@ export function SettingsPanel({
         <div className="settingsGroup">
           <SwitchField
             checked={settings.launchAtStartup}
-            onChange={(checked) => onUpdateSettings({ launchAtStartup: checked })}
+            onChange={(checked) => void updateSetting("launchAtStartup", { launchAtStartup: checked })}
             label={copy.settings.launchAtStartup.label}
             checkedText={copy.settings.launchAtStartup.checkedText}
             uncheckedText={copy.settings.launchAtStartup.uncheckedText}
-            disabled={savingSettings}
-            loading={savingSettings}
+            disabled={isSettingPending("launchAtStartup")}
+            loading={isSettingPending("launchAtStartup")}
           />
 
           <SwitchField
             checked={settings.smartSwitchIncludeApi}
-            onChange={(checked) => onUpdateSettings({ smartSwitchIncludeApi: checked })}
+            onChange={(checked) => void updateSetting("smartSwitchIncludeApi", { smartSwitchIncludeApi: checked })}
             label={copy.settings.smartSwitchIncludeApi.label}
             checkedText={copy.settings.smartSwitchIncludeApi.checkedText}
             uncheckedText={copy.settings.smartSwitchIncludeApi.uncheckedText}
-            disabled={savingSettings}
-            loading={savingSettings}
+            disabled={isSettingPending("smartSwitchIncludeApi")}
+            loading={isSettingPending("smartSwitchIncludeApi")}
+          />
+
+          <SwitchField
+            checked={settings.apiEnhancedLaunchEnabled}
+            onChange={(checked) =>
+              void updateSetting("apiEnhancedLaunchEnabled", { apiEnhancedLaunchEnabled: checked })
+            }
+            label={copy.settings.apiEnhancedLaunch.label}
+            checkedText={copy.settings.apiEnhancedLaunch.checkedText}
+            uncheckedText={copy.settings.apiEnhancedLaunch.uncheckedText}
+            disabled={isSettingPending("apiEnhancedLaunchEnabled")}
+            loading={isSettingPending("apiEnhancedLaunchEnabled")}
           />
 
           <SwitchField
             checked={settings.usageAutoRefreshEnabled}
-            onChange={(checked) => onUpdateSettings({ usageAutoRefreshEnabled: checked })}
+            onChange={(checked) => void updateSetting("usageAutoRefreshEnabled", { usageAutoRefreshEnabled: checked })}
             label={copy.settings.autoRefresh.label}
             checkedText={copy.settings.autoRefresh.checkedText}
             uncheckedText={copy.settings.autoRefresh.uncheckedText}
-            disabled={savingSettings}
-            loading={savingSettings}
+            disabled={isSettingPending("usageAutoRefreshEnabled")}
+            loading={isSettingPending("usageAutoRefreshEnabled")}
           />
 
           {settings.usageAutoRefreshEnabled ? (
@@ -271,10 +322,11 @@ export function SettingsPanel({
                   <Button
                     key={seconds}
                     type={optionButtonType(settings.usageAutoRefreshIntervalSecs === seconds)}
-                    disabled={savingSettings}
-                    loading={savingSettings}
+                    disabled={isSettingPending("usageAutoRefreshIntervalSecs")}
+                    loading={isSettingPending("usageAutoRefreshIntervalSecs")}
                     onClick={() =>
-                      onUpdateSettings(
+                      void updateSetting(
+                        "usageAutoRefreshIntervalSecs",
                         { usageAutoRefreshIntervalSecs: seconds },
                         { silent: true, keepInteractive: true },
                       )}
@@ -289,12 +341,14 @@ export function SettingsPanel({
 
           <SwitchField
             checked={settings.apiQuotaAutoRefreshEnabled}
-            onChange={(checked) => onUpdateSettings({ apiQuotaAutoRefreshEnabled: checked })}
+            onChange={(checked) =>
+              void updateSetting("apiQuotaAutoRefreshEnabled", { apiQuotaAutoRefreshEnabled: checked })
+            }
             label={copy.settings.apiQuotaAutoRefresh.label}
             checkedText={copy.settings.apiQuotaAutoRefresh.checkedText}
             uncheckedText={copy.settings.apiQuotaAutoRefresh.uncheckedText}
-            disabled={savingSettings}
-            loading={savingSettings}
+            disabled={isSettingPending("apiQuotaAutoRefreshEnabled")}
+            loading={isSettingPending("apiQuotaAutoRefreshEnabled")}
           />
 
           {settings.apiQuotaAutoRefreshEnabled ? (
@@ -311,10 +365,11 @@ export function SettingsPanel({
                   <Button
                     key={seconds}
                     type={optionButtonType(settings.apiQuotaAutoRefreshIntervalSecs === seconds)}
-                    disabled={savingSettings}
-                    loading={savingSettings}
+                    disabled={isSettingPending("apiQuotaAutoRefreshIntervalSecs")}
+                    loading={isSettingPending("apiQuotaAutoRefreshIntervalSecs")}
                     onClick={() =>
-                      onUpdateSettings(
+                      void updateSetting(
+                        "apiQuotaAutoRefreshIntervalSecs",
                         { apiQuotaAutoRefreshIntervalSecs: seconds },
                         { silent: true, keepInteractive: true },
                       )}
@@ -329,12 +384,12 @@ export function SettingsPanel({
 
           <SwitchField
             checked={settings.quotaAlertEnabled}
-            onChange={(checked) => onUpdateSettings({ quotaAlertEnabled: checked })}
+            onChange={(checked) => void updateSetting("quotaAlertEnabled", { quotaAlertEnabled: checked })}
             label={copy.settings.quotaAlert.label}
             checkedText={copy.settings.quotaAlert.checkedText}
             uncheckedText={copy.settings.quotaAlert.uncheckedText}
-            disabled={savingSettings}
-            loading={savingSettings}
+            disabled={isSettingPending("quotaAlertEnabled")}
+            loading={isSettingPending("quotaAlertEnabled")}
           />
 
           {settings.quotaAlertEnabled ? (
@@ -346,16 +401,17 @@ export function SettingsPanel({
                 <div
                   className="modeGroup"
                   role="radiogroup"
-                aria-label={copy.settings.quotaAlertFiveHourThreshold.groupAriaLabel}
-              >
-                {quotaThresholdOptions.map((value) => (
+                  aria-label={copy.settings.quotaAlertFiveHourThreshold.groupAriaLabel}
+                >
+                  {quotaThresholdOptions.map((value) => (
                     <Button
                       key={`five-${value}`}
                       type={optionButtonType(settings.quotaAlertFiveHourThreshold === value)}
-                      disabled={savingSettings}
-                      loading={savingSettings}
+                      disabled={isSettingPending("quotaAlertFiveHourThreshold")}
+                      loading={isSettingPending("quotaAlertFiveHourThreshold")}
                       onClick={() =>
-                        onUpdateSettings(
+                        void updateSetting(
+                          "quotaAlertFiveHourThreshold",
                           { quotaAlertFiveHourThreshold: value },
                           { silent: true, keepInteractive: true },
                         )}
@@ -374,16 +430,17 @@ export function SettingsPanel({
                 <div
                   className="modeGroup"
                   role="radiogroup"
-                aria-label={copy.settings.quotaAlertOneWeekThreshold.groupAriaLabel}
-              >
-                {quotaThresholdOptions.map((value) => (
+                  aria-label={copy.settings.quotaAlertOneWeekThreshold.groupAriaLabel}
+                >
+                  {quotaThresholdOptions.map((value) => (
                     <Button
                       key={`week-${value}`}
                       type={optionButtonType(settings.quotaAlertOneWeekThreshold === value)}
-                      disabled={savingSettings}
-                      loading={savingSettings}
+                      disabled={isSettingPending("quotaAlertOneWeekThreshold")}
+                      loading={isSettingPending("quotaAlertOneWeekThreshold")}
                       onClick={() =>
-                        onUpdateSettings(
+                        void updateSetting(
+                          "quotaAlertOneWeekThreshold",
                           { quotaAlertOneWeekThreshold: value },
                           { silent: true, keepInteractive: true },
                         )}
@@ -411,10 +468,8 @@ export function SettingsPanel({
                   <Button
                     key={option.label}
                     type={optionButtonType(contextWindowDraft.valid && contextWindowDraft.value === option.value)}
-                    disabled={
-                      savingSettings
-                    }
-                    loading={savingSettings}
+                    disabled={contextWindowPending}
+                    loading={false}
                     onClick={() =>
                       setContextWindowInput(option.value === null ? "" : String(option.value))}
                     aria-pressed={contextWindowDraft.valid && contextWindowDraft.value === option.value}
@@ -434,7 +489,7 @@ export function SettingsPanel({
                     className="settingContextInput"
                     placeholder={copy.settings.contextWindow.inputPlaceholder}
                     value={contextWindowInput}
-                    disabled={savingSettings}
+                    disabled={contextWindowPending}
                     onChange={(event) => setContextWindowInput(event.target.value)}
                   />
                   <span className="settingContextSuffix">K</span>
@@ -443,7 +498,7 @@ export function SettingsPanel({
                   <span className="settingContextHint">{contextWindowHint}</span>
                   <Button
                     disabled={contextWindowApplyDisabled}
-                    loading={savingSettings}
+                    loading={contextWindowPending}
                     onClick={applyContextWindowDraft}
                   >
                     {copy.settings.contextWindow.apply}
@@ -466,15 +521,15 @@ export function SettingsPanel({
                   <Button
                     className="settingPathClearButton"
                     aria-label={copy.common.clear}
-                    disabled={savingSettings || pickingCodexLaunchPathKind !== null}
-                    loading={savingSettings}
-                    onClick={() => onUpdateSettings({ codexLaunchPath: null })}
+                    disabled={isSettingPending("codexLaunchPath") || pickingCodexLaunchPathKind !== null}
+                    loading={isSettingPending("codexLaunchPath")}
+                    onClick={() => void updateSetting("codexLaunchPath", { codexLaunchPath: null })}
                   >
                     ×
                   </Button>
                 ) : null}
                 <Button
-                  disabled={savingSettings || pickingCodexLaunchPathKind !== null}
+                  disabled={isSettingPending("codexLaunchPath") || pickingCodexLaunchPathKind !== null}
                   loading={pickingCodexLaunchPathKind === "file"}
                   onClick={() => {
                     void pickCodexLaunchPath("file");
@@ -483,7 +538,7 @@ export function SettingsPanel({
                   {copy.addAccount.uploadChooseFiles}
                 </Button>
                 <Button
-                  disabled={savingSettings || pickingCodexLaunchPathKind !== null}
+                  disabled={isSettingPending("codexLaunchPath") || pickingCodexLaunchPathKind !== null}
                   loading={pickingCodexLaunchPathKind === "directory"}
                   onClick={() => {
                     void pickCodexLaunchPath("directory");
@@ -497,25 +552,25 @@ export function SettingsPanel({
 
           <SwitchField
             checked={settings.syncOpencodeOpenaiAuth}
-            onChange={(checked) => onUpdateSettings({ syncOpencodeOpenaiAuth: checked })}
+            onChange={(checked) => void updateSetting("syncOpencodeOpenaiAuth", { syncOpencodeOpenaiAuth: checked })}
             label={copy.settings.syncOpencode.label}
             checkedText={copy.settings.syncOpencode.checkedText}
             uncheckedText={copy.settings.syncOpencode.uncheckedText}
-            disabled={savingSettings}
-            loading={savingSettings}
+            disabled={isSettingPending("syncOpencodeOpenaiAuth")}
+            loading={isSettingPending("syncOpencodeOpenaiAuth")}
           />
 
           {settings.syncOpencodeOpenaiAuth && hasOpencodeDesktopApp ? (
             <SwitchField
               checked={settings.restartOpencodeDesktopOnSwitch}
               onChange={(checked) =>
-                onUpdateSettings({ restartOpencodeDesktopOnSwitch: checked })
+                void updateSetting("restartOpencodeDesktopOnSwitch", { restartOpencodeDesktopOnSwitch: checked })
               }
               label={copy.settings.restartOpencodeDesktop.label}
               checkedText={copy.settings.restartOpencodeDesktop.checkedText}
               uncheckedText={copy.settings.restartOpencodeDesktop.uncheckedText}
-              disabled={savingSettings}
-              loading={savingSettings}
+              disabled={isSettingPending("restartOpencodeDesktopOnSwitch")}
+              loading={isSettingPending("restartOpencodeDesktopOnSwitch")}
               rowClassName="settingRowCompact settingRowNested"
             />
           ) : null}
@@ -524,19 +579,22 @@ export function SettingsPanel({
             checked={settings.restartEditorsOnSwitch}
             onChange={(checked) => {
               if (checked && settings.restartEditorTargets.length === 0 && installedEditorApps.length > 0) {
-                onUpdateSettings({
-                  restartEditorsOnSwitch: true,
-                  restartEditorTargets: [installedEditorApps[0].id],
-                });
+                void updateSetting(
+                  ["restartEditorsOnSwitch", "restartEditorTargets"],
+                  {
+                    restartEditorsOnSwitch: true,
+                    restartEditorTargets: [installedEditorApps[0].id],
+                  },
+                );
                 return;
               }
-              onUpdateSettings({ restartEditorsOnSwitch: checked });
+              void updateSetting("restartEditorsOnSwitch", { restartEditorsOnSwitch: checked });
             }}
             label={copy.settings.restartEditorsOnSwitch.label}
             checkedText={copy.settings.restartEditorsOnSwitch.checkedText}
             uncheckedText={copy.settings.restartEditorsOnSwitch.uncheckedText}
-            disabled={savingSettings}
-            loading={savingSettings}
+            disabled={isSettingPending("restartEditorsOnSwitch", "restartEditorTargets")}
+            loading={isSettingPending("restartEditorsOnSwitch", "restartEditorTargets")}
           />
 
           {settings.restartEditorsOnSwitch ? (
@@ -549,7 +607,8 @@ export function SettingsPanel({
                   options={installedEditorApps}
                   value={settings.restartEditorTargets[0] ?? null}
                   onChange={(selected) =>
-                    onUpdateSettings(
+                    void updateSetting(
+                      "restartEditorTargets",
                       { restartEditorTargets: [selected] },
                       { silent: true, keepInteractive: true },
                     )

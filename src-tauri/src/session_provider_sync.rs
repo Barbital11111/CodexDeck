@@ -1445,7 +1445,7 @@ mod tests {
             .expect("insert threads");
         drop(connection);
 
-        let extended_cwd = r"\\?\D:\Workspace\Project";
+        let extended_cwd = r"\\?\C:\Workspace\Project";
         let active_rollout = codex_home
             .join("sessions")
             .join("2026")
@@ -1503,7 +1503,7 @@ mod tests {
             .expect("read thread");
         assert_eq!(row.0, "codexdeck_api");
         assert_eq!(row.1, 1);
-        assert_eq!(row.2, r"D:\Workspace\Project");
+        assert_eq!(row.2, r"C:\Workspace\Project");
 
         let global_state: Value = serde_json::from_str(
             &fs::read_to_string(codex_home.join(".codex-global-state.json"))
@@ -1512,7 +1512,7 @@ mod tests {
         .expect("parse global state");
         assert_eq!(
             global_state["electron-saved-workspace-roots"][0].as_str(),
-            Some(r"D:\Workspace\Project")
+            Some(r"C:\Workspace\Project")
         );
         assert!(codex_home.join(".codex-global-state.json.bak").is_file());
 
@@ -1548,7 +1548,7 @@ mod tests {
         connection
             .execute(
                 "INSERT INTO threads (id, model_provider, has_user_event, cwd)
-                 VALUES ('thread-one', 'codexdeck_api', 1, 'D:\\Workspace\\Project')",
+                 VALUES ('thread-one', 'codexdeck_api', 1, 'C:\\Workspace\\Project')",
                 [],
             )
             .expect("insert thread");
@@ -1564,7 +1564,7 @@ mod tests {
             &rollout,
             "thread-one",
             "codexdeck_api",
-            r"D:\Workspace\Project",
+            r"C:\Workspace\Project",
             true,
         );
 
@@ -1611,8 +1611,8 @@ mod tests {
     #[test]
     fn converts_extended_windows_paths_to_desktop_paths() {
         assert_eq!(
-            to_desktop_workspace_path(r"\\?\D:\Workspace\Project"),
-            r"D:\Workspace\Project"
+            to_desktop_workspace_path(r"\\?\C:\Workspace\Project"),
+            r"C:\Workspace\Project"
         );
         assert_eq!(
             to_desktop_workspace_path(r"\\?\UNC\server\share"),

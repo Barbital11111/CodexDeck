@@ -20,7 +20,8 @@ import {
   type MessageCatalog,
 } from "./catalog";
 
-const LOCALE_STORAGE_KEY = "codexdeck-locale";
+const LOCALE_STORAGE_KEY = "codex-switch-locale";
+const LEGACY_LOCALE_STORAGE_KEY = "codex-tools-locale";
 
 type I18nContextValue = {
   locale: AppLocale;
@@ -65,7 +66,9 @@ function readInitialLocale(): AppLocale {
     return DEFAULT_LOCALE;
   }
 
-  const stored = window.localStorage.getItem(LOCALE_STORAGE_KEY);
+  const stored =
+    window.localStorage.getItem(LOCALE_STORAGE_KEY) ??
+    window.localStorage.getItem(LEGACY_LOCALE_STORAGE_KEY);
   if (isSupportedLocale(stored)) {
     return stored;
   }

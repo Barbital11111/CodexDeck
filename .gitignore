@@ -28,9 +28,8 @@ push.sh
 release/
 debug/
 src-tauri/gen/
-src-tauri/resources/codex-command-runtime/*
-!src-tauri/resources/codex-command-runtime/.gitkeep
 .dev-runtime/
+.tmp/
 仓库推送/
 代码审查日志/
 参考仓库/

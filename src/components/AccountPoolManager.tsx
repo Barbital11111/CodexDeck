@@ -1,6 +1,7 @@
 import {
   DeleteOutlined,
   EditOutlined,
+  ExportOutlined,
   PlusOutlined,
   SortAscendingOutlined,
   SyncOutlined,
@@ -53,6 +54,7 @@ type AccountPoolManagerProps = {
   notificationProviders: NotificationProviderConfig[];
   usageDisplayMode: TrayUsageDisplayMode;
   hideAccountDetails: boolean;
+  apiEnhancedLaunchEnabled: boolean;
   onRenamePool: (poolId: string, name: string) => void;
   onDeletePool: (poolId: string) => void;
   onTogglePoolCollapsed: (poolId: string, collapsed: boolean) => void;
@@ -60,6 +62,7 @@ type AccountPoolManagerProps = {
   onRefreshPoolUsage: (accountKeys: string[], apiAccountKeys: string[], label: string) => void;
   onAssignAccountToPool: (accountKey: string, poolId: string) => void;
   onRemoveAccountFromAllPools: (accountKey: string) => void;
+  onExportAccountKeys: (accountKeys: string[]) => void;
   onExport: (account: AccountSummary) => void;
   onReauthorize: (account: AccountSummary) => void;
   onRename: (account: AccountSummary, label: string) => Promise<boolean>;
@@ -111,8 +114,11 @@ function normalizeProviderBaseUrl(value: string | null | undefined) {
 }
 
 function hasApiQuotaProvider(account: AccountSummary, providers: NotificationProviderConfig[]) {
-  if (account.sourceKind !== "relay") {
+  if (account.sourceKind !== "relay" || !account.balanceDisplayEnabled) {
     return false;
+  }
+  if (account.apiQuotaMode === "apiOnly" && Boolean(account.balanceText)) {
+    return true;
   }
   const accountBaseUrl = normalizeProviderBaseUrl(account.apiBaseUrl);
   if (!accountBaseUrl) {
@@ -265,6 +271,7 @@ export function AccountPoolManager({
   notificationProviders,
   usageDisplayMode,
   hideAccountDetails,
+  apiEnhancedLaunchEnabled,
   onRenamePool,
   onDeletePool,
   onTogglePoolCollapsed,
@@ -272,6 +279,7 @@ export function AccountPoolManager({
   onRefreshPoolUsage,
   onAssignAccountToPool,
   onRemoveAccountFromAllPools,
+  onExportAccountKeys,
   onExport,
   onReauthorize,
   onRename,
@@ -405,6 +413,13 @@ export function AccountPoolManager({
       .filter((entry) => hasApiQuotaProvider(entry.primary, notificationProviders))
       .map((entry) => entry.accountKey);
     onRefreshPoolUsage(nativeAccountKeys, apiAccountKeys, pool.name || groupCopy.groupUntitled);
+  };
+
+  const exportPoolAccounts = (pool: AccountPoolConfig & { entries: LogicalAccountEntry[] }) => {
+    if (pool.entries.length === 0) {
+      return;
+    }
+    onExportAccountKeys(pool.entries.map((entry) => entry.accountKey));
   };
 
   const renderCardEntryActions = (entry: LogicalAccountEntry) => (
@@ -577,6 +592,16 @@ export function AccountPoolManager({
                         aria-label={groupCopy.delete}
                       />
                     </Tooltip>
+                    <Tooltip title={groupCopy.exportGroup}>
+                      <Button
+                        type="text"
+                        className="accountGroupIconButton"
+                        icon={<ExportOutlined />}
+                        onClick={() => exportPoolAccounts(pool)}
+                        disabled={saving || exportingAccounts || pool.entries.length === 0}
+                        aria-label={groupCopy.exportGroup}
+                      />
+                    </Tooltip>
                   </div>
                 </header>
 
@@ -677,6 +702,7 @@ export function AccountPoolManager({
                               notificationProviders={notificationProviders}
                               usageDisplayMode={usageDisplayMode}
                               hideAccountDetails={hideAccountDetails}
+                              apiEnhancedLaunchEnabled={apiEnhancedLaunchEnabled}
                               onExport={onExport}
                               onReauthorize={onReauthorize}
                               onRename={onRename}
@@ -733,8 +759,6 @@ export function AccountPoolManager({
             <AccountsGrid
               accounts={ungroupedAccountsForDisplay}
               loading={loading}
-              selectionMode={false}
-              selectedAccountKeys={[]}
               exportingAccounts={exportingAccounts}
               switchingId={switchingId}
               renamingAccountId={renamingAccountId}
@@ -742,7 +766,7 @@ export function AccountPoolManager({
               notificationProviders={notificationProviders}
               usageDisplayMode={usageDisplayMode}
               hideAccountDetails={hideAccountDetails}
-              onToggleSelected={() => undefined}
+              apiEnhancedLaunchEnabled={apiEnhancedLaunchEnabled}
               onExport={onExport}
               onReauthorize={onReauthorize}
               onRename={onRename}

@@ -4,11 +4,40 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $devRoot = Join-Path $repoRoot ".dev-runtime"
 $appDataDir = Join-Path $devRoot "app-data"
 $codexDir = Join-Path $devRoot "codex"
+$copyProdData = $env:CODEX_SWITCH_DEV_COPY_PROD -eq "1"
 
 New-Item -ItemType Directory -Force -Path $appDataDir | Out-Null
 New-Item -ItemType Directory -Force -Path $codexDir | Out-Null
 
-Write-Host "Dev preview uses an isolated CodexDeck data directory."
+function Copy-IfMissing {
+    param(
+        [Parameter(Mandatory = $true)][string]$Source,
+        [Parameter(Mandatory = $true)][string]$Destination
+    )
+
+    if (!(Test-Path -LiteralPath $Source) -or (Test-Path -LiteralPath $Destination)) {
+        return
+    }
+
+    $parent = Split-Path -Parent $Destination
+    if ($parent) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+
+    Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
+}
+
+$prodAppDataDir = Join-Path $env:APPDATA "com.carry.codex-tools"
+$futureProdAppDataDir = Join-Path $env:APPDATA "io.github.barbital11111.codex-switch"
+if ($copyProdData) {
+    Copy-IfMissing -Source (Join-Path $prodAppDataDir "accounts.json") -Destination (Join-Path $appDataDir "accounts.json")
+    Copy-IfMissing -Source (Join-Path $prodAppDataDir "profiles") -Destination (Join-Path $appDataDir "profiles")
+    Copy-IfMissing -Source (Join-Path $futureProdAppDataDir "accounts.json") -Destination (Join-Path $appDataDir "accounts.json")
+    Copy-IfMissing -Source (Join-Path $futureProdAppDataDir "profiles") -Destination (Join-Path $appDataDir "profiles")
+} else {
+    Write-Host "Dev preview will NOT copy production account cache by default."
+    Write-Host "Set CODEX_SWITCH_DEV_COPY_PROD=1 before launch if you intentionally need an isolated production-data copy."
+}
 
 $devAccountsPath = Join-Path $appDataDir "accounts.json"
 if (Test-Path -LiteralPath $devAccountsPath) {
@@ -23,8 +52,14 @@ if (Test-Path -LiteralPath $devAccountsPath) {
     }
 }
 
-$env:CODEXDECK_DEV_DATA_DIR = $appDataDir
-$env:CODEXDECK_DEV_CODEX_DIR = $codexDir
+$prodCodexDir = Join-Path $env:USERPROFILE ".codex"
+if ($copyProdData) {
+    Copy-IfMissing -Source (Join-Path $prodCodexDir "auth.json") -Destination (Join-Path $codexDir "auth.json")
+    Copy-IfMissing -Source (Join-Path $prodCodexDir "config.toml") -Destination (Join-Path $codexDir "config.toml")
+}
+
+$env:CODEX_SWITCH_DEV_DATA_DIR = $appDataDir
+$env:CODEX_SWITCH_DEV_CODEX_DIR = $codexDir
 
 $cargoBin = Join-Path $env:USERPROFILE ".cargo\\bin"
 if (Test-Path -LiteralPath $cargoBin) {
@@ -47,7 +82,7 @@ Write-Host ("  codex dir: {0}" -f $codexDir)
 $devTauriConfigPath = Join-Path $devRoot "tauri.dev.conf.json"
 $devTauriConfig = @{
     productName = "CodexDeck Dev"
-    identifier = "io.github.barbital11111.codexdeck.dev"
+    identifier = "io.github.barbital11111.codex-switch.dev"
     app = @{
         windows = @(
             @{

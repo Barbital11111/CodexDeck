@@ -28,14 +28,14 @@ const TRAY_MENU_OPEN_ID: &str = "tray_open_window";
 const TRAY_MENU_QUIT_ID: &str = "tray_quit";
 
 #[cfg(target_os = "macos")]
-const TRAY_ID: &str = "codexdeck_status_bar";
+const TRAY_ID: &str = "codex_tools_status_bar";
 #[cfg(target_os = "macos")]
 const TRAY_MENU_REFRESH_ID: &str = "tray_refresh_usage";
 #[cfg(target_os = "macos")]
 const STATUS_BAR_ICON: tauri::image::Image<'_> =
-    tauri::include_image!("./icons/codexdeck-statusbar-terminal.png");
+    tauri::include_image!("./icons/codex-tools-statusbar-terminal.png");
 #[cfg(target_os = "windows")]
-const TRAY_ID: &str = "codexdeck_tray";
+const TRAY_ID: &str = "codex_tools_tray";
 #[cfg(target_os = "windows")]
 const WINDOWS_TRAY_ICON: tauri::image::Image<'_> = tauri::include_image!("./icons/32x32.png");
 

@@ -10,6 +10,7 @@ import { DEFAULT_LOCALE } from "../i18n/catalog";
 import type { MessageCatalog } from "../i18n/catalog";
 import type {
   AccountSummary,
+  AccountsExportFormat,
   ApiQuotaMode,
   AppSettings,
   AuthJsonImportInput,
@@ -36,7 +37,7 @@ import { displayAccountLabel } from "../utils/privacy";
 
 const DEFAULT_USAGE_REFRESH_INTERVAL_SECS = 30;
 const DEFAULT_API_QUOTA_REFRESH_INTERVAL_SECS = 600;
-const TOKEN_USAGE_REFRESH_MS = 60_000;
+const TOKEN_USAGE_REFRESH_MS = 6 * 60 * 60 * 1000;
 const EDITOR_SCAN_MS = 60_000;
 const UPDATE_CHECK_MS = 60 * 60 * 1000;
 
@@ -49,6 +50,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   trayUsageDisplayMode: "remaining",
   launchCodexAfterSwitch: true,
   smartSwitchIncludeApi: false,
+  apiEnhancedLaunchEnabled: false,
   usageAutoRefreshEnabled: true,
   usageAutoRefreshIntervalSecs: DEFAULT_USAGE_REFRESH_INTERVAL_SECS,
   apiQuotaAutoRefreshEnabled: true,
@@ -121,6 +123,12 @@ function buildNotificationProviderFromApiInput(
   input: CreateApiAccountInput,
   existing?: NotificationProviderConfig,
 ): NotificationProviderConfig | null {
+  if (!input.balanceDisplayEnabled) {
+    return null;
+  }
+  if ((input.apiQuotaMode ?? "apiOnly") === "apiOnly") {
+    return null;
+  }
   const email = input.platformLoginEmail?.trim() ?? "";
   const password = input.platformLoginPassword?.trim() ?? "";
   if (!email || !password) {
@@ -157,6 +165,12 @@ function buildNotificationProviderFromApiUpdate(
   input: UpdateApiAccountInput,
   existing?: NotificationProviderConfig,
 ): NotificationProviderConfig | null {
+  if (input.balanceDisplayEnabled === false) {
+    return null;
+  }
+  if ((input.apiQuotaMode ?? "apiOnly") === "apiOnly") {
+    return null;
+  }
   const email = input.platformLoginEmail?.trim() ?? "";
   const password = input.platformLoginPassword?.trim() || existing?.password?.trim() || "";
   if (!email || !password) {
@@ -202,8 +216,11 @@ function accountHasApiQuotaProvider(
   account: AccountSummary,
   providers: NotificationProviderConfig[],
 ) {
-  if (account.sourceKind !== "relay") {
+  if (account.sourceKind !== "relay" || !account.balanceDisplayEnabled) {
     return false;
+  }
+  if (account.apiQuotaMode === "apiOnly") {
+    return true;
   }
   const accountBaseUrl = normalizeApiQuotaProviderBaseUrl(account.apiBaseUrl);
   if (!accountBaseUrl) {
@@ -294,6 +311,7 @@ function buildPreviewRelayAccount(
     label: string;
     baseUrl: string;
     balanceText: string;
+    balanceDisplayEnabled?: boolean;
     apiQuotaMode: ApiQuotaMode;
     providerId: string | null;
     providerName: string;
@@ -329,6 +347,9 @@ function buildPreviewRelayAccount(
     apiBaseUrl: overrides.baseUrl,
     modelName: "gpt-5.5",
     balanceText: overrides.balanceText,
+    balanceDisplayEnabled:
+      overrides.balanceDisplayEnabled ??
+      Boolean(overrides.balanceText || overrides.apiQuotaMode !== "apiOnly"),
     apiQuotaMode: overrides.apiQuotaMode,
     apiQuotaTodayUsedText: overrides.apiQuotaTodayUsedText ?? null,
     apiQuotaRemainingText: overrides.apiQuotaRemainingText ?? null,
@@ -404,6 +425,7 @@ function buildPreviewChatGptAccount(): AccountSummary {
     apiBaseUrl: null,
     modelName: null,
     balanceText: null,
+    balanceDisplayEnabled: false,
     apiQuotaMode: "apiOnly",
     providerId: null,
     providerName: "ChatGPT",
@@ -828,14 +850,19 @@ function readPreviewAccounts() {
       .map((account) => {
         const apiQuotaMode: ApiQuotaMode = account.apiQuotaMode ?? "apiOnly";
         const seedAccount = seed.find((item) => item.accountKey === account.accountKey);
+        const balanceDisplayEnabled =
+          account.balanceDisplayEnabled ??
+          seedAccount?.balanceDisplayEnabled ??
+          Boolean(account.balanceText || apiQuotaMode !== "apiOnly");
         if (!seedAccount) {
-          return { ...account, apiQuotaMode };
+          return { ...account, apiQuotaMode, balanceDisplayEnabled };
         }
 
         return {
           ...seedAccount,
           ...account,
           apiQuotaMode,
+          balanceDisplayEnabled,
           label: seedAccount.label,
           email: seedAccount.email,
           planType: seedAccount.planType,
@@ -873,25 +900,11 @@ function writePreviewAccounts(accounts: AccountSummary[]) {
 
 function buildPreviewTokenUsage(): CodexTokenUsageSnapshot {
   const now = nowUnixSeconds();
-  const sessionTotal = {
-    inputTokens: 118_400,
-    cachedInputTokens: 92_000,
-    outputTokens: 8_600,
-    reasoningOutputTokens: 2_100,
-    totalTokens: 127_000,
-  };
   return {
     updatedAt: now,
     sourcePathCount: 1,
     failedPathCount: 0,
     eventCount: 28,
-    last24h: {
-      inputTokens: 356_000,
-      cachedInputTokens: 241_000,
-      outputTokens: 31_500,
-      reasoningOutputTokens: 7_200,
-      totalTokens: 387_500,
-    },
     last7d: {
       inputTokens: 1_820_000,
       cachedInputTokens: 1_310_000,
@@ -906,15 +919,11 @@ function buildPreviewTokenUsage(): CodexTokenUsageSnapshot {
       reasoningOutputTokens: 126_000,
       totalTokens: 6_442_000,
     },
-    latestSession: {
-      startedAt: now - 1_800,
-      updatedAt: now,
-      total: sessionTotal,
-    },
   };
 }
 
-const HIDE_ACCOUNT_DETAILS_STORAGE_KEY = "codexdeck:hide-account-details";
+const HIDE_ACCOUNT_DETAILS_STORAGE_KEY = "codex-switch:hide-account-details";
+const LEGACY_HIDE_ACCOUNT_DETAILS_STORAGE_KEY = "codex-tools:hide-account-details";
 
 function readHideAccountDetailsPreference() {
   if (typeof window === "undefined") {
@@ -922,7 +931,10 @@ function readHideAccountDetailsPreference() {
   }
 
   try {
-    return window.localStorage.getItem(HIDE_ACCOUNT_DETAILS_STORAGE_KEY) === "true";
+    return (
+      window.localStorage.getItem(HIDE_ACCOUNT_DETAILS_STORAGE_KEY) ??
+      window.localStorage.getItem(LEGACY_HIDE_ACCOUNT_DETAILS_STORAGE_KEY)
+    ) === "true";
   } catch {
     return false;
   }
@@ -2044,6 +2056,7 @@ export function useCodexController() {
             apiBaseUrl: input.baseUrl.trim(),
             modelName: input.modelName.trim(),
             balanceText: input.balanceDisplayEnabled ? "$50.00" : null,
+            balanceDisplayEnabled: Boolean(input.balanceDisplayEnabled),
             apiQuotaMode: input.apiQuotaMode ?? "apiOnly",
             providerId: null,
             providerName: null,
@@ -2240,7 +2253,11 @@ export function useCodexController() {
     ],
   );
 
-  const onExportAccounts = useCallback(async (account?: AccountSummary) => {
+  const onExportAccounts = useCallback(async (
+    account?: AccountSummary,
+    format: AccountsExportFormat = "codexDeck",
+    accountKeys?: string[],
+  ) => {
     if (exportingAccounts) {
       return;
     }
@@ -2257,6 +2274,8 @@ export function useCodexController() {
 
       const exportedPath = await invoke<string | null>("export_accounts_zip", {
         accountKey: account?.accountKey ?? null,
+        accountKeys: accountKeys ?? null,
+        format,
       });
       if (exportedPath) {
         setNotice({ type: "ok", message: copy.notices.accountsExported });
@@ -2375,10 +2394,32 @@ export function useCodexController() {
                   label: normalizedLabel,
                   apiBaseUrl: normalizedBaseUrl,
                   modelName: normalizedModelName,
+                  balanceDisplayEnabled: input.balanceDisplayEnabled ?? item.balanceDisplayEnabled,
                   balanceText: input.balanceDisplayEnabled === false ? null : item.balanceText,
-                  apiQuotaMode: input.apiQuotaMode ?? item.apiQuotaMode ?? "apiOnly",
-                  apiQuotaTodayUsedText: normalizedQuotaTodayUsedText,
-                  apiQuotaRemainingText: normalizedQuotaRemainingText,
+                  apiQuotaMode:
+                    input.balanceDisplayEnabled === false
+                      ? "apiOnly"
+                      : input.apiQuotaMode ?? item.apiQuotaMode ?? "apiOnly",
+                  apiQuotaTodayUsedText:
+                    input.balanceDisplayEnabled === false ? null : normalizedQuotaTodayUsedText,
+                  apiQuotaRemainingText:
+                    input.balanceDisplayEnabled === false ? null : normalizedQuotaRemainingText,
+                  apiQuotaTotalRemainingText:
+                    input.balanceDisplayEnabled === false ? null : item.apiQuotaTotalRemainingText,
+                  apiQuotaTotalTokensText:
+                    input.balanceDisplayEnabled === false ? null : item.apiQuotaTotalTokensText,
+                  apiQuotaTodayTokensText:
+                    input.balanceDisplayEnabled === false ? null : item.apiQuotaTodayTokensText,
+                  apiQuotaDailyWindow:
+                    input.balanceDisplayEnabled === false ? null : item.apiQuotaDailyWindow,
+                  apiQuotaTotalWindow:
+                    input.balanceDisplayEnabled === false ? null : item.apiQuotaTotalWindow,
+                  apiQuotaSubscriptionExpiresAt:
+                    input.balanceDisplayEnabled === false
+                      ? null
+                      : item.apiQuotaSubscriptionExpiresAt,
+                  profileLastValidationError:
+                    input.balanceDisplayEnabled === false ? null : item.profileLastValidationError,
                   updatedAt: nowUnixSeconds(),
                 }
               : item,

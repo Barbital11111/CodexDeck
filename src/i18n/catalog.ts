@@ -62,8 +62,6 @@ export type MessageCatalog = {
     ariaLabel: string;
     accountCount: string;
     currentActive: string;
-    tokensSession: string;
-    tokens24h: string;
     tokens7d: string;
     tokens30d: string;
     tokensPending: string;
@@ -72,6 +70,18 @@ export type MessageCatalog = {
     tokensEvents: string;
     tokensFailedSources: string;
     exportAll: string;
+  };
+  exportDialog: {
+    title: string;
+    allDescription: string;
+    selectedDescription: (count: number) => string;
+    singleDescription: string;
+    codexDeckTitle: string;
+    codexDeckDescription: string;
+    sub2apiTitle: string;
+    sub2apiDescription: string;
+    ok: string;
+    cancel: string;
   };
   addAccount: {
     smartSwitch: string;
@@ -157,6 +167,7 @@ export type MessageCatalog = {
     apiBadge: string;
     profileIncomplete: string;
     validationFailed: string;
+    enhancedLaunchLabel: string;
     providerLabel: string;
     endpointLabel: string;
     modelLabel: string;
@@ -241,6 +252,7 @@ export type MessageCatalog = {
     reorder: string;
     refreshQuota: string;
     refreshQuotaEmpty: string;
+    exportGroup: string;
     renamePlaceholder: string;
     delete: string;
     deleteConfirmTitle: string;
@@ -560,6 +572,11 @@ export type MessageCatalog = {
       checkedText: string;
       uncheckedText: string;
     };
+    apiEnhancedLaunch: {
+      label: string;
+      checkedText: string;
+      uncheckedText: string;
+    };
     autoRefresh: {
       label: string;
       description: string;
@@ -825,6 +842,12 @@ function compileLocale(raw: RawMessageCatalog): MessageCatalog {
       toggleLanguage: (nextLanguage) => fillTemplate(raw.topBar.toggleLanguage, { nextLanguage }),
     },
     metaStrip: raw.metaStrip,
+    exportDialog: {
+      ...zhFallback.exportDialog,
+      ...raw.exportDialog,
+      selectedDescription: (count) =>
+        fillTemplate(raw.exportDialog.selectedDescription, { count }),
+    },
     addAccount: {
       ...addAccountRaw,
       reauthorizeDialogSubtitle: (label) =>
