@@ -29,6 +29,7 @@ use crate::auth::normalize_plan_type_key;
 use crate::auth::read_current_codex_auth;
 use crate::auth::read_current_codex_auth_optional;
 use crate::auth::refresh_chatgpt_auth_tokens_serialized;
+use crate::hybrid_relay_proxy;
 use crate::models::dedupe_account_variants;
 use crate::models::infer_provider_metadata_from_base_url;
 use crate::models::AccountSourceKind;
@@ -286,14 +287,22 @@ fn current_hybrid_pair_for_relay(
     Some((chatgpt_account, relay_account))
 }
 
-fn apply_current_relay_profile(
+async fn apply_current_relay_profile(
+    state: &AppState,
     store: &AccountsStore,
     relay_account: &StoredAccount,
 ) -> Result<(), String> {
     if let Some((chatgpt_account, relay_account)) =
         current_hybrid_pair_for_relay(store, &relay_account.id)
     {
-        profile_files::apply_hybrid_account_profile(&chatgpt_account, &relay_account)
+        let local_base_url =
+            hybrid_relay_proxy::ensure_hybrid_relay_proxy_for_account(state, &relay_account)
+                .await?;
+        profile_files::apply_hybrid_account_profile_with_provider_base_url(
+            &chatgpt_account,
+            &relay_account,
+            &local_base_url,
+        )
     } else {
         profile_files::apply_account_profile(relay_account)
     }
@@ -1156,7 +1165,7 @@ pub(crate) async fn update_api_account_internal(
             .as_ref()
             .is_some_and(|hybrid| hybrid.relay_account_id == updated_account.id)
     {
-        apply_current_relay_profile(&store, &updated_account)?;
+        apply_current_relay_profile(state, &store, &updated_account).await?;
     }
 
     let summary = build_account_summaries_for_store(
@@ -1256,7 +1265,7 @@ pub(crate) async fn update_api_account_keys_internal(
             .as_ref()
             .is_some_and(|hybrid| hybrid.relay_account_id == updated_account.id)
     {
-        apply_current_relay_profile(&store, &updated_account)?;
+        apply_current_relay_profile(state, &store, &updated_account).await?;
     }
 
     let summary = build_account_summaries_for_store(
@@ -1385,7 +1394,7 @@ pub(crate) async fn probe_api_account_key_internal(
                 .as_ref()
                 .is_some_and(|hybrid| hybrid.relay_account_id == updated_account.id)
         {
-            apply_current_relay_profile(&store, &updated_account)?;
+            apply_current_relay_profile(state, &store, &updated_account).await?;
         }
 
         let summary = build_account_summaries_for_store(

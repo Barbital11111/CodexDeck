@@ -4,6 +4,7 @@ mod auth;
 mod cli;
 mod codex_enhanced;
 mod editor_apps;
+mod hybrid_relay_proxy;
 mod i18n;
 mod models;
 mod notification_service;
@@ -1331,7 +1332,14 @@ async fn switch_hybrid_account_and_launch(
         }
         let stored_chatgpt = latest_store.accounts[chatgpt_index].clone();
         let stored_relay = latest_store.accounts[relay_index].clone();
-        profile_files::apply_hybrid_account_profile(&stored_chatgpt, &stored_relay)?;
+        let hybrid_proxy_base_url =
+            hybrid_relay_proxy::ensure_hybrid_relay_proxy_for_account(state.inner(), &stored_relay)
+                .await?;
+        profile_files::apply_hybrid_account_profile_with_provider_base_url(
+            &stored_chatgpt,
+            &stored_relay,
+            &hybrid_proxy_base_url,
+        )?;
 
         let thread_provider_backup_dir = app_paths::codex_state_provider_backup_dir()?;
         let provider_id = profile_files::relay_provider_id_for_account(&stored_relay)
@@ -1623,6 +1631,75 @@ fn start_auth_keepalive_loop(app: AppHandle) {
     });
 }
 
+async fn restore_hybrid_relay_profile_on_startup(app: &AppHandle) -> Result<(), String> {
+    let state = app.state::<AppState>();
+    let active_profile = {
+        let _guard = state.store_lock.lock().await;
+        let store = store::load_store(app)?;
+        let active_account_id = store.settings.active_account_id.clone();
+        let Some(active_relay_id) = active_account_id else {
+            return Ok(());
+        };
+        let Some(active_relay_account) = store
+            .accounts
+            .iter()
+            .find(|account| {
+                account.id == active_relay_id
+                    && matches!(account.source_kind, models::AccountSourceKind::Relay)
+            })
+            .cloned()
+        else {
+            return Ok(());
+        };
+
+        if let Some(hybrid) = store.settings.active_hybrid_profile.as_ref() {
+            if hybrid.relay_account_id == active_relay_account.id {
+                let chatgpt_account = store
+                    .accounts
+                    .iter()
+                    .find(|account| {
+                        account.id == hybrid.chatgpt_account_id
+                            && matches!(account.source_kind, models::AccountSourceKind::Chatgpt)
+                    })
+                    .cloned()
+                    .ok_or_else(|| "启动时找不到混合模式的 ChatGPT 官方账号".to_string())?;
+                let relay_account = store
+                    .accounts
+                    .iter()
+                    .find(|account| {
+                        account.id == hybrid.relay_account_id
+                            && matches!(account.source_kind, models::AccountSourceKind::Relay)
+                    })
+                    .cloned()
+                    .ok_or_else(|| "启动时找不到混合模式的 API 条目".to_string())?;
+                Some((Some(chatgpt_account), relay_account))
+            } else {
+                Some((None, active_relay_account))
+            }
+        } else {
+            Some((None, active_relay_account))
+        }
+    };
+
+    let Some((chatgpt_account, relay_account)) = active_profile else {
+        return Ok(());
+    };
+    if let Some(chatgpt_account) = chatgpt_account {
+        let local_base_url = hybrid_relay_proxy::ensure_hybrid_relay_proxy_for_account(
+            state.inner(),
+            &relay_account,
+        )
+        .await?;
+        profile_files::apply_hybrid_account_profile_with_provider_base_url(
+            &chatgpt_account,
+            &relay_account,
+            &local_base_url,
+        )
+    } else {
+        profile_files::apply_account_profile(&relay_account)
+    }
+}
+
 fn apply_main_window_chrome(app: &AppHandle) {
     let Some(window) = app.get_webview_window("main") else {
         return;
@@ -1684,7 +1761,10 @@ pub fn run() {
             }
             // 启动阶段先同步当前本机登录账号，再初始化状态栏，保证首次展示即一致。
             store::sync_current_auth_account_on_startup(app.handle())?;
-            match store::sync_relay_account_profiles_on_startup(app.handle()) {
+            let account_store_path =
+                store::account_store_path_from_data_dir(&app_paths::app_data_dir(app.handle())?);
+            match store::sync_relay_account_profiles_on_startup_in_path(&account_store_path, false)
+            {
                 Ok(count) if count > 0 => {
                     log::info!("启动时已同步 {count} 个 API profile");
                 }
@@ -1693,6 +1773,12 @@ pub fn run() {
                     log::warn!("启动时同步 API profile 失败: {err}");
                 }
             }
+            let setup_app_handle = app.handle().clone();
+            tauri::async_runtime::spawn(async move {
+                if let Err(err) = restore_hybrid_relay_profile_on_startup(&setup_app_handle).await {
+                    log::warn!("启动时恢复混合模式本地代理失败: {err}");
+                }
+            });
             tray::setup_system_tray(app.handle())?;
             match app_paths::codex_state_provider_backup_dir().and_then(|backup_dir| {
                 session_provider_sync::cleanup_codex_state_provider_backups(&backup_dir)

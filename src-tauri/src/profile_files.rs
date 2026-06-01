@@ -312,6 +312,18 @@ pub(crate) fn apply_hybrid_account_profile(
     chatgpt_account: &StoredAccount,
     relay_account: &StoredAccount,
 ) -> Result<(), String> {
+    let base_url = relay_account
+        .api_base_url
+        .as_deref()
+        .ok_or_else(|| RELAY_INCOMPLETE_MESSAGE.to_string())?;
+    apply_hybrid_account_profile_with_provider_base_url(chatgpt_account, relay_account, base_url)
+}
+
+pub(crate) fn apply_hybrid_account_profile_with_provider_base_url(
+    chatgpt_account: &StoredAccount,
+    relay_account: &StoredAccount,
+    provider_base_url: &str,
+) -> Result<(), String> {
     if !matches!(chatgpt_account.source_kind, AccountSourceKind::Chatgpt) {
         return Err("混合模式需要选择一个 ChatGPT 官方账号。".to_string());
     }
@@ -319,10 +331,6 @@ pub(crate) fn apply_hybrid_account_profile(
         return Err("混合模式需要选择一个 API 条目。".to_string());
     }
 
-    let base_url = relay_account
-        .api_base_url
-        .as_deref()
-        .ok_or_else(|| RELAY_INCOMPLETE_MESSAGE.to_string())?;
     let model_name = relay_account
         .model_name
         .as_deref()
@@ -342,7 +350,7 @@ pub(crate) fn apply_hybrid_account_profile(
     let active_config_contents = read_optional_text(&active_config_path)?;
     let profile_config = build_hybrid_relay_profile_config(
         active_config_contents.as_deref(),
-        base_url,
+        provider_base_url,
         model_name,
         api_key,
     );
@@ -1093,7 +1101,7 @@ responses_websockets = true
 responses_websockets_v2 = true
 "#,
             ),
-            "https://relay.example.com/v1",
+            "http://127.0.0.1:45123/v1",
             "gpt-5.5",
             "test-hybrid-token",
         );
@@ -1104,7 +1112,8 @@ responses_websockets_v2 = true
         assert!(!config.contains("openai_base_url"));
         assert!(config.contains("[model_providers.codexdeck_api]"));
         assert!(config.contains(r#"name = "codexdeck_api""#));
-        assert!(config.contains(r#"base_url = "https://relay.example.com/v1""#));
+        assert!(config.contains(r#"base_url = "http://127.0.0.1:45123/v1""#));
+        assert!(!config.contains("relay.example.com"));
         assert!(config.contains(r#"wire_api = "responses""#));
         assert!(config.contains("requires_openai_auth = true"));
         assert!(config.contains(r#"experimental_bearer_token = "test-hybrid-token""#));

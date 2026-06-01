@@ -59,15 +59,6 @@ pub(crate) fn sync_current_auth_account_on_startup(app: &AppHandle) -> Result<()
     sync_current_auth_account_on_startup_in_path(&account_store_path(app)?)
 }
 
-/// 启动时重新同步所有 API 中转站 profile。
-///
-/// 旧版本已保存的 API 卡片不会自动重建 profile/config.toml，
-/// 因此升级后需要补写 [features] responses_websockets=false 等 API 专用配置。
-#[cfg(feature = "desktop")]
-pub(crate) fn sync_relay_account_profiles_on_startup(app: &AppHandle) -> Result<usize, String> {
-    sync_relay_account_profiles_on_startup_in_path(&account_store_path(app)?, true)
-}
-
 pub(crate) fn load_store_from_path(path: &Path) -> Result<AccountsStore, String> {
     if !path.exists() {
         return Ok(AccountsStore::default());
