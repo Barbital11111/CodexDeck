@@ -78,6 +78,7 @@ export type AccountSummary = {
   usageError: string | null;
   authRefreshBlocked: boolean;
   authRefreshError: string | null;
+  authRefreshNextAt: number | null;
   isCurrent: boolean;
 };
 

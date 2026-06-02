@@ -9,12 +9,10 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use time::format_description::well_known::Rfc3339;
 use time::OffsetDateTime;
-use tokio::sync::Mutex;
 
 use crate::app_paths;
 use crate::models::ExtractedAuth;
@@ -436,6 +434,17 @@ pub(crate) fn auth_tokens_need_refresh(auth_json: &Value) -> bool {
     auth_tokens_expire_within(auth_json, 60)
 }
 
+pub(crate) fn auth_access_token_expiration_unix(auth_json: &Value) -> Option<i64> {
+    auth_token_object(auth_json)?
+        .get("access_token")
+        .and_then(Value::as_str)
+        .and_then(jwt_expiration_unix)
+}
+
+pub(crate) fn auth_refresh_next_at(auth_json: &Value) -> Option<i64> {
+    auth_access_token_expiration_unix(auth_json).map(|expires_at| expires_at - 10 * 60)
+}
+
 /// 使用 auth.json 内的 refresh_token 刷新 ChatGPT OAuth 令牌。
 ///
 /// 返回更新后的 auth.json（仅内存对象，不会自动写盘）。
@@ -520,14 +529,6 @@ pub(crate) async fn refresh_chatgpt_auth_tokens(auth_json: &Value) -> Result<Val
 
     update_last_refresh(&mut updated)?;
     Ok(normalize_auth_json_for_codex(updated))
-}
-
-pub(crate) async fn refresh_chatgpt_auth_tokens_serialized(
-    auth_json: &Value,
-    refresh_lock: &Arc<Mutex<()>>,
-) -> Result<Value, String> {
-    let _guard = refresh_lock.lock().await;
-    refresh_chatgpt_auth_tokens(auth_json).await
 }
 
 fn parse_oauth_callback_url(callback_url: &str) -> Result<reqwest::Url, String> {

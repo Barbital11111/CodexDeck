@@ -20,6 +20,7 @@ use zip::CompressionMethod;
 use crate::app_paths;
 use crate::auth::account_group_key;
 use crate::auth::account_variant_key;
+use crate::auth::auth_refresh_next_at;
 use crate::auth::auth_tokens_expire_within;
 use crate::auth::current_auth_account_key;
 use crate::auth::current_auth_variant_key;
@@ -28,7 +29,7 @@ use crate::auth::normalize_imported_auth_json;
 use crate::auth::normalize_plan_type_key;
 use crate::auth::read_current_codex_auth;
 use crate::auth::read_current_codex_auth_optional;
-use crate::auth::refresh_chatgpt_auth_tokens_serialized;
+use crate::auth::refresh_chatgpt_auth_tokens;
 use crate::hybrid_relay_proxy;
 use crate::models::dedupe_account_variants;
 use crate::models::infer_provider_metadata_from_base_url;
@@ -423,6 +424,7 @@ pub(crate) async fn create_api_account_internal(
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
+            auth_refresh_next_at: None,
         };
         profile_files::sync_account_profile_in_store_path(
             &account_store_path_from_data_dir(&app_paths::app_data_dir(app)?),
@@ -1432,6 +1434,8 @@ struct RefreshTarget {
     auth_is_current: bool,
     auth_refresh_blocked: bool,
     auth_refresh_error: Option<String>,
+    auth_refresh_next_at: Option<i64>,
+    source_auth_last_refresh: Option<i64>,
     updated_at: i64,
 }
 
@@ -1447,6 +1451,9 @@ struct RefreshOutcome {
     auth_refreshed: bool,
     auth_refresh_blocked: bool,
     auth_refresh_error: Option<String>,
+    auth_refresh_next_at: Option<i64>,
+    source_updated_at: i64,
+    source_auth_last_refresh: Option<i64>,
 }
 
 pub(crate) async fn refresh_all_usage_internal(
@@ -1821,10 +1828,14 @@ async fn refresh_usage_internal(
                 continue;
             };
 
-            account.updated_at = outcome.updated_at;
-            account.auth_json = outcome.auth_json.clone();
-            account.auth_refresh_blocked = outcome.auth_refresh_blocked;
-            account.auth_refresh_error = outcome.auth_refresh_error.clone();
+            let should_apply_auth = should_apply_auth_outcome(account, outcome);
+            if should_apply_auth {
+                account.auth_json = outcome.auth_json.clone();
+                account.auth_refresh_blocked = outcome.auth_refresh_blocked;
+                account.auth_refresh_error = outcome.auth_refresh_error.clone();
+                account.auth_refresh_next_at = outcome.auth_refresh_next_at;
+            }
+            account.updated_at = account.updated_at.max(outcome.updated_at);
             account.email = outcome.auth_email.clone().or(account.email.clone());
             let preferred_auth_plan_type = if outcome.auth_is_current || outcome.auth_refreshed {
                 outcome.auth_plan_type.clone()
@@ -1851,6 +1862,7 @@ async fn refresh_usage_internal(
             if !outcome.auth_refresh_blocked
                 && (outcome.auth_is_current || outcome.auth_refreshed)
                 && matches!(account.source_kind, AccountSourceKind::Chatgpt)
+                && should_apply_auth
             {
                 profile_files::sync_account_profile_in_store_path(&store_path, account)?;
             }
@@ -1901,6 +1913,7 @@ fn build_refresh_targets(
             .filter(|_| should_use_current_auth)
             .map(|(_, auth_json)| auth_json.clone())
             .unwrap_or(stored_auth_json);
+        let source_auth_last_refresh = auth_json_last_refresh_unix(&auth_json);
 
         let candidate = RefreshTarget {
             account_key: account_key.clone(),
@@ -1908,6 +1921,8 @@ fn build_refresh_targets(
             auth_is_current,
             auth_refresh_blocked: account.auth_refresh_blocked,
             auth_refresh_error: account.auth_refresh_error.clone(),
+            auth_refresh_next_at: account.auth_refresh_next_at,
+            source_auth_last_refresh,
             updated_at: account.updated_at,
         };
 
@@ -1963,6 +1978,55 @@ fn auth_json_is_at_least_as_fresh(
     }
 }
 
+fn auth_json_is_newer_than_target(
+    candidate: &serde_json::Value,
+    candidate_updated_at: i64,
+    target_last_refresh: Option<i64>,
+    target_updated_at: i64,
+) -> bool {
+    match (auth_json_last_refresh_unix(candidate), target_last_refresh) {
+        (Some(candidate_refresh), Some(target_refresh)) => candidate_refresh > target_refresh,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => candidate_updated_at > target_updated_at,
+    }
+}
+
+fn should_apply_auth_outcome(account: &StoredAccount, outcome: &RefreshOutcome) -> bool {
+    if outcome.auth_refreshed {
+        return auth_json_is_newer_or_same_for_updated_at(
+            &outcome.auth_json,
+            outcome.updated_at,
+            &account.auth_json,
+            account.updated_at,
+        );
+    }
+    let current_last_refresh = auth_json_last_refresh_unix(&account.auth_json);
+    current_last_refresh == outcome.source_auth_last_refresh
+        && account.updated_at <= outcome.source_updated_at
+}
+
+fn auth_json_is_newer_or_same_for_updated_at(
+    candidate: &serde_json::Value,
+    candidate_updated_at: i64,
+    reference: &serde_json::Value,
+    reference_updated_at: i64,
+) -> bool {
+    match (
+        auth_json_last_refresh_unix(candidate),
+        auth_json_last_refresh_unix(reference),
+    ) {
+        (Some(candidate_refresh), Some(reference_refresh)) => {
+            candidate_refresh > reference_refresh
+                || (candidate_refresh == reference_refresh
+                    && candidate_updated_at >= reference_updated_at)
+        }
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => candidate_updated_at >= reference_updated_at,
+    }
+}
+
 fn auth_json_last_refresh_unix(auth_json: &serde_json::Value) -> Option<i64> {
     let value = auth_json.get("last_refresh")?;
     match value {
@@ -2009,27 +2073,16 @@ async fn refresh_usage_for_target(
     let mut auth_refresh_blocked = target.auth_refresh_blocked;
     let mut auth_refresh_error = target.auth_refresh_error.clone();
 
-    if force_auth_refresh && auth_tokens_need_keepalive_refresh(&working_auth_json) {
-        match refresh_chatgpt_auth_tokens_serialized(&working_auth_json, &state.auth_refresh_lock)
-            .await
-        {
+    if force_auth_refresh
+        && !auth_refresh_blocked
+        && should_refresh_auth_now(&working_auth_json, target.auth_refresh_next_at)
+    {
+        match refresh_latest_auth_for_target(app, state, target).await {
             Ok(refreshed) => {
                 working_auth_json = refreshed;
                 auth_refreshed = true;
                 auth_refresh_blocked = false;
                 auth_refresh_error = None;
-                if let Err(err) = persist_account_refresh_state(
-                    app,
-                    state,
-                    &target.account_key,
-                    Some(&working_auth_json),
-                    false,
-                    None,
-                )
-                .await
-                {
-                    refresh_error = Some(err);
-                }
             }
             Err(err) => {
                 // 预刷新失败时，先继续沿用当前 access_token 拉取用量；
@@ -2045,29 +2098,13 @@ async fn refresh_usage_for_target(
         Err(err) => Err(err.clone()),
     };
 
-    if (!auth_refresh_blocked || force_auth_refresh)
-        && should_retry_with_token_refresh(&fetch_result)
-    {
-        match refresh_chatgpt_auth_tokens_serialized(&working_auth_json, &state.auth_refresh_lock)
-            .await
-        {
+    if !auth_refresh_blocked && should_retry_with_token_refresh(&fetch_result) {
+        match refresh_latest_auth_for_target(app, state, target).await {
             Ok(refreshed) => {
                 working_auth_json = refreshed;
                 auth_refreshed = true;
                 auth_refresh_blocked = false;
                 auth_refresh_error = None;
-                if let Err(err) = persist_account_refresh_state(
-                    app,
-                    state,
-                    &target.account_key,
-                    Some(&working_auth_json),
-                    false,
-                    None,
-                )
-                .await
-                {
-                    refresh_error = Some(err);
-                }
                 extracted = extract_auth(&working_auth_json);
                 fetch_result = match &extracted {
                     Ok(auth) => fetch_usage_snapshot(&auth.access_token, &auth.account_id).await,
@@ -2078,7 +2115,7 @@ async fn refresh_usage_for_target(
                 handle_refresh_failure(
                     app,
                     state,
-                    &target.account_key,
+                    target,
                     &err,
                     &mut auth_refresh_blocked,
                     &mut auth_refresh_error,
@@ -2115,6 +2152,12 @@ async fn refresh_usage_for_target(
         }
     };
 
+    let auth_refresh_next_at = if auth_refresh_blocked {
+        None
+    } else {
+        auth_refresh_next_at(&working_auth_json)
+    };
+
     RefreshOutcome {
         usage,
         usage_error,
@@ -2126,26 +2169,130 @@ async fn refresh_usage_for_target(
         auth_refreshed,
         auth_refresh_blocked,
         auth_refresh_error,
+        auth_refresh_next_at,
+        source_updated_at: target.updated_at,
+        source_auth_last_refresh: target.source_auth_last_refresh,
     }
+}
+
+fn should_refresh_auth_now(auth_json: &serde_json::Value, next_at: Option<i64>) -> bool {
+    if next_at.is_some_and(|timestamp| timestamp <= now_unix_seconds()) {
+        return true;
+    }
+    auth_tokens_need_keepalive_refresh(auth_json)
+}
+
+async fn refresh_latest_auth_for_target(
+    app: &AppHandle,
+    state: &AppState,
+    target: &RefreshTarget,
+) -> Result<serde_json::Value, String> {
+    let _refresh_guard = state.auth_refresh_lock.lock().await;
+    let latest = latest_refresh_account_for_target(app, state, target).await?;
+
+    let Some(latest) = latest else {
+        let refreshed = refresh_chatgpt_auth_tokens(&target.auth_json).await?;
+        persist_account_refresh_state(
+            app,
+            state,
+            &target.account_key,
+            Some(&refreshed),
+            false,
+            None,
+        )
+        .await?;
+        return Ok(refreshed);
+    };
+
+    if latest.auth_refresh_blocked {
+        return Err(latest
+            .auth_refresh_error
+            .unwrap_or_else(|| "授权过期，请重新登录授权。".to_string()));
+    }
+
+    if auth_json_is_newer_than_target(
+        &latest.auth_json,
+        latest.updated_at,
+        target.source_auth_last_refresh,
+        target.updated_at,
+    ) && !should_refresh_auth_now(&latest.auth_json, latest.auth_refresh_next_at)
+    {
+        return Ok(latest.auth_json);
+    }
+
+    let refreshed = refresh_chatgpt_auth_tokens(&latest.auth_json).await?;
+    persist_account_refresh_state(
+        app,
+        state,
+        &target.account_key,
+        Some(&refreshed),
+        false,
+        None,
+    )
+    .await?;
+    Ok(refreshed)
+}
+
+async fn latest_refresh_account_for_target(
+    app: &AppHandle,
+    state: &AppState,
+    target: &RefreshTarget,
+) -> Result<Option<StoredAccount>, String> {
+    let _store_guard = state.store_lock.lock().await;
+    let store = load_store(app)?;
+    Ok(store
+        .accounts
+        .into_iter()
+        .filter(|account| {
+            matches!(account.source_kind, AccountSourceKind::Chatgpt)
+                && account.account_key() == target.account_key
+        })
+        .max_by(|left, right| {
+            auth_json_last_refresh_unix(&left.auth_json)
+                .cmp(&auth_json_last_refresh_unix(&right.auth_json))
+                .then(left.updated_at.cmp(&right.updated_at))
+        }))
+}
+
+async fn persisted_auth_newer_than_target(
+    app: &AppHandle,
+    state: &AppState,
+    target: &RefreshTarget,
+) -> Result<bool, String> {
+    let latest = latest_refresh_account_for_target(app, state, target).await?;
+    Ok(latest.is_some_and(|account| {
+        auth_json_is_newer_than_target(
+            &account.auth_json,
+            account.updated_at,
+            target.source_auth_last_refresh,
+            target.updated_at,
+        )
+    }))
 }
 
 async fn handle_refresh_failure(
     app: &AppHandle,
     state: &AppState,
-    account_key: &str,
+    target: &RefreshTarget,
     raw_error: &str,
     auth_refresh_blocked: &mut bool,
     auth_refresh_error: &mut Option<String>,
     refresh_error: &mut Option<String>,
 ) {
     if should_suspend_auth_keepalive(raw_error) {
+        if persisted_auth_newer_than_target(app, state, target)
+            .await
+            .unwrap_or(false)
+        {
+            return;
+        }
         let normalized_error = normalize_usage_error_message(raw_error);
         *auth_refresh_blocked = true;
         *auth_refresh_error = Some(normalized_error.clone());
         if let Err(err) = persist_account_refresh_state(
             app,
             state,
-            account_key,
+            &target.account_key,
             None,
             true,
             Some(normalized_error.as_str()),
@@ -2888,6 +3035,7 @@ fn upsert_prepared_import(
             );
         }
 
+        let auth_refresh_next_at = auth_refresh_next_at(&auth_json);
         let stored = StoredAccount {
             id: uuid::Uuid::new_v4().to_string(),
             label: resolved_label,
@@ -2932,11 +3080,13 @@ fn upsert_prepared_import(
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
+            auth_refresh_next_at,
         };
         let summary = stored.to_summary(current_account_key, current_variant_key);
         store.accounts.push(stored);
         (summary, false)
     } else {
+        let auth_refresh_next_at = auth_refresh_next_at(&auth_json);
         let stored = StoredAccount {
             id: uuid::Uuid::new_v4().to_string(),
             label: resolved_label,
@@ -2981,6 +3131,7 @@ fn upsert_prepared_import(
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
+            auth_refresh_next_at,
         };
         let summary = stored.to_summary(current_account_key, current_variant_key);
         store.accounts.push(stored);
@@ -3080,6 +3231,7 @@ fn upsert_prepared_relay_import(
         usage_error: None,
         auth_refresh_blocked: false,
         auth_refresh_error: None,
+        auth_refresh_next_at: None,
     };
     let summary = stored.to_summary(current_account_key, current_variant_key);
     store.accounts.push(stored);
@@ -3113,6 +3265,7 @@ fn apply_prepared_import_to_account(
     existing.usage_error = None;
     existing.auth_refresh_blocked = false;
     existing.auth_refresh_error = None;
+    existing.auth_refresh_next_at = auth_refresh_next_at(&existing.auth_json);
 }
 
 fn apply_reauthorized_account(existing: &mut StoredAccount, prepared: PreparedChatgptImport) {
@@ -3150,6 +3303,7 @@ fn apply_reauthorized_account(existing: &mut StoredAccount, prepared: PreparedCh
     existing.usage_error = None;
     existing.auth_refresh_blocked = false;
     existing.auth_refresh_error = None;
+    existing.auth_refresh_next_at = auth_refresh_next_at(&existing.auth_json);
 }
 
 fn validate_reauthorization_target(
@@ -3888,6 +4042,7 @@ mod tests {
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
+            auth_refresh_next_at: None,
         }
     }
 
@@ -3961,6 +4116,7 @@ mod tests {
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
+            auth_refresh_next_at: None,
         }
     }
 
@@ -4192,6 +4348,7 @@ mod tests {
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
+            auth_refresh_next_at: None,
         }
     }
 
@@ -4536,6 +4693,7 @@ mod tests {
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
+            auth_refresh_next_at: None,
         });
 
         let prepared = prepared_import(
@@ -4709,6 +4867,7 @@ mod tests {
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
+            auth_refresh_next_at: None,
         });
         let account_key = store.accounts[0].account_key();
         let stale_current_auth = json!({
@@ -4797,6 +4956,7 @@ mod tests {
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
+            auth_refresh_next_at: None,
         });
         let account_key = store.accounts[0].account_key();
         let fresh_current_auth = json!({

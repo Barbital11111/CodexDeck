@@ -408,6 +408,7 @@ function buildPreviewRelayAccount(
     usageError: null,
     authRefreshBlocked: false,
     authRefreshError: null,
+    authRefreshNextAt: null,
     isCurrent: Boolean(overrides.isCurrent),
   };
 }
@@ -455,6 +456,7 @@ function buildPreviewChatGptAccount(): AccountSummary {
     usageError: null,
     authRefreshBlocked: false,
     authRefreshError: null,
+    authRefreshNextAt: now + 3_000,
     isCurrent: false,
   };
 }
@@ -2090,6 +2092,7 @@ export function useCodexController() {
             usageError: null,
             authRefreshBlocked: false,
             authRefreshError: null,
+            authRefreshNextAt: null,
             isCurrent: false,
           };
           const nextAccounts = [...readPreviewAccounts(), nextAccount];
