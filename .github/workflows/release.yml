@@ -89,6 +89,49 @@ jobs:
             exit 1
           fi
 
+      - name: Remove stale updater JSON asset
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept = "application/vnd.github+json"
+            "X-GitHub-Api-Version" = "2022-11-28"
+            "User-Agent" = "CodexDeck-release-workflow"
+          }
+
+          $apiBase = "${{ github.api_url }}"
+          $repository = "${{ github.repository }}"
+          $tag = "${{ steps.release_meta.outputs.tag }}"
+          $encodedTag = [System.Uri]::EscapeDataString($tag)
+          $releaseUrl = "$apiBase/repos/$repository/releases/tags/$encodedTag"
+
+          try {
+            $release = Invoke-RestMethod -Method Get -Uri $releaseUrl -Headers $headers
+          } catch {
+            $statusCode = $null
+            if ($_.Exception.Response -and $_.Exception.Response.StatusCode) {
+              $statusCode = [int]$_.Exception.Response.StatusCode
+            }
+            if ($statusCode -eq 404) {
+              Write-Host "No existing release for $tag; latest.json will be created by tauri-action."
+              return
+            }
+            throw
+          }
+
+          $assets = @($release.assets | Where-Object { $_.name -eq "latest.json" })
+          if ($assets.Count -eq 0) {
+            Write-Host "No existing latest.json asset for $tag."
+            return
+          }
+
+          foreach ($asset in $assets) {
+            Write-Host "Deleting stale latest.json asset id $($asset.id) before tauri-action regenerates it."
+            Invoke-RestMethod -Method Delete -Uri "$apiBase/repos/$repository/releases/assets/$($asset.id)" -Headers $headers | Out-Null
+          }
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
