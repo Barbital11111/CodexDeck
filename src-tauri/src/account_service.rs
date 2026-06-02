@@ -4902,14 +4902,14 @@ mod tests {
         let key_prefix = "s";
         let secret_value = format!("{key_prefix}k-probe-secret-1234567890");
         let local_path = ["D:", "\\workspace\\secret"].concat();
-        let upstream = ["https://", "api.secret.example.com/v1"].concat();
+        let upstream = ["https://", "api.example.invalid/v1"].concat();
         let body = format!("failed with {secret_value} {local_path} {upstream}");
 
         let message = probe_failure_message(StatusCode::BAD_GATEWAY, &body);
 
         assert!(!message.contains(&secret_value));
         assert!(!message.contains(&local_path));
-        assert!(!message.contains("api.secret.example.com"));
+        assert!(!message.contains("api.example.invalid"));
         assert!(message.contains("[已隐藏密钥]"));
         assert!(message.contains("[已隐藏本地路径]"));
     }

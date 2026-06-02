@@ -1329,7 +1329,7 @@ model = "relay-model"
     fn relay_validation_error_body_is_redacted_before_truncation() {
         let secret_key = ["sk", "profile-secret-1234567890"].join("-");
         let local_path = ["D:", "\\workspace\\secret"].concat();
-        let upstream = ["https://", "api.secret.example.com/v1"].concat();
+        let upstream = ["https://", "api.example.invalid/v1"].concat();
         let redacted = crate::utils::redact_sensitive_text(&format!(
             "failed {secret_key} {local_path} {upstream}"
         ));
@@ -1337,7 +1337,7 @@ model = "relay-model"
 
         assert!(!message.contains(&secret_key));
         assert!(!message.contains(&local_path));
-        assert!(!message.contains("api.secret.example.com"));
+        assert!(!message.contains("api.example.invalid"));
         assert!(message.contains("[已隐藏密钥]"));
         assert!(message.contains("[已隐藏本地路径]"));
     }
@@ -1377,7 +1377,7 @@ model = "relay-model"
                 .headers()
                 .get("authorization")
                 .and_then(|value| value.to_str().ok())
-                == Some("Bearer sk-probe");
+                == Some("Bearer test-api-key-probe");
             if !authorized {
                 return (
                     StatusCode::UNAUTHORIZED,
@@ -1410,7 +1410,7 @@ model = "relay-model"
 
         let result = validate_relay_target(
             &format!("http://{addr}/v1"),
-            "sk-probe",
+            "test-api-key-probe",
             "upstream-chat-model",
         )
         .await
@@ -1436,7 +1436,7 @@ model = "relay-model"
                 .headers()
                 .get("authorization")
                 .and_then(|value| value.to_str().ok())
-                == Some("Bearer sk-probe");
+                == Some("Bearer test-api-key-probe");
             if !authorized {
                 return (
                     StatusCode::UNAUTHORIZED,
@@ -1481,7 +1481,11 @@ model = "relay-model"
         });
 
         let result =
-            validate_relay_target(&format!("http://{addr}/v1"), "sk-probe", "upstream-model")
+            validate_relay_target(
+                &format!("http://{addr}/v1"),
+                "test-api-key-probe",
+                "upstream-model",
+            )
                 .await
                 .expect("validate responses-only relay");
 
