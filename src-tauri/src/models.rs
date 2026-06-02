@@ -386,6 +386,8 @@ pub(crate) struct StoredAccount {
     pub(crate) auth_refresh_blocked: bool,
     #[serde(default)]
     pub(crate) auth_refresh_error: Option<String>,
+    #[serde(default)]
+    pub(crate) auth_refresh_next_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -425,6 +427,7 @@ pub(crate) struct AccountSummary {
     pub(crate) usage_error: Option<String>,
     pub(crate) auth_refresh_blocked: bool,
     pub(crate) auth_refresh_error: Option<String>,
+    pub(crate) auth_refresh_next_at: Option<i64>,
     pub(crate) is_current: bool,
 }
 
@@ -1358,6 +1361,7 @@ impl StoredAccount {
             usage_error: self.usage_error.clone(),
             auth_refresh_blocked: self.auth_refresh_blocked,
             auth_refresh_error: self.auth_refresh_error.clone(),
+            auth_refresh_next_at: self.auth_refresh_next_at,
             is_current,
         }
     }
@@ -1491,6 +1495,9 @@ fn merge_duplicate_account_variant(left: StoredAccount, right: StoredAccount) ->
     }
     if preferred.auth_refresh_blocked && preferred.auth_refresh_error.is_none() {
         preferred.auth_refresh_error = alternate.auth_refresh_error.clone();
+    }
+    if preferred.auth_refresh_next_at.is_none() {
+        preferred.auth_refresh_next_at = alternate.auth_refresh_next_at;
     }
     if preferred.auth_json.is_null() && !alternate.auth_json.is_null() {
         preferred.auth_json = alternate.auth_json.clone();
@@ -1697,6 +1704,7 @@ mod tests {
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
+            auth_refresh_next_at: None,
         }
     }
 
@@ -1752,7 +1760,7 @@ mod tests {
         stale.auth_refresh_blocked = true;
         stale.auth_refresh_error = Some("授权过期，请重新登录授权。".to_string());
 
-        let healthy = stored_account(
+        let mut healthy = stored_account(
             "healthy",
             "healthy",
             "account-1",
@@ -1760,6 +1768,8 @@ mod tests {
             Some("team"),
             200,
         );
+        healthy.auth_refresh_next_at = Some(1234);
+
         let mut accounts = vec![stale, healthy];
 
         let changed = dedupe_account_variants(&mut accounts);
@@ -1771,6 +1781,7 @@ mod tests {
         assert_eq!(accounts[0].usage_error, None);
         assert!(!accounts[0].auth_refresh_blocked);
         assert_eq!(accounts[0].auth_refresh_error, None);
+        assert_eq!(accounts[0].auth_refresh_next_at, Some(1234));
     }
 
     #[test]
@@ -1819,6 +1830,7 @@ mod tests {
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
+            auth_refresh_next_at: None,
         };
 
         assert_eq!(account.resolved_plan_type().as_deref(), Some("team"));
@@ -1877,6 +1889,7 @@ mod tests {
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
+            auth_refresh_next_at: None,
         };
 
         assert_eq!(account.resolved_plan_type().as_deref(), Some("team"));
@@ -1929,6 +1942,7 @@ mod tests {
                 usage_error: None,
                 auth_refresh_blocked: false,
                 auth_refresh_error: None,
+                auth_refresh_next_at: None,
             },
             StoredAccount {
                 id: "second".to_string(),
@@ -1974,6 +1988,7 @@ mod tests {
                 usage_error: None,
                 auth_refresh_blocked: false,
                 auth_refresh_error: None,
+                auth_refresh_next_at: None,
             },
         ];
 
@@ -2036,6 +2051,7 @@ mod tests {
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
+            auth_refresh_next_at: None,
         };
 
         let upstream = account.to_proxy_upstream().expect("proxy upstream");
@@ -2103,6 +2119,7 @@ mod tests {
             usage_error: None,
             auth_refresh_blocked: false,
             auth_refresh_error: None,
+            auth_refresh_next_at: None,
         };
 
         let upstream = account.to_proxy_upstream().expect("proxy upstream");

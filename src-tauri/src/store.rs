@@ -13,6 +13,7 @@ use tauri::AppHandle;
 #[cfg(feature = "desktop")]
 use crate::app_paths;
 use crate::auth::account_variant_key;
+use crate::auth::auth_refresh_next_at;
 use crate::auth::current_auth_account_key;
 use crate::auth::extract_auth;
 #[cfg(feature = "desktop")]
@@ -166,6 +167,7 @@ pub(crate) fn sync_current_auth_account_on_startup_in_path(path: &Path) -> Resul
         .clone()
         .unwrap_or_else(|| format!("Codex {}", short_account(&extracted.account_id)));
 
+    let auth_refresh_next_at = auth_refresh_next_at(&auth_json);
     let stored = StoredAccount {
         id: Uuid::new_v4().to_string(),
         label,
@@ -210,6 +212,7 @@ pub(crate) fn sync_current_auth_account_on_startup_in_path(path: &Path) -> Resul
         usage_error: None,
         auth_refresh_blocked: false,
         auth_refresh_error: None,
+        auth_refresh_next_at,
     };
     let mut stored = stored;
     let _ = profile_files::sync_account_profile_in_store_path(path, &mut stored);
@@ -332,6 +335,11 @@ pub(crate) fn update_account_group_refresh_state_in_path(
         }
         account.auth_refresh_blocked = auth_refresh_blocked;
         account.auth_refresh_error = auth_refresh_error.map(ToString::to_string);
+        account.auth_refresh_next_at = if auth_refresh_blocked {
+            None
+        } else {
+            auth_refresh_next_at(&account.auth_json)
+        };
         account.updated_at = updated_at;
         #[cfg(feature = "desktop")]
         if auth_json.is_some() && !auth_refresh_blocked {
@@ -352,9 +360,27 @@ pub(crate) fn update_account_group_refresh_state_in_path(
         && current_auth_account_key().as_deref() == Some(account_key)
     {
         write_active_codex_auth(auth_json.expect("checked is_some above"))?;
+        #[cfg(feature = "desktop")]
+        reapply_active_hybrid_profile_if_needed(&store)?;
     }
 
     Ok(true)
+}
+
+#[cfg(feature = "desktop")]
+fn reapply_active_hybrid_profile_if_needed(store: &AccountsStore) -> Result<(), String> {
+    let Some(hybrid) = store.settings.active_hybrid_profile.as_ref() else {
+        return Ok(());
+    };
+    let Some((chatgpt_account, relay_account)) =
+        current_hybrid_pair_for_relay(store, &hybrid.relay_account_id)
+    else {
+        return Ok(());
+    };
+    if current_auth_account_key().as_deref() == Some(chatgpt_account.account_key().as_str()) {
+        profile_files::apply_hybrid_account_profile(&chatgpt_account, &relay_account)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -453,6 +479,18 @@ fn normalize_loaded_store(path: &Path, mut store: AccountsStore) -> AccountsStor
     let mut changed = false;
 
     for account in &mut store.accounts {
+        let expected_refresh_next_at = match account.source_kind {
+            AccountSourceKind::Chatgpt if !account.auth_refresh_blocked => {
+                auth_refresh_next_at(&account.auth_json)
+            }
+            AccountSourceKind::Relay => None,
+            _ => None,
+        };
+        if account.auth_refresh_next_at != expected_refresh_next_at {
+            account.auth_refresh_next_at = expected_refresh_next_at;
+            changed = true;
+        }
+
         if account
             .principal_id
             .as_deref()
@@ -805,15 +843,73 @@ mod tests {
     use crate::models::AccountsStore;
     use crate::models::ProxyHealthStatus;
     use crate::models::StoredAccount;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
     use serde_json::json;
     use std::fs;
+    use std::ffi::OsString;
     use std::path::PathBuf;
+    use std::sync::{Mutex, OnceLock};
     use uuid::Uuid;
+
+    struct EnvVarGuard {
+        name: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set_path(name: &'static str, value: &std::path::Path) -> Self {
+            let original = std::env::var_os(name);
+            std::env::set_var(name, value);
+            Self { name, original }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            if let Some(value) = self.original.as_ref() {
+                std::env::set_var(self.name, value);
+            } else {
+                std::env::remove_var(self.name);
+            }
+        }
+    }
 
     fn temp_dir() -> PathBuf {
         let dir = std::env::temp_dir().join(format!("codex-tools-store-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    fn env_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn jwt_with_claims(claims: serde_json::Value) -> String {
+        let payload = URL_SAFE_NO_PAD.encode(serde_json::to_vec(&claims).expect("encode claims"));
+        format!("header.{payload}.signature")
+    }
+
+    fn chatgpt_auth(access: &str, refresh: &str, exp: i64) -> serde_json::Value {
+        json!({
+            "auth_mode": "chatgpt",
+            "last_refresh": "2026-02-01T00:00:00Z",
+            "tokens": {
+                "access_token": jwt_with_claims(json!({ "exp": exp })),
+                "id_token": jwt_with_claims(json!({
+                    "email": "hybrid@example.com",
+                    "exp": exp,
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": "workspace-1",
+                        "chatgpt_plan_type": "pro"
+                    }
+                })),
+                "refresh_token": refresh,
+                "account_id": "workspace-1"
+            },
+            "marker": access
+        })
     }
 
     fn sample_store(label: &str, account_id: &str, updated_at: i64) -> AccountsStore {
@@ -863,6 +959,7 @@ mod tests {
                 usage_error: None,
                 auth_refresh_blocked: false,
                 auth_refresh_error: None,
+                auth_refresh_next_at: None,
             }],
             proxy_upstreams: Vec::new(),
             proxy_route_bindings: Vec::new(),
@@ -974,6 +1071,7 @@ mod tests {
                 usage_error: None,
                 auth_refresh_blocked: false,
                 auth_refresh_error: None,
+                auth_refresh_next_at: None,
             }],
             proxy_upstreams: Vec::new(),
             proxy_route_bindings: Vec::new(),
@@ -1059,6 +1157,111 @@ mod tests {
         assert_eq!(account.profile_integrity_error, None);
         assert_eq!(profile_auth, refreshed_auth);
         assert!(profile_config.contains("cli_auth_credentials_store = \"file\""));
+    }
+
+    #[test]
+    fn update_refresh_state_preserves_active_hybrid_profile() {
+        let _guard = env_lock().lock().expect("lock env");
+        let dir = temp_dir();
+        let codex_dir = dir.join("codex-home");
+        fs::create_dir_all(&codex_dir).expect("create codex dir");
+        let _codex_dir_guard = EnvVarGuard::set_path("CODEX_SWITCH_DEV_CODEX_DIR", &codex_dir);
+        let store_path = dir.join("accounts.json");
+        let initial_auth = chatgpt_auth("old-access", "old-refresh", 4_100_000_000);
+        let relay = StoredAccount {
+            id: "relay-1".to_string(),
+            label: "Relay".to_string(),
+            source_kind: AccountSourceKind::Relay,
+            principal_id: Some("relay:relay-1".to_string()),
+            email: None,
+            account_id: "relay:relay-1".to_string(),
+            plan_type: Some("api".to_string()),
+            auth_json: json!({}),
+            api_base_url: Some("https://relay.example.com/v1".to_string()),
+            api_key: Some("sk-hybrid-secret".to_string()),
+            api_keys: Vec::new(),
+            proxy_priority: None,
+            proxy_weight: None,
+            proxy_key_selection_mode: None,
+            proxy_endpoints: Vec::new(),
+            model_name: Some("gpt-5.5".to_string()),
+            balance_text: None,
+            balance_display_enabled: false,
+            api_quota_mode: Default::default(),
+            api_quota_today_used_text: None,
+            api_quota_remaining_text: None,
+            api_quota_total_remaining_text: None,
+            api_quota_total_tokens_text: None,
+            api_quota_today_tokens_text: None,
+            api_quota_daily_window: None,
+            api_quota_total_window: None,
+            api_quota_subscription_expires_at: None,
+            provider_id: None,
+            provider_name: None,
+            tags: Vec::new(),
+            profile_auth_path: None,
+            profile_config_path: None,
+            profile_auth_ready: false,
+            profile_config_ready: false,
+            profile_integrity_error: None,
+            profile_last_validated_at: None,
+            profile_last_validation_error: None,
+            added_at: 1,
+            updated_at: 1,
+            usage: None,
+            usage_error: None,
+            auth_refresh_blocked: false,
+            auth_refresh_error: None,
+            auth_refresh_next_at: None,
+        };
+        let mut store = sample_store("chatgpt", "workspace-1", 10);
+        store.accounts[0].id = "chatgpt-1".to_string();
+        store.accounts[0].source_kind = AccountSourceKind::Chatgpt;
+        store.accounts[0].principal_id = Some("hybrid@example.com".to_string());
+        store.accounts[0].email = Some("hybrid@example.com".to_string());
+        store.accounts[0].auth_json = initial_auth.clone();
+        store.accounts[0].auth_refresh_next_at = Some(4_100_000_000 - 600);
+        store.accounts.push(relay);
+        store.settings.active_account_id = Some("relay-1".to_string());
+        store.settings.active_hybrid_profile = Some(crate::models::ActiveHybridProfile {
+            chatgpt_account_id: "chatgpt-1".to_string(),
+            relay_account_id: "relay-1".to_string(),
+        });
+        save_store_to_path(&store_path, &store).expect("save store");
+        super::profile_files::apply_hybrid_account_profile(&store.accounts[0], &store.accounts[1])
+            .expect("apply initial hybrid");
+
+        let account_key = store.accounts[0].account_key();
+        let refreshed_auth = chatgpt_auth("new-access", "new-refresh", 4_200_000_000);
+        let changed = update_account_group_refresh_state_in_path(
+            &store_path,
+            &account_key,
+            Some(&refreshed_auth),
+            false,
+            None,
+            20,
+            true,
+        )
+        .expect("update refresh state");
+
+        let active_auth: serde_json::Value = serde_json::from_str(
+            &fs::read_to_string(codex_dir.join("auth.json")).expect("read active auth"),
+        )
+        .expect("parse active auth");
+        let active_config =
+            fs::read_to_string(codex_dir.join("config.toml")).expect("read active config");
+        let loaded = load_store_from_path(&store_path).expect("load store");
+
+        assert!(changed);
+        assert_eq!(active_auth, refreshed_auth);
+        assert_eq!(
+            loaded.accounts[0].auth_refresh_next_at,
+            Some(4_200_000_000 - 600)
+        );
+        assert!(active_config.contains(r#"model_provider = "codexdeck_api""#));
+        assert!(active_config.contains(r#"requires_openai_auth = true"#));
+        assert!(active_config.contains(r#"experimental_bearer_token = "sk-hybrid-secret""#));
+        assert!(!active_config.contains(r#"openai_base_url = "https://relay.example.com/v1""#));
     }
 
     #[test]
@@ -1175,6 +1378,7 @@ mod tests {
                 usage_error: None,
                 auth_refresh_blocked: false,
                 auth_refresh_error: None,
+                auth_refresh_next_at: None,
             }],
             proxy_upstreams: Vec::new(),
             proxy_route_bindings: Vec::new(),

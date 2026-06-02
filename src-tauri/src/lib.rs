@@ -915,71 +915,7 @@ async fn switch_account_and_launch(
     if matches!(account.source_kind, models::AccountSourceKind::Chatgpt)
         && auth::auth_tokens_need_refresh(&account.auth_json)
     {
-        let refreshed_auth = match auth::refresh_chatgpt_auth_tokens_serialized(
-            &account.auth_json,
-            &state.auth_refresh_lock,
-        )
-        .await
-        {
-            Ok(refreshed_auth) => refreshed_auth,
-            Err(error) => {
-                let normalized_error = normalize_switch_refresh_error(&error);
-                let should_block_refresh = normalized_error
-                    == "当前账号的 refresh_token 已失效或已被轮换，请重新登录授权。"
-                    || normalized_error == "当前账号授权已过期，请重新登录授权。";
-
-                if should_block_refresh {
-                    let blocked_message = "授权过期，请重新登录授权。";
-                    match app_paths::app_data_dir(&app) {
-                        Ok(data_dir) => {
-                            let store_path = store::account_store_path_from_data_dir(&data_dir);
-                            if let Err(persist_error) =
-                                store::update_account_group_refresh_state_in_path(
-                                    &store_path,
-                                    &account.account_key(),
-                                    None,
-                                    true,
-                                    Some(blocked_message),
-                                    utils::now_unix_seconds(),
-                                    true,
-                                )
-                            {
-                                log::warn!("切换失败后写回账号停刷状态失败: {persist_error}");
-                            }
-                        }
-                        Err(path_error) => {
-                            log::warn!("切换失败后获取应用数据目录失败: {path_error}");
-                        }
-                    }
-                }
-
-                return Err(format!("切换账号前刷新登录令牌失败: {normalized_error}"));
-            }
-        };
-
-        account.auth_json = refreshed_auth.clone();
-
-        let refreshed_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("读取系统时间失败: {error}"))?
-            .as_secs() as i64;
-        let _guard = state.store_lock.lock().await;
-        let mut latest_store = store::load_store(&app)?;
-        let stored_account = latest_store
-            .accounts
-            .iter_mut()
-            .find(|stored| stored.id == id)
-            .ok_or_else(|| "找不到要切换的账号".to_string())?;
-        stored_account.auth_json = refreshed_auth;
-        stored_account.updated_at = refreshed_at;
-        stored_account.auth_refresh_blocked = false;
-        stored_account.auth_refresh_error = None;
-        clear_stale_auth_usage_error(stored_account);
-        profile_files::sync_account_profile_in_store_path(
-            &store::account_store_path_from_data_dir(&app_paths::app_data_dir(&app)?),
-            stored_account,
-        )?;
-        store::save_store(&app, &latest_store)?;
+        account = refresh_chatgpt_account_before_switch(&app, state.inner(), &id, true).await?;
     }
 
     let should_sync_opencode = store.settings.sync_opencode_openai_auth;
@@ -1220,73 +1156,13 @@ async fn switch_hybrid_account_and_launch(
         return Err("混合模式需要选择一个 ChatGPT 官方账号。".to_string());
     }
     if auth::auth_tokens_need_refresh(&chatgpt_account.auth_json) {
-        let refreshed_auth = match auth::refresh_chatgpt_auth_tokens_serialized(
-            &chatgpt_account.auth_json,
-            &state.auth_refresh_lock,
+        let _ = refresh_chatgpt_account_before_switch(
+            &app,
+            state.inner(),
+            &chatgpt_account_id,
+            false,
         )
-        .await
-        {
-            Ok(refreshed_auth) => refreshed_auth,
-            Err(error) => {
-                let normalized_error = normalize_switch_refresh_error(&error);
-                let should_block_refresh = normalized_error
-                    == "当前账号的 refresh_token 已失效或已被轮换，请重新登录授权。"
-                    || normalized_error == "当前账号授权已过期，请重新登录授权。";
-
-                if should_block_refresh {
-                    let blocked_message = "授权过期，请重新登录授权。";
-                    match app_paths::app_data_dir(&app) {
-                        Ok(data_dir) => {
-                            let store_path = store::account_store_path_from_data_dir(&data_dir);
-                            if let Err(persist_error) =
-                                store::update_account_group_refresh_state_in_path(
-                                    &store_path,
-                                    &chatgpt_account.account_key(),
-                                    None,
-                                    true,
-                                    Some(blocked_message),
-                                    utils::now_unix_seconds(),
-                                    false,
-                                )
-                            {
-                                log::warn!(
-                                    "混合模式切换失败后写回账号停刷状态失败: {persist_error}"
-                                );
-                            }
-                        }
-                        Err(path_error) => {
-                            log::warn!("混合模式切换失败后获取应用数据目录失败: {path_error}");
-                        }
-                    }
-                }
-
-                return Err(format!(
-                    "切换混合模式前刷新登录令牌失败: {normalized_error}"
-                ));
-            }
-        };
-
-        let refreshed_at = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|error| format!("读取系统时间失败: {error}"))?
-            .as_secs() as i64;
-        let _guard = state.store_lock.lock().await;
-        let mut latest_store = store::load_store(&app)?;
-        let stored_account = latest_store
-            .accounts
-            .iter_mut()
-            .find(|stored| stored.id == chatgpt_account_id)
-            .ok_or_else(|| "找不到要用于混合模式的 ChatGPT 官方账号".to_string())?;
-        stored_account.auth_json = refreshed_auth;
-        stored_account.updated_at = refreshed_at;
-        stored_account.auth_refresh_blocked = false;
-        stored_account.auth_refresh_error = None;
-        clear_stale_auth_usage_error(stored_account);
-        profile_files::sync_account_profile_in_store_path(
-            &store::account_store_path_from_data_dir(&app_paths::app_data_dir(&app)?),
-            stored_account,
-        )?;
-        store::save_store(&app, &latest_store)?;
+        .await?;
     }
 
     let should_restart_editors =
@@ -1514,6 +1390,102 @@ fn launch_codex_app(path: &std::path::Path, workspace_path: Option<&str>) -> Res
         let _ = workspace_path;
         Err("当前平台暂不支持直接启动 Codex 应用".to_string())
     }
+}
+
+async fn refresh_chatgpt_account_before_switch(
+    app: &AppHandle,
+    state: &AppState,
+    account_id: &str,
+    sync_current_auth_on_block: bool,
+) -> Result<models::StoredAccount, String> {
+    let _refresh_guard = state.auth_refresh_lock.lock().await;
+    let mut account = {
+        let _store_guard = state.store_lock.lock().await;
+        store::load_store(app)?
+            .accounts
+            .into_iter()
+            .find(|stored| stored.id == account_id)
+            .ok_or_else(|| "找不到要切换的账号".to_string())?
+    };
+
+    if !matches!(account.source_kind, models::AccountSourceKind::Chatgpt) {
+        return Ok(account);
+    }
+    if !auth::auth_tokens_need_refresh(&account.auth_json) {
+        return Ok(account);
+    }
+    if account.auth_refresh_blocked {
+        return Err(format!(
+            "切换账号前刷新登录令牌失败: {}",
+            account
+                .auth_refresh_error
+                .clone()
+                .unwrap_or_else(|| "授权过期，请重新登录授权。".to_string())
+        ));
+    }
+
+    let refreshed_auth = match auth::refresh_chatgpt_auth_tokens(&account.auth_json).await {
+        Ok(refreshed_auth) => refreshed_auth,
+        Err(error) => {
+            let normalized_error = normalize_switch_refresh_error(&error);
+            let should_block_refresh = normalized_error
+                == "当前账号的 refresh_token 已失效或已被轮换，请重新登录授权。"
+                || normalized_error == "当前账号授权已过期，请重新登录授权。";
+
+            if should_block_refresh {
+                let blocked_message = "授权过期，请重新登录授权。";
+                match app_paths::app_data_dir(app) {
+                    Ok(data_dir) => {
+                        let store_path = store::account_store_path_from_data_dir(&data_dir);
+                        let _store_guard = state.store_lock.lock().await;
+                        if let Err(persist_error) =
+                            store::update_account_group_refresh_state_in_path(
+                                &store_path,
+                                &account.account_key(),
+                                None,
+                                true,
+                                Some(blocked_message),
+                                utils::now_unix_seconds(),
+                                sync_current_auth_on_block,
+                            )
+                        {
+                            log::warn!("切换失败后写回账号停刷状态失败: {persist_error}");
+                        }
+                    }
+                    Err(path_error) => {
+                        log::warn!("切换失败后获取应用数据目录失败: {path_error}");
+                    }
+                }
+            }
+
+            return Err(format!("切换账号前刷新登录令牌失败: {normalized_error}"));
+        }
+    };
+
+    let refreshed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("读取系统时间失败: {error}"))?
+        .as_secs() as i64;
+    let _store_guard = state.store_lock.lock().await;
+    let mut latest_store = store::load_store(app)?;
+    let stored_account = latest_store
+        .accounts
+        .iter_mut()
+        .find(|stored| stored.id == account_id)
+        .ok_or_else(|| "找不到要切换的账号".to_string())?;
+    stored_account.auth_json = refreshed_auth;
+    stored_account.updated_at = refreshed_at;
+    stored_account.auth_refresh_blocked = false;
+    stored_account.auth_refresh_error = None;
+    stored_account.auth_refresh_next_at = auth::auth_refresh_next_at(&stored_account.auth_json);
+    clear_stale_auth_usage_error(stored_account);
+    profile_files::sync_account_profile_in_store_path(
+        &store::account_store_path_from_data_dir(&app_paths::app_data_dir(app)?),
+        stored_account,
+    )?;
+    account = stored_account.clone();
+    store::save_store(app, &latest_store)?;
+    Ok(account)
 }
 
 fn normalize_switch_refresh_error(raw_error: &str) -> String {

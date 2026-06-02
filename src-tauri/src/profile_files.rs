@@ -632,11 +632,19 @@ fn compute_profile_integrity_error(
 fn build_chatgpt_profile_config(current_config: Option<&str>) -> String {
     let mut document = parse_config_or_default(current_config);
     let had_base_url = document.get(CODEX_BASE_URL_KEY).is_some();
+    let had_codexdeck_provider = document
+        .get(CODEX_MODEL_PROVIDER_KEY)
+        .and_then(|item| item.as_str())
+        == Some(CODEXDECK_RELAY_PROVIDER_ID)
+        || document
+            .get(CODEX_MODEL_PROVIDERS_KEY)
+            .and_then(|item| item.as_table())
+            .is_some_and(|providers| providers.contains_key(CODEXDECK_RELAY_PROVIDER_ID));
     normalize_standard_profile_config(&mut document);
     remove_responses_websocket_flags(&mut document);
     document.remove(CODEX_BASE_URL_KEY);
     document.remove(CODEX_MODEL_PROVIDERS_KEY);
-    if had_base_url {
+    if had_base_url || had_codexdeck_provider {
         document.remove(CODEX_MODEL_KEY);
     }
     document.to_string()
@@ -1059,6 +1067,29 @@ wire_api = "responses"
         assert!(!config.contains("model_providers"));
         assert!(!config.contains("responses_websockets"));
         assert!(!config.contains("responses_websockets_v2"));
+    }
+
+    #[test]
+    fn chatgpt_profile_config_clears_hybrid_model_without_legacy_base_url() {
+        let current = r#"model = "gpt-5.5"
+model_provider = "codexdeck_api"
+
+[model_providers.codexdeck_api]
+name = "codexdeck_api"
+base_url = "https://relay.example.com/v1"
+wire_api = "responses"
+requires_openai_auth = true
+experimental_bearer_token = "sk-hybrid-secret"
+supports_websockets = false
+"#;
+
+        let config = build_chatgpt_profile_config(Some(current));
+
+        assert!(config.contains(r#"cli_auth_credentials_store = "file""#));
+        assert!(!config.contains("model ="));
+        assert!(!config.contains("model_provider"));
+        assert!(!config.contains("model_providers"));
+        assert!(!config.contains("experimental_bearer_token"));
     }
 
     #[test]
