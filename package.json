@@ -1,15 +1,15 @@
 {
   "name": "codexdeck",
   "private": true,
-  "version": "2.0.4",
+  "version": "2.0.5",
   "license": "MIT",
-  "homepage": "https://github.com/Barbital11111/codex-tools",
+  "homepage": "https://github.com/Barbital11111/CodexDeck",
   "bugs": {
-    "url": "https://github.com/Barbital11111/codex-tools/issues"
+    "url": "https://github.com/Barbital11111/CodexDeck/issues"
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Barbital11111/codex-tools.git"
+    "url": "https://github.com/Barbital11111/CodexDeck.git"
   },
   "type": "module",
   "scripts": {

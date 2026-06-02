@@ -150,7 +150,7 @@ CodexDeck 切换账号时使用同一套修复方式：
 
 ```text
 https://aihubmix.com/v1 -> aihubmix
-https://deepkey.top/v1  -> deepkey
+https://example-gateway.invalid/v1  -> example-gateway
 ```
 
 原因是 URL 不是 provider 身份。用户切换不同 API 地址时，如果 provider id 跟着 URL 变，历史线程 provider 也会跟着变化，容易再次出现：

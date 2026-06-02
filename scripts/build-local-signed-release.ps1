@@ -18,6 +18,40 @@ $tauriConfigPath = Join-Path $repoRoot "src-tauri/tauri.conf.json"
 $bundleRoot = Join-Path $repoRoot "src-tauri/target/release/bundle"
 $buildLogRoot = Join-Path $repoRoot "src-tauri/target/release/build-logs"
 
+function Join-RustFlags {
+  param([string[]]$Flags)
+
+  $separator = [string][char]0x1f
+  $existing = [Environment]::GetEnvironmentVariable("CARGO_ENCODED_RUSTFLAGS", "Process")
+  $items = @()
+  if (-not [string]::IsNullOrWhiteSpace($existing)) {
+    $items += $existing -split [regex]::Escape($separator)
+  }
+  $items += $Flags
+  ($items | Where-Object { -not [string]::IsNullOrWhiteSpace($_) }) -join $separator
+}
+
+function Get-ReleaseRustFlags {
+  $flags = @()
+  $fullRepoRoot = (Resolve-Path -LiteralPath $repoRoot).Path
+  $flags += "--remap-path-prefix=$fullRepoRoot=<repo-root>"
+
+  $cargoHome = $env:CARGO_HOME
+  if ([string]::IsNullOrWhiteSpace($cargoHome)) {
+    $cargoHome = Join-Path $env:USERPROFILE ".cargo"
+  }
+  if (-not [string]::IsNullOrWhiteSpace($cargoHome) -and (Test-Path -LiteralPath $cargoHome)) {
+    $flags += "--remap-path-prefix=$((Resolve-Path -LiteralPath $cargoHome).Path)=<cargo-home>"
+  }
+
+  $userProfile = $env:USERPROFILE
+  if (-not [string]::IsNullOrWhiteSpace($userProfile) -and (Test-Path -LiteralPath $userProfile)) {
+    $flags += "--remap-path-prefix=$((Resolve-Path -LiteralPath $userProfile).Path)=<user-profile>"
+  }
+
+  $flags
+}
+
 function Get-RequestedBundles {
   param([string]$BundleList)
 
@@ -301,9 +335,13 @@ if ($null -eq $decodedKey -or $decodedKey -notmatch "(minisign|rsign).+secret ke
 
 $previousPrivateKey = [Environment]::GetEnvironmentVariable("TAURI_SIGNING_PRIVATE_KEY", "Process")
 $previousPassword = [Environment]::GetEnvironmentVariable("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", "Process")
+$previousEncodedRustflags = [Environment]::GetEnvironmentVariable("CARGO_ENCODED_RUSTFLAGS", "Process")
+$previousRustflags = [Environment]::GetEnvironmentVariable("RUSTFLAGS", "Process")
 
 try {
   $env:TAURI_SIGNING_PRIVATE_KEY = $privateKeyEnvValue
+  $env:CARGO_ENCODED_RUSTFLAGS = Join-RustFlags -Flags (Get-ReleaseRustFlags)
+  Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
 
   if (-not [string]::IsNullOrEmpty($SigningKeyPassword)) {
     $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $SigningKeyPassword
@@ -362,5 +400,19 @@ finally {
   }
   else {
     $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $previousPassword
+  }
+
+  if ($null -eq $previousEncodedRustflags) {
+    Remove-Item Env:CARGO_ENCODED_RUSTFLAGS -ErrorAction SilentlyContinue
+  }
+  else {
+    $env:CARGO_ENCODED_RUSTFLAGS = $previousEncodedRustflags
+  }
+
+  if ($null -eq $previousRustflags) {
+    Remove-Item Env:RUSTFLAGS -ErrorAction SilentlyContinue
+  }
+  else {
+    $env:RUSTFLAGS = $previousRustflags
   }
 }

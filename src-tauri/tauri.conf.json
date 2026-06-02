@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "CodexDeck",
   "mainBinaryName": "CodexDeck",
-  "version": "2.0.4",
+  "version": "2.0.5",
   "identifier": "com.carry.codex-tools",
   "build": {
     "frontendDist": "../dist",
@@ -67,7 +67,7 @@
       "dialog": false,
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDY1N0VFNkFEMTExQ0ZDQjIKUldTeS9Cd1JyZVorWlFseEQ3SEY1MzZDR1dIeWQxRW9jWnB6amNtd2FNbUlUdmxRZ00yU3N2R3YK",
       "endpoints": [
-        "https://github.com/Barbital11111/codex-tools/releases/latest/download/latest.json"
+        "https://github.com/Barbital11111/CodexDeck/releases/latest/download/latest.json"
       ]
     }
   }

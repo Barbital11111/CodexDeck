@@ -65,8 +65,8 @@ export function ReferenceAccountCard() {
         <div className="card-select">
           <input type="checkbox" aria-label="选择 Cockpit 参考账号" />
         </div>
-        <span className="account-email" title="fuc55611@proton.me">
-          fuc55611@proton...
+        <span className="account-email" title="demo@example.com">
+          demo@example...
         </span>
         <span className="codex-status-pill quota-refresh">OAuth</span>
         <span className="tier-badge team">TEAM</span>
