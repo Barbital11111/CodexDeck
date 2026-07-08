@@ -1,7 +1,10 @@
-import { useMemo } from "react";
+import { type ReactNode, useMemo } from "react";
+import { DndContext, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { rectSortingStrategy, SortableContext } from "@dnd-kit/sortable";
 import type {
   AccountSummary,
   NotificationProviderConfig,
+  RelayModelCatalogEntry,
   TrayUsageDisplayMode,
   UpdateApiAccountInput,
 } from "../types/app";
@@ -11,6 +14,11 @@ import {
   compareAccountsByRemaining,
   compareAccountsForDisplay,
 } from "../utils/accountRanking";
+import {
+  moveAccountKeyToTarget,
+  sortBySavedAccountOrder,
+} from "../utils/accountCardOrder";
+import { SortableAccountCardSlot } from "./SortableAccountCardSlot";
 
 type AccountGroup = {
   id: string;
@@ -61,13 +69,21 @@ type AccountsGridProps = {
   notificationProviders: NotificationProviderConfig[];
   usageDisplayMode: TrayUsageDisplayMode;
   hideAccountDetails: boolean;
-  apiEnhancedLaunchEnabled: boolean;
+  accountCardOrder: string[];
+  sortingEnabled?: boolean;
+  leadingSlot?: ReactNode;
   onExport: (account: AccountSummary) => void;
   onReauthorize: (account: AccountSummary) => void;
   onRename: (account: AccountSummary, label: string) => Promise<boolean>;
   onUpdateApiAccount: (account: AccountSummary, input: UpdateApiAccountInput) => Promise<boolean>;
+  onProbeApiModels: (
+    baseUrl: string,
+    apiKey: string | null,
+    accountKey?: string,
+  ) => Promise<RelayModelCatalogEntry[]>;
   onUpdateTags: (account: AccountSummary, value: string) => Promise<boolean>;
   onRefreshApiQuota: (account: AccountSummary) => void;
+  onReorderAccountCards: (accountKeys: string[]) => void;
   onSwitch: (account: AccountSummary) => void;
   onDelete: (account: AccountSummary) => void;
 };
@@ -82,17 +98,22 @@ export function AccountsGrid({
   notificationProviders,
   usageDisplayMode,
   hideAccountDetails,
-  apiEnhancedLaunchEnabled,
+  accountCardOrder,
+  sortingEnabled = false,
+  leadingSlot,
   onExport,
   onReauthorize,
   onRename,
   onUpdateApiAccount,
+  onProbeApiModels,
   onUpdateTags,
   onRefreshApiQuota,
+  onReorderAccountCards,
   onSwitch,
   onDelete,
 }: AccountsGridProps) {
   const { copy } = useI18n();
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
   const groupedAccounts = useMemo<AccountGroup[]>(() => {
     const groups = new Map<string, AccountSummary[]>();
 
@@ -105,56 +126,84 @@ export function AccountsGrid({
       }
     }
 
-    return Array.from(groups.entries())
-      .map(([id, variants]) => {
-        const sortedVariants = [...variants].sort(sortVariantsForGroup);
-        const primary = sortedVariants.find((item) => item.isCurrent) ?? sortedVariants[0];
+    const accountGroups = Array.from(groups.entries()).map(([id, variants]) => {
+      const sortedVariants = [...variants].sort(sortVariantsForGroup);
+      const primary = sortedVariants.find((item) => item.isCurrent) ?? sortedVariants[0];
 
-        return {
-          id,
-          variants: sortedVariants,
-          primary,
-        };
-      })
-      .sort(compareAccountGroups);
-  }, [accounts]);
+      return {
+        id,
+        variants: sortedVariants,
+        primary,
+      };
+    });
+    return sortBySavedAccountOrder(
+      accountGroups,
+      accountCardOrder,
+      (group) => group.id,
+      compareAccountGroups,
+    );
+  }, [accountCardOrder, accounts]);
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const activeKey = String(event.active.id);
+    const overKey = event.over ? String(event.over.id) : "";
+    if (!overKey || activeKey === overKey) {
+      return;
+    }
+    const currentKeys = groupedAccounts.map((group) => group.id);
+    const nextKeys = moveAccountKeyToTarget(currentKeys, activeKey, overKey);
+    if (nextKeys.join("\n") !== currentKeys.join("\n")) {
+      onReorderAccountCards(nextKeys);
+    }
+  };
 
   return (
-    <section className="cards" aria-busy={loading}>
-      {groupedAccounts.length === 0 && !loading && (
-        <div className="emptyState">
-          <h3>{copy.accountsGrid.emptyTitle}</h3>
-          <p>{copy.accountsGrid.emptyDescription}</p>
-        </div>
-      )}
+    <DndContext sensors={sensors} onDragEnd={handleDragEnd}>
+      <section className="cards" aria-busy={loading}>
+        {leadingSlot}
 
-      {groupedAccounts.map((group) => (
-        <div
-          key={group.id}
-          className="accountCardSlot"
-        >
-          <AccountCard
-            accounts={group.variants}
-            exportingAccounts={exportingAccounts}
-            switchingId={switchingId}
-            renamingAccountId={renamingAccountId}
-            pendingDeleteId={pendingDeleteId}
-            notificationProviders={notificationProviders}
-            usageDisplayMode={usageDisplayMode}
-            hideAccountDetails={hideAccountDetails}
-            apiEnhancedLaunchEnabled={apiEnhancedLaunchEnabled}
-            onExport={onExport}
-            onReauthorize={onReauthorize}
-            onRename={onRename}
-            onUpdateApiAccount={onUpdateApiAccount}
-            onUpdateTags={onUpdateTags}
-            onRefreshApiQuota={onRefreshApiQuota}
-            onSwitch={onSwitch}
-            onDelete={onDelete}
-          />
-        </div>
-      ))}
+        {groupedAccounts.length === 0 && !loading && !leadingSlot && (
+          <div className="emptyState">
+            <h3>{copy.accountsGrid.emptyTitle}</h3>
+            <p>{copy.accountsGrid.emptyDescription}</p>
+          </div>
+        )}
 
-    </section>
+        <SortableContext items={groupedAccounts.map((group) => group.id)} strategy={rectSortingStrategy}>
+          {groupedAccounts.map((group) => (
+            <SortableAccountCardSlot
+              key={group.id}
+              id={group.id}
+              enabled={sortingEnabled}
+              handleVariant="bar"
+            >
+              {(sortHandle) => (
+                <AccountCard
+                  accounts={group.variants}
+                  exportingAccounts={exportingAccounts}
+                  switchingId={switchingId}
+                  renamingAccountId={renamingAccountId}
+                  pendingDeleteId={pendingDeleteId}
+                  notificationProviders={notificationProviders}
+                  usageDisplayMode={usageDisplayMode}
+                  hideAccountDetails={hideAccountDetails}
+                  sortHandle={sortHandle}
+                  sortHandlePlacement="body"
+                  onExport={onExport}
+                  onReauthorize={onReauthorize}
+                  onRename={onRename}
+                  onUpdateApiAccount={onUpdateApiAccount}
+                  onProbeApiModels={onProbeApiModels}
+                  onUpdateTags={onUpdateTags}
+                  onRefreshApiQuota={onRefreshApiQuota}
+                  onSwitch={onSwitch}
+                  onDelete={onDelete}
+                />
+              )}
+            </SortableAccountCardSlot>
+          ))}
+        </SortableContext>
+      </section>
+    </DndContext>
   );
 }

@@ -5,7 +5,7 @@ use tauri::AppHandle;
 use crate::models::AppLocale;
 #[cfg(target_os = "macos")]
 use crate::models::TrayUsageDisplayMode;
-use crate::store::load_store;
+use crate::store::load_store_read_only;
 
 pub(crate) fn detect_system_locale() -> AppLocale {
     let candidates = [
@@ -37,7 +37,7 @@ pub(crate) fn detect_system_locale() -> AppLocale {
 }
 
 pub(crate) fn app_locale(app: &AppHandle) -> AppLocale {
-    load_store(app)
+    load_store_read_only(app)
         .map(|store| store.settings.locale)
         .unwrap_or_else(|_| detect_system_locale())
 }

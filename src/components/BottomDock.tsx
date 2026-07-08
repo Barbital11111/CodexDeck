@@ -1,13 +1,15 @@
 import { useI18n } from "../i18n/I18nProvider";
+import type { UiSkinMode } from "../types/app";
 
-type AppTab = "accounts" | "notifications" | "settings";
+type AppTab = "accounts" | "providers" | "notifications" | "settings";
 type NotificationViewTab = "settings" | "pipelines" | "templates" | "tests" | "activity";
 
 type BottomDockProps = {
   activeTab: AppTab;
   onSelectTab: (tab: AppTab) => void;
-  notificationView: NotificationViewTab;
-  onSelectNotificationView: (view: NotificationViewTab) => void;
+  uiSkinMode?: UiSkinMode;
+  notificationView?: NotificationViewTab;
+  onSelectNotificationView?: (view: NotificationViewTab) => void;
 };
 
 function AccountsIcon() {
@@ -26,6 +28,17 @@ function NotificationsIcon() {
     <svg className="bottomDockIcon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       <path d="M12 4.5a5 5 0 0 0-5 5v3.2l-1.4 2.4c-.32.54.07 1.22.7 1.22h11.4c.63 0 1.02-.68.7-1.22L17 12.7V9.5a5 5 0 0 0-5-5Z" />
       <path d="M10 18.2a2.2 2.2 0 0 0 4 0" />
+    </svg>
+  );
+}
+
+function ProvidersIcon() {
+  return (
+    <svg className="bottomDockIcon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M5 7.5h14" />
+      <path d="M5 16.5h14" />
+      <circle cx="8" cy="7.5" r="2" />
+      <circle cx="16" cy="16.5" r="2" />
     </svg>
   );
 }
@@ -50,11 +63,13 @@ function SettingsIcon() {
 export function BottomDock({
   activeTab,
   onSelectTab,
+  uiSkinMode = "classic",
   notificationView,
   onSelectNotificationView,
 }: BottomDockProps) {
   const { copy } = useI18n();
   const accountActive = activeTab === "accounts";
+  const providersActive = activeTab === "providers";
   const notificationsActive = activeTab === "notifications";
   const settingsActive = activeTab === "settings";
   const notificationItems: Array<{ id: NotificationViewTab; label: string }> = [
@@ -64,6 +79,62 @@ export function BottomDock({
     { id: "templates", label: "消息模板" },
     { id: "activity", label: "发送记录" },
   ];
+
+  if (uiSkinMode !== "classic") {
+    return (
+      <nav className="bottomDock" aria-label={copy.bottomDock.ariaLabel}>
+        <div className="dockBrand">
+          <img className="dockLogoMark" src="/codexdeck.png" alt="" aria-hidden="true" />
+          <strong>CodexDeck</strong>
+        </div>
+        <div className="dockSection">
+          <span className="dockSectionLabel">工作台</span>
+          <button
+            className={`bottomDockButton${accountActive ? " isActive" : ""}`}
+            onClick={() => onSelectTab("accounts")}
+            aria-label={copy.bottomDock.accounts}
+            title={copy.bottomDock.accounts}
+          >
+            <AccountsIcon />
+            <span className="bottomDockLabel">账户</span>
+          </button>
+          <button
+            className={`bottomDockButton${providersActive ? " isActive" : ""}`}
+            onClick={() => onSelectTab("providers")}
+            aria-label="供应商与模型"
+            title="供应商与模型"
+          >
+            <ProvidersIcon />
+            <span className="bottomDockLabel">供应商与模型</span>
+          </button>
+          <button
+            className={`bottomDockButton${notificationsActive ? " isActive" : ""}`}
+            onClick={() => {
+              onSelectTab("notifications");
+              onSelectNotificationView?.("settings");
+            }}
+            aria-label="通知中心"
+            title="通知中心"
+          >
+            <NotificationsIcon />
+            <span className="bottomDockLabel">通知中心</span>
+          </button>
+        </div>
+        <div className="dockSection">
+          <span className="dockSectionLabel">工具箱</span>
+          <button
+            className={`bottomDockButton${settingsActive ? " isActive" : ""}`}
+            onClick={() => onSelectTab("settings")}
+            aria-label={copy.bottomDock.settings}
+            title={copy.bottomDock.settings}
+          >
+            <SettingsIcon />
+            <span className="bottomDockLabel">{copy.bottomDock.settings}</span>
+          </button>
+        </div>
+      </nav>
+    );
+  }
 
   return (
     <nav className="bottomDock" aria-label={copy.bottomDock.ariaLabel}>
@@ -98,7 +169,7 @@ export function BottomDock({
           className={`bottomDockButton${notificationsActive ? " isActive" : ""}`}
           onClick={() => {
             onSelectTab("notifications");
-            onSelectNotificationView("settings");
+            onSelectNotificationView?.("settings");
           }}
           aria-label="通知中心"
           title="通知中心"
@@ -113,7 +184,7 @@ export function BottomDock({
                 type="button"
                 className={`dockSubmenuButton${notificationView === item.id ? " isActive" : ""}`}
                 key={item.id}
-                onClick={() => onSelectNotificationView(item.id)}
+                onClick={() => onSelectNotificationView?.(item.id)}
               >
                 <span>{item.label}</span>
               </button>

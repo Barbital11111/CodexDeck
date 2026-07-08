@@ -235,6 +235,7 @@ fn pick_nearest_window(windows: &[UsageWindowRaw], target_seconds: i64) -> Optio
 fn to_usage_window(window: UsageWindowRaw) -> UsageWindow {
     UsageWindow {
         used_percent: window.used_percent,
+        total_percent: None,
         window_seconds: window.limit_window_seconds,
         reset_at: Some(window.reset_at),
     }

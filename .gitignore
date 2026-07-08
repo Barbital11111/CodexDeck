@@ -28,11 +28,13 @@ push.sh
 release/
 debug/
 src-tauri/gen/
+src-tauri/resources/
 .dev-runtime/
 .tmp/
 仓库推送/
 代码审查日志/
 参考仓库/
+参考图/
 
 # Local planning / handoff artifacts
 .planning/

@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use base64::Engine;
+use futures_util::stream;
+use futures_util::StreamExt;
 use reqwest::StatusCode;
+use reqwest::Url;
 use rfd::FileDialog;
 use serde::Deserialize;
 use serde::Serialize;
@@ -17,7 +20,6 @@ use time::OffsetDateTime;
 use zip::write::FileOptions;
 use zip::CompressionMethod;
 
-use crate::app_paths;
 use crate::auth::account_group_key;
 use crate::auth::account_variant_key;
 use crate::auth::auth_refresh_next_at;
@@ -30,9 +32,10 @@ use crate::auth::normalize_plan_type_key;
 use crate::auth::read_current_codex_auth;
 use crate::auth::read_current_codex_auth_optional;
 use crate::auth::refresh_chatgpt_auth_tokens;
-use crate::hybrid_relay_proxy;
+use crate::model_router;
 use crate::models::dedupe_account_variants;
 use crate::models::infer_provider_metadata_from_base_url;
+use crate::models::normalize_relay_model_catalog;
 use crate::models::AccountSourceKind;
 use crate::models::AccountSummary;
 use crate::models::AccountsStore;
@@ -43,14 +46,16 @@ use crate::models::ImportAccountsResult;
 use crate::models::ProxyEndpointCapability;
 use crate::models::ProxyHealthStatus;
 use crate::models::ProxyKey;
+use crate::models::RelayModelCatalogEntry;
 use crate::models::StoredAccount;
 use crate::models::UpdateApiAccountKeyInput;
 use crate::models::UsageSnapshot;
 use crate::notification_service;
 use crate::profile_files;
 use crate::state::AppState;
-use crate::store::account_store_path_from_data_dir;
+use crate::store::account_store_path_for_app;
 use crate::store::load_store;
+use crate::store::load_store_read_only;
 use crate::store::save_store;
 use crate::store::update_account_group_refresh_state_in_path;
 use crate::usage::fetch_usage_snapshot;
@@ -69,6 +74,9 @@ const OPENAI_CODEX_CLI_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 const KEEPALIVE_REFRESH_WINDOW_SECS: i64 = 24 * 60 * 60;
 const KEEPALIVE_REFRESH_INTERVAL_SECS: i64 = 7 * 24 * 60 * 60;
 const RELAY_KEY_PROBE_TIMEOUT_SECS: u64 = 12;
+const RELAY_MODEL_PROBE_TIMEOUT_SECS: u64 = 12;
+const USAGE_REFRESH_CONCURRENCY: usize = 4;
+const API_QUOTA_REFRESH_CONCURRENCY: usize = 4;
 
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -94,6 +102,7 @@ struct ResolvedApiQuotaFields {
     daily_window: Option<crate::models::UsageWindow>,
     total_window: Option<crate::models::UsageWindow>,
     subscription_expires_at: Option<i64>,
+    subscription_name: Option<String>,
 }
 
 impl ResolvedApiQuotaFields {
@@ -108,6 +117,7 @@ impl ResolvedApiQuotaFields {
             daily_window: None,
             total_window: None,
             subscription_expires_at: None,
+            subscription_name: None,
         }
     }
 }
@@ -289,24 +299,19 @@ fn current_hybrid_pair_for_relay(
 }
 
 async fn apply_current_relay_profile(
-    state: &AppState,
     store: &AccountsStore,
     relay_account: &StoredAccount,
 ) -> Result<(), String> {
     if let Some((chatgpt_account, relay_account)) =
         current_hybrid_pair_for_relay(store, &relay_account.id)
     {
-        let local_base_url =
-            hybrid_relay_proxy::ensure_hybrid_relay_proxy_for_account(state, &relay_account)
-                .await?;
-        profile_files::apply_hybrid_account_profile_with_provider_base_url(
-            &chatgpt_account,
-            &relay_account,
-            &local_base_url,
-        )
+        profile_files::apply_hybrid_account_profile(&chatgpt_account, &relay_account)?;
     } else {
-        profile_files::apply_account_profile(relay_account)
+        profile_files::apply_account_profile(relay_account)?;
     }
+    profile_files::apply_model_instructions_fix_setting(
+        store.settings.codex_model_instructions_fix_enabled,
+    )
 }
 
 pub(crate) async fn list_accounts_internal(
@@ -314,7 +319,7 @@ pub(crate) async fn list_accounts_internal(
     state: &AppState,
 ) -> Result<Vec<AccountSummary>, String> {
     let _guard = state.store_lock.lock().await;
-    let store = load_store(app)?;
+    let store = load_store_read_only(app)?;
     let current_account_key = current_auth_account_key();
     let current_variant_key = current_auth_variant_key();
     Ok(build_account_summaries_for_store(
@@ -343,6 +348,8 @@ pub(crate) async fn create_api_account_internal(
     let base_url = profile_files::normalize_relay_base_url(&input.base_url)?;
     let api_key = profile_files::normalize_relay_api_key(&input.api_key)?;
     let model_name = profile_files::normalize_relay_model_name(&input.model_name)?;
+    let model_catalog =
+        normalize_relay_model_catalog(Some(model_name.as_str()), &input.model_catalog);
     let (provider_id, provider_name) =
         infer_provider_metadata_from_base_url(Some(base_url.as_str()));
     let quota_fields = resolve_create_api_quota_fields(&input, &label, &base_url, &api_key).await;
@@ -397,6 +404,8 @@ pub(crate) async fn create_api_account_internal(
             proxy_key_selection_mode: None,
             proxy_endpoints,
             model_name: Some(model_name),
+            model_catalog,
+            model_routing_enabled: false,
             balance_text,
             balance_display_enabled: input.balance_display_enabled,
             api_quota_mode: quota_fields.mode,
@@ -408,6 +417,7 @@ pub(crate) async fn create_api_account_internal(
             api_quota_daily_window: quota_fields.daily_window,
             api_quota_total_window: quota_fields.total_window,
             api_quota_subscription_expires_at: quota_fields.subscription_expires_at,
+            api_quota_subscription_name: quota_fields.subscription_name,
             provider_id,
             provider_name,
             tags,
@@ -427,7 +437,7 @@ pub(crate) async fn create_api_account_internal(
             auth_refresh_next_at: None,
         };
         profile_files::sync_account_profile_in_store_path(
-            &account_store_path_from_data_dir(&app_paths::app_data_dir(app)?),
+            &account_store_path_for_app(app)?,
             &mut stored,
         )?;
 
@@ -441,6 +451,215 @@ pub(crate) async fn create_api_account_internal(
     };
 
     Ok(summary)
+}
+
+pub(crate) async fn probe_api_models_internal(
+    base_url: &str,
+    api_key: &str,
+) -> Result<Vec<RelayModelCatalogEntry>, String> {
+    let base_url = profile_files::normalize_relay_base_url(base_url)?;
+    let api_key = profile_files::normalize_relay_api_key(api_key)?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(RELAY_MODEL_PROBE_TIMEOUT_SECS))
+        .build()
+        .map_err(|error| format!("创建模型探测客户端失败: {error}"))?;
+    let mut last_error: Option<String> = None;
+    for endpoint in build_model_probe_url_candidates(&base_url) {
+        let response = client
+            .get(&endpoint)
+            .bearer_auth(&api_key)
+            .send()
+            .await
+            .map_err(|error| {
+                format!(
+                    "探测模型失败 [已隐藏接口地址]: {}",
+                    redact_sensitive_text(&error.to_string())
+                )
+            })?;
+        let status = response.status();
+        let body = response
+            .text()
+            .await
+            .map_err(|error| format!("读取模型探测响应失败: {error}"))?;
+        if !status.is_success() {
+            let message = format!(
+                "模型探测返回 {status}: {}",
+                truncate_probe_message(&redact_sensitive_text(&body))
+            );
+            if matches!(
+                status,
+                StatusCode::NOT_FOUND | StatusCode::METHOD_NOT_ALLOWED
+            ) {
+                last_error = Some(message);
+                continue;
+            }
+            return Err(message);
+        }
+        let payload: serde_json::Value = serde_json::from_str(&body)
+            .map_err(|error| format!("模型探测响应不是合法 JSON: {error}"))?;
+        let entries = parse_probe_model_catalog(&payload);
+        if entries.is_empty() {
+            last_error = Some("模型探测响应里没有可用模型。".to_string());
+            continue;
+        }
+        return Ok(entries);
+    }
+
+    Err(last_error.unwrap_or_else(|| "模型探测没有可用端点。".to_string()))
+}
+
+pub(crate) async fn probe_api_account_models_internal(
+    app: &AppHandle,
+    state: &AppState,
+    account_key: &str,
+    base_url: Option<String>,
+    api_key: Option<String>,
+) -> Result<Vec<RelayModelCatalogEntry>, String> {
+    let account_key = account_key.trim();
+    if account_key.is_empty() {
+        return Err("未找到要探测模型的 API 账号。".to_string());
+    }
+
+    let normalized_input_base_url = base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let normalized_input_api_key = api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    let (resolved_base_url, resolved_api_key) = {
+        let _guard = state.store_lock.lock().await;
+        let store = load_store(app)?;
+        let account = store
+            .accounts
+            .iter()
+            .find(|candidate| candidate.account_key() == account_key)
+            .ok_or_else(|| "未找到要探测模型的 API 账号。".to_string())?;
+        if !matches!(account.source_kind, AccountSourceKind::Relay) {
+            return Err("只有 API 账号支持模型探测。".to_string());
+        }
+
+        let resolved_base_url = normalized_input_base_url
+            .map(str::to_string)
+            .or_else(|| {
+                account
+                    .api_base_url
+                    .as_ref()
+                    .map(|value| value.trim().to_string())
+            })
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "请先填写 Base URL。".to_string())?;
+        let resolved_api_key = normalized_input_api_key
+            .map(str::to_string)
+            .or_else(|| {
+                account
+                    .primary_relay_api_key()
+                    .map(|value| value.trim().to_string())
+            })
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "当前账号没有可用 API Key，请临时输入 API Key 后再探测。".to_string())?;
+        (resolved_base_url, resolved_api_key)
+    };
+
+    probe_api_models_internal(&resolved_base_url, &resolved_api_key).await
+}
+
+const MODEL_PROBE_COMPAT_SUFFIXES: &[&str] = &[
+    "/api/claudecode",
+    "/api/anthropic",
+    "/apps/anthropic",
+    "/api/coding",
+    "/claudecode",
+    "/anthropic",
+    "/step_plan",
+    "/coding",
+    "/claude",
+];
+
+fn build_model_probe_url_candidates(base_url: &str) -> Vec<String> {
+    let trimmed = base_url.trim().trim_end_matches('/');
+    let mut candidates = Vec::new();
+    push_unique_model_probe_candidate(&mut candidates, format!("{trimmed}/models"));
+
+    if let Some(stripped) = trimmed.strip_suffix("/v1") {
+        push_unique_model_probe_candidate(&mut candidates, format!("{stripped}/models"));
+    }
+
+    if let Some(stripped) = strip_model_probe_compat_suffix(trimmed) {
+        let root = stripped.trim_end_matches('/');
+        if !root.is_empty() && root.contains("://") {
+            push_unique_model_probe_candidate(&mut candidates, format!("{root}/v1/models"));
+            push_unique_model_probe_candidate(&mut candidates, format!("{root}/models"));
+        }
+    }
+
+    candidates
+}
+
+fn push_unique_model_probe_candidate(candidates: &mut Vec<String>, candidate: String) {
+    if Url::parse(&candidate).is_ok() && !candidates.iter().any(|item| item == &candidate) {
+        candidates.push(candidate);
+    }
+}
+
+fn strip_model_probe_compat_suffix(base_url: &str) -> Option<&str> {
+    MODEL_PROBE_COMPAT_SUFFIXES
+        .iter()
+        .find_map(|suffix| base_url.strip_suffix(suffix))
+}
+
+fn parse_probe_model_catalog(payload: &serde_json::Value) -> Vec<RelayModelCatalogEntry> {
+    let candidates = payload
+        .get("data")
+        .or_else(|| payload.get("models"))
+        .unwrap_or(payload);
+
+    let Some(items) = candidates.as_array() else {
+        return Vec::new();
+    };
+
+    let mut seen = HashSet::new();
+    let mut entries = Vec::new();
+    for item in items {
+        let (model, display_name) = if let Some(value) = item.as_str() {
+            (value.trim().to_string(), None)
+        } else if let Some(object) = item.as_object() {
+            let model = object
+                .get("id")
+                .or_else(|| object.get("model"))
+                .or_else(|| object.get("name"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .unwrap_or_default()
+                .to_string();
+            let display_name = object
+                .get("display_name")
+                .or_else(|| object.get("displayName"))
+                .or_else(|| object.get("name"))
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty() && *value != model)
+                .map(ToString::to_string);
+            (model, display_name)
+        } else {
+            continue;
+        };
+
+        if model.is_empty() || !seen.insert(model.clone()) {
+            continue;
+        }
+
+        entries.push(RelayModelCatalogEntry {
+            model,
+            display_name,
+            request_model: None,
+            context_window: None,
+            enabled: true,
+        });
+    }
+
+    entries
 }
 
 pub(crate) async fn reauthorize_account_internal(
@@ -459,7 +678,7 @@ pub(crate) async fn reauthorize_account_internal(
 
     validate_reauthorization_target(existing, &prepared)?;
     apply_reauthorized_account(existing, prepared);
-    let store_path = account_store_path_from_data_dir(&app_paths::app_data_dir(app)?);
+    let store_path = account_store_path_for_app(app)?;
     profile_files::sync_account_profile_in_store_path(&store_path, existing)?;
     dedupe_account_variants(&mut store.accounts);
     save_store(app, &store)?;
@@ -525,7 +744,7 @@ pub(crate) async fn import_auth_json_accounts_internal(
         let mut imported_count = 0usize;
         let mut updated_count = 0usize;
         let mut touched_ids = HashSet::new();
-        let store_path = account_store_path_from_data_dir(&app_paths::app_data_dir(app)?);
+        let store_path = account_store_path_for_app(app)?;
 
         for prepared in prepared_imports {
             let (summary, updated_existing) = match prepared {
@@ -634,7 +853,7 @@ pub(crate) async fn delete_account_internal(
     id: &str,
 ) -> Result<(), String> {
     let _guard = state.store_lock.lock().await;
-    let store_path = account_store_path_from_data_dir(&app_paths::app_data_dir(app)?);
+    let store_path = account_store_path_for_app(app)?;
     let mut store = load_store(app)?;
     let removed_current = store.settings.active_account_id.as_deref() == Some(id);
     let original_len = store.accounts.len();
@@ -655,6 +874,13 @@ pub(crate) async fn delete_account_internal(
     {
         store.settings.active_hybrid_profile = None;
     }
+    if store.settings.model_router_account_id.as_deref() == Some(id) {
+        store.settings.model_router_account_id = None;
+    }
+    store
+        .settings
+        .model_router_route_selections
+        .retain(|selection| selection.account_id != id);
     let valid_account_keys = store
         .accounts
         .iter()
@@ -1068,13 +1294,15 @@ pub(crate) async fn update_api_account_internal(
     let resolved_label = profile_files::normalize_relay_label(&input.label)?;
     let resolved_base_url = profile_files::normalize_relay_base_url(&input.base_url)?;
     let resolved_model_name = profile_files::normalize_relay_model_name(&input.model_name)?;
+    let resolved_model_catalog =
+        normalize_relay_model_catalog(Some(resolved_model_name.as_str()), &input.model_catalog);
     let now = now_unix_seconds();
     let current_account_key = current_auth_account_key();
     let current_variant_key = current_auth_variant_key();
 
     let _guard = state.store_lock.lock().await;
     let mut store = load_store(app)?;
-    let store_path = account_store_path_from_data_dir(&app_paths::app_data_dir(app)?);
+    let store_path = account_store_path_for_app(app)?;
     let active_account_id = store.settings.active_account_id.clone();
 
     let updated_account = {
@@ -1126,6 +1354,8 @@ pub(crate) async fn update_api_account_internal(
         }
         sync_primary_api_key_from_relay_key_pool(account);
         account.model_name = Some(resolved_model_name);
+        account.model_catalog = resolved_model_catalog;
+        account.model_routing_enabled = false;
         let balance_display_enabled = input.balance_display_enabled.unwrap_or(true);
         account.balance_display_enabled = balance_display_enabled;
         if balance_display_enabled {
@@ -1138,6 +1368,7 @@ pub(crate) async fn update_api_account_internal(
             account.api_quota_daily_window = quota_fields.daily_window;
             account.api_quota_total_window = quota_fields.total_window;
             account.api_quota_subscription_expires_at = quota_fields.subscription_expires_at;
+            account.api_quota_subscription_name = quota_fields.subscription_name;
         } else {
             clear_api_quota_fields(account);
         }
@@ -1167,7 +1398,8 @@ pub(crate) async fn update_api_account_internal(
             .as_ref()
             .is_some_and(|hybrid| hybrid.relay_account_id == updated_account.id)
     {
-        apply_current_relay_profile(state, &store, &updated_account).await?;
+        model_router::stop_model_router(state).await;
+        apply_current_relay_profile(&store, &updated_account).await?;
     }
 
     let summary = build_account_summaries_for_store(
@@ -1234,7 +1466,7 @@ pub(crate) async fn update_api_account_keys_internal(
 
     let _guard = state.store_lock.lock().await;
     let mut store = load_store(app)?;
-    let store_path = account_store_path_from_data_dir(&app_paths::app_data_dir(app)?);
+    let store_path = account_store_path_for_app(app)?;
     let active_account_id = store.settings.active_account_id.clone();
 
     let updated_account = {
@@ -1267,7 +1499,8 @@ pub(crate) async fn update_api_account_keys_internal(
             .as_ref()
             .is_some_and(|hybrid| hybrid.relay_account_id == updated_account.id)
     {
-        apply_current_relay_profile(state, &store, &updated_account).await?;
+        model_router::stop_model_router(state).await;
+        apply_current_relay_profile(&store, &updated_account).await?;
     }
 
     let summary = build_account_summaries_for_store(
@@ -1335,7 +1568,7 @@ pub(crate) async fn probe_api_account_key_internal(
     let summary = {
         let _guard = state.store_lock.lock().await;
         let mut store = load_store(app)?;
-        let store_path = account_store_path_from_data_dir(&app_paths::app_data_dir(app)?);
+        let store_path = account_store_path_for_app(app)?;
         let active_account_id = store.settings.active_account_id.clone();
         let account = store
             .accounts
@@ -1396,7 +1629,8 @@ pub(crate) async fn probe_api_account_key_internal(
                 .as_ref()
                 .is_some_and(|hybrid| hybrid.relay_account_id == updated_account.id)
         {
-            apply_current_relay_profile(state, &store, &updated_account).await?;
+            model_router::stop_model_router(state).await;
+            apply_current_relay_profile(&store, &updated_account).await?;
         }
 
         let summary = build_account_summaries_for_store(
@@ -1517,12 +1751,14 @@ async fn refresh_api_quota_internal(
         build_api_quota_refresh_targets(&store, account_key_filter.as_ref())
     };
 
-    let mut snapshots: HashMap<String, Result<notification_service::ApiQuotaSnapshot, String>> =
-        HashMap::with_capacity(targets.len());
-    for (account_key, target) in targets {
-        let result = fetch_api_quota_refresh_target(target).await;
-        snapshots.insert(account_key, result);
-    }
+    let snapshots: HashMap<String, Result<notification_service::ApiQuotaSnapshot, String>> =
+        stream::iter(targets.into_iter().map(|(account_key, target)| async move {
+            let result = fetch_api_quota_refresh_target(target).await;
+            (account_key, result)
+        }))
+        .buffer_unordered(API_QUOTA_REFRESH_CONCURRENCY)
+        .collect()
+        .await;
 
     let store = {
         let _guard = state.store_lock.lock().await;
@@ -1540,6 +1776,7 @@ async fn refresh_api_quota_internal(
                     account.profile_last_validation_error = None;
                 }
                 Err(error) => {
+                    clear_api_quota_snapshot_fields(account);
                     account.profile_last_validation_error =
                         Some(redact_sensitive_text(error.as_str()));
                     account.updated_at = now;
@@ -1569,7 +1806,7 @@ async fn fetch_api_quota_refresh_target(
             fetch_api_quota_refresh_target_with_platform_fallback(platform_result, fallback).await
         }
         ApiQuotaRefreshTarget::NewapiToken { base_url, api_key } => {
-            notification_service::fetch_newapi_token_quota_snapshot(&base_url, &api_key).await
+            fetch_api_key_quota_snapshot(&base_url, &api_key).await
         }
     }
 }
@@ -1584,13 +1821,11 @@ async fn fetch_api_quota_refresh_target_with_platform_fallback(
             if let Some(ApiQuotaRefreshTarget::NewapiToken { base_url, api_key }) =
                 fallback.map(|target| *target)
             {
-                match notification_service::fetch_newapi_token_quota_snapshot(&base_url, &api_key)
-                    .await
-                {
+                match fetch_api_key_quota_snapshot(&base_url, &api_key).await {
                     Ok(snapshot) => Ok(snapshot),
-                    Err(newapi_error) => {
-                        Err(format!("{platform_error}；NewAPI 回退失败：{newapi_error}"))
-                    }
+                    Err(api_key_error) => Err(format!(
+                        "{platform_error}；API Key 回退失败：{api_key_error}"
+                    )),
                 }
             } else {
                 Err(platform_error)
@@ -1603,6 +1838,7 @@ fn build_api_quota_refresh_targets(
     store: &AccountsStore,
     account_key_filter: Option<&HashSet<String>>,
 ) -> Vec<(String, ApiQuotaRefreshTarget)> {
+    let platform_base_url_account_counts = platform_api_quota_account_counts_by_base_url(store);
     store
         .accounts
         .iter()
@@ -1615,26 +1851,51 @@ fn build_api_quota_refresh_targets(
             if !account.balance_display_enabled {
                 return None;
             }
-            let newapi_target = build_newapi_quota_refresh_target(account_key.clone(), account);
-            if has_api_key_quota_snapshot(account) {
-                return newapi_target;
+            let api_key_target = build_api_key_quota_refresh_target(account_key.clone(), account);
+            if is_api_only_quota_account(account) {
+                if supports_api_key_quota_refresh(account) {
+                    return api_key_target;
+                }
+                return None;
             }
 
-            let fallback = newapi_target.map(|(_, target)| Box::new(target));
-            let platform_target = find_api_quota_provider_for_account(
+            if let Some(provider) = find_api_quota_provider_for_account(
                 account,
                 &store.settings.notification_providers,
-            )
-            .map(|provider| {
-                (
+                &platform_base_url_account_counts,
+            ) {
+                let fallback = api_key_target.map(|(_, target)| Box::new(target));
+                return Some((
                     account_key,
                     ApiQuotaRefreshTarget::PlatformProvider { provider, fallback },
-                )
-            });
+                ));
+            }
 
-            platform_target
+            if supports_provider_api_key_quota_refresh(account) {
+                return api_key_target;
+            }
+
+            None
         })
         .collect()
+}
+
+fn platform_api_quota_account_counts_by_base_url(store: &AccountsStore) -> HashMap<String, usize> {
+    let mut counts = HashMap::new();
+    for account in store
+        .accounts
+        .iter()
+        .filter(|account| matches!(account.source_kind, AccountSourceKind::Relay))
+        .filter(|account| account.balance_display_enabled)
+        .filter(|account| !is_api_only_quota_account(account))
+    {
+        let base_url = normalize_api_quota_provider_base_url(account.api_base_url.as_deref());
+        if base_url.is_empty() {
+            continue;
+        }
+        *counts.entry(base_url).or_insert(0) += 1;
+    }
+    counts
 }
 
 enum ApiQuotaRefreshTarget {
@@ -1648,13 +1909,70 @@ enum ApiQuotaRefreshTarget {
     },
 }
 
-fn has_api_key_quota_snapshot(account: &StoredAccount) -> bool {
+async fn fetch_api_key_quota_snapshot(
+    base_url: &str,
+    api_key: &str,
+) -> Result<notification_service::ApiQuotaSnapshot, String> {
+    let allow_newapi_fallback = is_newapi_quota_base_url(base_url);
+    match notification_service::fetch_provider_api_key_quota_snapshot(base_url, api_key).await {
+        Ok(Some(snapshot)) => Ok(snapshot),
+        Ok(None) if allow_newapi_fallback => {
+            notification_service::fetch_newapi_token_quota_snapshot(base_url, api_key).await
+        }
+        Ok(None) => Err("当前官方供应商没有已支持的 API Key 余额接口。".to_string()),
+        Err(provider_error) if !allow_newapi_fallback => Err(provider_error),
+        Err(provider_error) => {
+            match notification_service::fetch_newapi_token_quota_snapshot(base_url, api_key).await {
+                Ok(snapshot) => Ok(snapshot),
+                Err(newapi_error) => {
+                    Err(format!("{provider_error}；NewAPI 回退失败：{newapi_error}"))
+                }
+            }
+        }
+    }
+}
+
+fn is_api_only_quota_account(account: &StoredAccount) -> bool {
     matches!(account.api_quota_mode, crate::models::ApiQuotaMode::ApiOnly)
         && account.balance_display_enabled
         && account.primary_relay_api_key().is_some()
 }
 
-fn build_newapi_quota_refresh_target(
+fn supports_api_key_quota_refresh(account: &StoredAccount) -> bool {
+    account.balance_display_enabled
+        && account.primary_relay_api_key().is_some()
+        && account.api_base_url.as_deref().is_some_and(|base_url| {
+            notification_service::supports_provider_api_key_quota(base_url)
+                || is_newapi_quota_base_url(base_url)
+        })
+}
+
+fn supports_provider_api_key_quota_refresh(account: &StoredAccount) -> bool {
+    account.balance_display_enabled
+        && account.primary_relay_api_key().is_some()
+        && account
+            .api_base_url
+            .as_deref()
+            .is_some_and(notification_service::supports_provider_api_key_quota)
+}
+
+fn is_newapi_quota_base_url(base_url: &str) -> bool {
+    let normalized = base_url.trim().to_ascii_lowercase();
+    !(normalized.contains("xiaomimimo.com")
+        || normalized.contains("api.deepseek.com")
+        || normalized.contains("api.moonshot.cn")
+        || normalized.contains("api.moonshot.ai")
+        || normalized.contains("api.moonshot.com")
+        || normalized.contains("api.kimi.com")
+        || normalized.contains("api.z.ai")
+        || normalized.contains("bigmodel.cn")
+        || normalized.contains("api.minimaxi.com")
+        || normalized.contains("minimaxi.com")
+        || normalized.contains("api.minimax.io")
+        || normalized.contains("minimax.io"))
+}
+
+fn build_api_key_quota_refresh_target(
     account_key: String,
     account: &StoredAccount,
 ) -> Option<(String, ApiQuotaRefreshTarget)> {
@@ -1675,13 +1993,15 @@ fn build_newapi_quota_refresh_target(
 fn find_api_quota_provider_for_account(
     account: &StoredAccount,
     providers: &[crate::models::NotificationProviderConfig],
+    platform_base_url_account_counts: &HashMap<String, usize>,
 ) -> Option<crate::models::NotificationProviderConfig> {
     let account_base_url = normalize_api_quota_provider_base_url(account.api_base_url.as_deref());
     if account_base_url.is_empty() {
         return None;
     }
 
-    providers
+    let account_key = account.account_key();
+    let matching_providers = providers
         .iter()
         .filter(|provider| {
             provider.email.trim().len() > 0
@@ -1691,10 +2011,39 @@ fn find_api_quota_provider_for_account(
                     .map(str::trim)
                     .is_some_and(|password| !password.is_empty())
         })
-        .find(|provider| {
+        .filter(|provider| {
             normalize_api_quota_provider_base_url(Some(&provider.base_url)) == account_base_url
         })
-        .cloned()
+        .collect::<Vec<_>>();
+
+    if let Some(provider) = matching_providers
+        .iter()
+        .find(|provider| provider.account_key.as_deref() == Some(account_key.as_str()))
+    {
+        return Some((*provider).clone());
+    }
+
+    let mut unbound_providers = matching_providers.into_iter().filter(|provider| {
+        provider
+            .account_key
+            .as_deref()
+            .map(str::trim)
+            .is_none_or(str::is_empty)
+    });
+    let provider = unbound_providers.next()?;
+    if unbound_providers.next().is_some() {
+        return None;
+    }
+    if platform_base_url_account_counts
+        .get(&account_base_url)
+        .copied()
+        .unwrap_or(0)
+        > 1
+    {
+        return None;
+    }
+
+    Some(provider.clone())
 }
 
 fn normalize_api_quota_provider_base_url(value: Option<&str>) -> String {
@@ -1715,56 +2064,30 @@ fn apply_api_quota_snapshot(
 ) {
     account.balance_display_enabled = true;
     account.api_quota_mode = snapshot.mode;
-    account.api_quota_today_used_text = snapshot
-        .today_used_text
+    account.api_quota_today_used_text = snapshot.today_used_text.clone();
+    account.api_quota_remaining_text = snapshot.remaining_text.clone();
+    account.api_quota_total_remaining_text = snapshot.total_remaining_text.clone();
+    account.api_quota_total_tokens_text = snapshot.total_tokens_text.clone();
+    account.api_quota_today_tokens_text = snapshot.today_tokens_text.clone();
+    account.api_quota_daily_window = snapshot.daily_window.clone();
+    account.api_quota_total_window = snapshot.total_window.clone();
+    account.api_quota_subscription_expires_at = snapshot.subscription_expires_at;
+    account.api_quota_subscription_name = account
+        .api_quota_subscription_name
         .clone()
-        .or_else(|| account.api_quota_today_used_text.clone());
-    account.api_quota_remaining_text = snapshot
-        .remaining_text
-        .clone()
-        .or_else(|| account.api_quota_remaining_text.clone());
-    account.api_quota_total_remaining_text = snapshot
-        .total_remaining_text
-        .clone()
-        .or_else(|| account.api_quota_total_remaining_text.clone());
-    account.api_quota_total_tokens_text = snapshot
-        .total_tokens_text
-        .clone()
-        .or_else(|| account.api_quota_total_tokens_text.clone());
-    account.api_quota_today_tokens_text = snapshot
-        .today_tokens_text
-        .clone()
-        .or_else(|| account.api_quota_today_tokens_text.clone());
-    account.api_quota_daily_window = snapshot
-        .daily_window
-        .clone()
-        .or_else(|| account.api_quota_daily_window.clone());
-    account.api_quota_total_window = snapshot
-        .total_window
-        .clone()
-        .or_else(|| account.api_quota_total_window.clone());
-    account.api_quota_subscription_expires_at = snapshot
-        .subscription_expires_at
-        .or(account.api_quota_subscription_expires_at);
+        .filter(|value| is_manual_api_quota_subscription_label(value))
+        .or_else(|| snapshot.subscription_name.clone());
     account.balance_text = snapshot
         .remaining_text
         .clone()
-        .or_else(|| snapshot.total_remaining_text.clone())
-        .or_else(|| account.balance_text.clone());
+        .or_else(|| snapshot.total_remaining_text.clone());
     account.updated_at = now;
 }
 
 fn clear_api_quota_fields(account: &mut StoredAccount) {
     account.balance_text = None;
     account.api_quota_mode = Default::default();
-    account.api_quota_today_used_text = None;
-    account.api_quota_remaining_text = None;
-    account.api_quota_total_remaining_text = None;
-    account.api_quota_total_tokens_text = None;
-    account.api_quota_today_tokens_text = None;
-    account.api_quota_daily_window = None;
-    account.api_quota_total_window = None;
-    account.api_quota_subscription_expires_at = None;
+    clear_api_quota_snapshot_fields(account);
     if account
         .profile_last_validation_error
         .as_deref()
@@ -1774,10 +2097,44 @@ fn clear_api_quota_fields(account: &mut StoredAccount) {
     }
 }
 
+fn is_manual_api_quota_subscription_label(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "adagio"
+            | "allegretto"
+            | "allegro"
+            | "lite"
+            | "max"
+            | "moderato"
+            | "plus"
+            | "pro"
+            | "standard"
+            | "ultra"
+            | "vivace"
+    )
+}
+
+fn clear_api_quota_snapshot_fields(account: &mut StoredAccount) {
+    account.balance_text = None;
+    account.api_quota_today_used_text = None;
+    account.api_quota_remaining_text = None;
+    account.api_quota_total_remaining_text = None;
+    account.api_quota_total_tokens_text = None;
+    account.api_quota_today_tokens_text = None;
+    account.api_quota_daily_window = None;
+    account.api_quota_total_window = None;
+    account.api_quota_subscription_expires_at = None;
+    account.api_quota_subscription_name = None;
+}
+
 fn is_api_quota_error_message(message: &str) -> bool {
     message.contains("NewAPI 额度接口")
         || message.contains("连接 NewAPI 额度接口失败")
         || message.contains("API 平台连接失败")
+        || message.contains("API 平台接口失败")
+        || message.contains("API 平台接口返回格式异常")
+        || message.contains("API 平台用户接口失败")
+        || message.contains("API 平台用量统计接口失败")
         || message.contains("API 平台 URL 无效")
 }
 
@@ -1810,18 +2167,20 @@ async fn refresh_usage_internal(
         )
     };
 
-    let mut outcomes: HashMap<String, RefreshOutcome> =
-        HashMap::with_capacity(refresh_targets.len());
-    for target in refresh_targets {
-        let account_key = target.account_key.clone();
-        let outcome = refresh_usage_for_target(app, state, &target, force_auth_refresh).await;
-        outcomes.insert(account_key, outcome);
-    }
+    let outcomes: HashMap<String, RefreshOutcome> =
+        stream::iter(refresh_targets.into_iter().map(|target| async move {
+            let account_key = target.account_key.clone();
+            let outcome = refresh_usage_for_target(app, state, &target, force_auth_refresh).await;
+            (account_key, outcome)
+        }))
+        .buffer_unordered(USAGE_REFRESH_CONCURRENCY)
+        .collect()
+        .await;
 
     let store = {
         let _guard = state.store_lock.lock().await;
         let mut latest_store = load_store(app)?;
-        let store_path = account_store_path_from_data_dir(&app_paths::app_data_dir(app)?);
+        let store_path = account_store_path_for_app(app)?;
 
         for account in &mut latest_store.accounts {
             let Some(outcome) = outcomes.get(&account.account_key()) else {
@@ -1892,6 +2251,9 @@ fn build_refresh_targets(
 
     for account in accounts {
         if matches!(account.source_kind, AccountSourceKind::Relay) {
+            continue;
+        }
+        if account.auth_refresh_blocked {
             continue;
         }
 
@@ -2316,8 +2678,7 @@ async fn persist_account_refresh_state(
     auth_refresh_error: Option<&str>,
 ) -> Result<(), String> {
     let _guard = state.store_lock.lock().await;
-    let data_dir = app_paths::app_data_dir(app)?;
-    let store_path = account_store_path_from_data_dir(&data_dir);
+    let store_path = account_store_path_for_app(app)?;
     update_account_group_refresh_state_in_path(
         &store_path,
         account_key,
@@ -2720,7 +3081,7 @@ async fn commit_prepared_import(
             current_account_key.as_deref(),
             current_variant_key.as_deref(),
         );
-        let store_path = account_store_path_from_data_dir(&app_paths::app_data_dir(app)?);
+        let store_path = account_store_path_for_app(app)?;
         if let Some(account) = store
             .accounts
             .iter_mut()
@@ -3053,6 +3414,8 @@ fn upsert_prepared_import(
             proxy_key_selection_mode: None,
             proxy_endpoints: Vec::new(),
             model_name: None,
+            model_catalog: Vec::new(),
+            model_routing_enabled: false,
             balance_text: None,
             balance_display_enabled: false,
             api_quota_mode: Default::default(),
@@ -3064,6 +3427,7 @@ fn upsert_prepared_import(
             api_quota_daily_window: None,
             api_quota_total_window: None,
             api_quota_subscription_expires_at: None,
+            api_quota_subscription_name: None,
             provider_id: None,
             provider_name: None,
             tags: Vec::new(),
@@ -3104,6 +3468,8 @@ fn upsert_prepared_import(
             proxy_key_selection_mode: None,
             proxy_endpoints: Vec::new(),
             model_name: None,
+            model_catalog: Vec::new(),
+            model_routing_enabled: false,
             balance_text: None,
             balance_display_enabled: false,
             api_quota_mode: Default::default(),
@@ -3115,6 +3481,7 @@ fn upsert_prepared_import(
             api_quota_daily_window: None,
             api_quota_total_window: None,
             api_quota_subscription_expires_at: None,
+            api_quota_subscription_name: None,
             provider_id: None,
             provider_name: None,
             tags: Vec::new(),
@@ -3201,6 +3568,8 @@ fn upsert_prepared_relay_import(
         proxy_key_selection_mode: None,
         proxy_endpoints: vec![ProxyEndpointCapability::ChatCompletions],
         model_name: Some(model_name),
+        model_catalog: Vec::new(),
+        model_routing_enabled: false,
         balance_text: None,
         balance_display_enabled: false,
         api_quota_mode: Default::default(),
@@ -3212,6 +3581,7 @@ fn upsert_prepared_relay_import(
         api_quota_daily_window: None,
         api_quota_total_window: None,
         api_quota_subscription_expires_at: None,
+        api_quota_subscription_name: None,
         provider_id,
         provider_name,
         tags: Vec::new(),
@@ -3757,6 +4127,9 @@ async fn resolve_create_api_quota_fields(
         daily_window: input.api_quota_daily_window.clone(),
         total_window: input.api_quota_total_window.clone(),
         subscription_expires_at: input.api_quota_subscription_expires_at,
+        subscription_name: normalize_optional_quota_display_text(
+            input.api_quota_subscription_name.clone(),
+        ),
     };
 
     resolve_platform_api_quota_fields(
@@ -3797,6 +4170,9 @@ async fn resolve_update_api_quota_fields(
         daily_window: input.api_quota_daily_window.clone(),
         total_window: input.api_quota_total_window.clone(),
         subscription_expires_at: input.api_quota_subscription_expires_at,
+        subscription_name: normalize_optional_quota_display_text(
+            input.api_quota_subscription_name.clone(),
+        ),
     };
 
     resolve_platform_api_quota_fields(
@@ -3832,9 +4208,7 @@ async fn resolve_platform_api_quota_fields(
         .filter(|value| !value.is_empty())
         .filter(|_| email.is_none() || password.is_none())
     {
-        if let Ok(snapshot) =
-            notification_service::fetch_newapi_token_quota_snapshot(base_url, api_key).await
-        {
+        if let Ok(snapshot) = fetch_api_key_quota_snapshot(base_url, api_key).await {
             return ResolvedApiQuotaFields {
                 mode: snapshot.mode,
                 today_used_text: snapshot.today_used_text.or(fallback.today_used_text),
@@ -3849,6 +4223,7 @@ async fn resolve_platform_api_quota_fields(
                 subscription_expires_at: snapshot
                     .subscription_expires_at
                     .or(fallback.subscription_expires_at),
+                subscription_name: fallback.subscription_name.or(snapshot.subscription_name),
             };
         }
     }
@@ -3863,6 +4238,7 @@ async fn resolve_platform_api_quota_fields(
     let provider = crate::models::NotificationProviderConfig {
         id: "api-quota-probe".to_string(),
         name: label.to_string(),
+        account_key: None,
         kind: Default::default(),
         enabled: true,
         cost_multiplier: crate::models::default_notification_cost_multiplier(),
@@ -3890,6 +4266,7 @@ async fn resolve_platform_api_quota_fields(
             subscription_expires_at: snapshot
                 .subscription_expires_at
                 .or(fallback.subscription_expires_at),
+            subscription_name: fallback.subscription_name.or(snapshot.subscription_name),
         },
         Err(_) => fallback,
     }
@@ -3939,7 +4316,12 @@ mod tests {
     use super::build_api_quota_refresh_targets;
     use super::build_refresh_targets;
     use super::build_sub2api_data_payload;
+    use super::clear_api_quota_snapshot_fields;
     use super::expand_import_json_content;
+    use super::is_api_quota_error_message;
+    use super::is_manual_api_quota_subscription_label;
+    use super::is_newapi_quota_base_url;
+    use super::probe_api_models_internal;
     use super::probe_failure_message;
     use super::relay_profile_change_requires_proxy_reset;
     use super::sync_primary_api_key_from_relay_key_pool;
@@ -3960,6 +4342,7 @@ mod tests {
     use crate::models::StoredAccount;
     use crate::models::UsageSnapshot;
     use crate::models::UsageWindow;
+    use crate::notification_service;
     use crate::utils::now_unix_seconds;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use base64::Engine;
@@ -3977,16 +4360,113 @@ mod tests {
             plan_type: Some(plan_type.to_string()),
             five_hour: Some(UsageWindow {
                 used_percent: 10.0,
+                total_percent: None,
                 window_seconds: 18_000,
                 reset_at: Some(20),
             }),
             one_week: Some(UsageWindow {
                 used_percent: 20.0,
+                total_percent: None,
                 window_seconds: 604_800,
                 reset_at: Some(30),
             }),
             credits: None,
         }
+    }
+
+    #[tokio::test]
+    async fn probe_api_models_accepts_provider_token_prefixes() {
+        use axum::extract::Request;
+        use axum::http::StatusCode as AxumStatusCode;
+        use axum::routing::get;
+        use axum::Router;
+        use tokio::net::TcpListener;
+
+        async fn models(request: Request) -> (AxumStatusCode, axum::Json<serde_json::Value>) {
+            let authorization = request
+                .headers()
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok());
+            if authorization != Some("Bearer tp-provider-token") {
+                return (
+                    AxumStatusCode::UNAUTHORIZED,
+                    axum::Json(json!({ "error": { "message": "unauthorized" } })),
+                );
+            }
+
+            (
+                AxumStatusCode::OK,
+                axum::Json(json!({
+                    "data": [
+                        { "id": "provider-model", "object": "model" }
+                    ]
+                })),
+            )
+        }
+
+        let app = Router::new().route("/v1/models", get(models));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind model probe server");
+        let addr = listener.local_addr().expect("model probe server addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let entries = probe_api_models_internal(&format!("http://{addr}/v1"), "tp-provider-token")
+            .await
+            .expect("probe provider token models");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].model, "provider-model");
+    }
+
+    #[tokio::test]
+    async fn probe_api_models_falls_back_from_v1_to_root_models() {
+        use axum::extract::Request;
+        use axum::http::StatusCode as AxumStatusCode;
+        use axum::routing::get;
+        use axum::Router;
+        use tokio::net::TcpListener;
+
+        async fn models(request: Request) -> (AxumStatusCode, axum::Json<serde_json::Value>) {
+            let authorization = request
+                .headers()
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok());
+            if authorization != Some("Bearer root-model-token") {
+                return (
+                    AxumStatusCode::UNAUTHORIZED,
+                    axum::Json(json!({ "error": { "message": "unauthorized" } })),
+                );
+            }
+
+            (
+                AxumStatusCode::OK,
+                axum::Json(json!({
+                    "models": [
+                        { "id": "root-model", "display_name": "Root Model" }
+                    ]
+                })),
+            )
+        }
+
+        let app = Router::new().route("/models", get(models));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind root model probe server");
+        let addr = listener.local_addr().expect("root model probe server addr");
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+
+        let entries = probe_api_models_internal(&format!("http://{addr}/v1"), "root-model-token")
+            .await
+            .expect("probe root model endpoint");
+
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].model, "root-model");
+        assert_eq!(entries[0].display_name.as_deref(), Some("Root Model"));
     }
 
     fn chatgpt_account_for_export() -> StoredAccount {
@@ -4015,6 +4495,8 @@ mod tests {
             proxy_key_selection_mode: None,
             proxy_endpoints: Vec::new(),
             model_name: None,
+            model_catalog: Vec::new(),
+            model_routing_enabled: false,
             balance_text: None,
             balance_display_enabled: false,
             api_quota_mode: Default::default(),
@@ -4026,6 +4508,7 @@ mod tests {
             api_quota_daily_window: None,
             api_quota_total_window: None,
             api_quota_subscription_expires_at: None,
+            api_quota_subscription_name: None,
             provider_id: None,
             provider_name: None,
             tags: Vec::new(),
@@ -4089,6 +4572,8 @@ mod tests {
             proxy_key_selection_mode: None,
             proxy_endpoints: Vec::new(),
             model_name: Some("gpt-5.4".to_string()),
+            model_catalog: Vec::new(),
+            model_routing_enabled: false,
             balance_text: None,
             balance_display_enabled: false,
             api_quota_mode: Default::default(),
@@ -4100,6 +4585,7 @@ mod tests {
             api_quota_daily_window: None,
             api_quota_total_window: None,
             api_quota_subscription_expires_at: None,
+            api_quota_subscription_name: None,
             provider_id: None,
             provider_name: None,
             tags: Vec::new(),
@@ -4183,6 +4669,7 @@ mod tests {
         NotificationProviderConfig {
             id: "provider-1".to_string(),
             name: "Provider".to_string(),
+            account_key: None,
             kind: Default::default(),
             enabled: true,
             cost_multiplier: crate::models::default_notification_cost_multiplier(),
@@ -4245,6 +4732,88 @@ mod tests {
     }
 
     #[test]
+    fn api_quota_refresh_uses_provider_api_key_for_supported_subscription_account() {
+        let mut account = relay_account_for_tests();
+        account.api_base_url = Some("https://api.minimaxi.com/v1".to_string());
+        account.api_quota_mode = ApiQuotaMode::PlatformSubscription;
+        account.balance_display_enabled = true;
+        account.balance_text = None;
+
+        let mut store = AccountsStore::default();
+        store.accounts.push(account);
+
+        let targets = build_api_quota_refresh_targets(&store, None);
+
+        assert_eq!(targets.len(), 1);
+        assert!(matches!(
+            targets[0].1,
+            super::ApiQuotaRefreshTarget::NewapiToken { .. }
+        ));
+    }
+
+    #[test]
+    fn api_quota_refresh_skips_mimo_token_plan_newapi_fallback() {
+        let mut account = relay_account_for_tests();
+        account.api_base_url = Some("https://token-plan-cn.xiaomimimo.com/v1".to_string());
+        account.api_quota_mode = ApiQuotaMode::ApiOnly;
+        account.balance_display_enabled = true;
+        account.balance_text = None;
+
+        let mut store = AccountsStore::default();
+        store.accounts.push(account);
+
+        let targets = build_api_quota_refresh_targets(&store, None);
+
+        assert!(
+            targets.is_empty(),
+            "MiMo Token Plan does not expose a known API-key quota endpoint and must not be probed as NewAPI"
+        );
+    }
+
+    #[test]
+    fn official_provider_quota_urls_are_not_treated_as_newapi() {
+        for base_url in [
+            "https://api.deepseek.com/v1",
+            "https://api.minimaxi.com/v1",
+            "https://api.minimax.io/v1",
+            "https://api.moonshot.cn/v1",
+            "https://api.z.ai/api/coding/paas/v4",
+            "https://token-plan-cn.xiaomimimo.com/v1",
+        ] {
+            assert!(
+                !is_newapi_quota_base_url(base_url),
+                "{base_url} must use provider-specific quota logic only"
+            );
+        }
+
+        assert!(is_newapi_quota_base_url("https://newapi.example.com/v1"));
+    }
+
+    #[test]
+    fn api_quota_refresh_prefers_bound_platform_login_for_supported_provider_account() {
+        let mut account = relay_account_for_tests();
+        account.api_base_url = Some("https://api.minimaxi.com/v1".to_string());
+        account.api_quota_mode = ApiQuotaMode::PlatformSubscription;
+        account.balance_display_enabled = true;
+        let account_key = account.account_key();
+
+        let mut provider = notification_provider_for_tests("https://api.minimaxi.com");
+        provider.account_key = Some(account_key);
+
+        let mut store = AccountsStore::default();
+        store.accounts.push(account);
+        store.settings.notification_providers.push(provider);
+
+        let targets = build_api_quota_refresh_targets(&store, None);
+
+        assert_eq!(targets.len(), 1);
+        assert!(matches!(
+            targets[0].1,
+            super::ApiQuotaRefreshTarget::PlatformProvider { .. }
+        ));
+    }
+
+    #[test]
     fn api_quota_refresh_keeps_manual_platform_account_without_api_key_fallback() {
         let mut account = relay_account_for_tests();
         account.api_quota_mode = ApiQuotaMode::PlatformBasic;
@@ -4267,6 +4836,131 @@ mod tests {
                 assert!(fallback.is_none());
             }
             _ => panic!("expected platform provider refresh target"),
+        }
+    }
+
+    #[test]
+    fn api_quota_refresh_skips_ambiguous_unbound_platform_providers() {
+        let mut first_account = relay_account_for_tests();
+        first_account.id = "relay-first".to_string();
+        first_account.account_id = "relay-first".to_string();
+        first_account.api_quota_mode = ApiQuotaMode::PlatformBasic;
+        first_account.balance_display_enabled = true;
+
+        let mut second_account = relay_account_for_tests();
+        second_account.id = "relay-second".to_string();
+        second_account.account_id = "relay-second".to_string();
+        second_account.api_quota_mode = ApiQuotaMode::PlatformBasic;
+        second_account.balance_display_enabled = true;
+
+        let mut first_provider = notification_provider_for_tests("https://api.example.com");
+        first_provider.id = "provider-first".to_string();
+        first_provider.email = "user-a@example.com".to_string();
+
+        let mut second_provider = notification_provider_for_tests("https://api.example.com");
+        second_provider.id = "provider-second".to_string();
+        second_provider.email = "user-b@example.com".to_string();
+
+        let mut store = AccountsStore::default();
+        store.accounts.push(first_account);
+        store.accounts.push(second_account);
+        store.settings.notification_providers.push(first_provider);
+        store.settings.notification_providers.push(second_provider);
+
+        let targets = build_api_quota_refresh_targets(&store, None);
+
+        assert!(
+            targets.is_empty(),
+            "ambiguous unbound providers must not be shared across same-base-url accounts"
+        );
+    }
+
+    #[test]
+    fn api_quota_refresh_skips_single_unbound_provider_for_multiple_same_base_accounts() {
+        let mut first_account = relay_account_for_tests();
+        first_account.id = "relay-first".to_string();
+        first_account.account_id = "relay-first".to_string();
+        first_account.api_quota_mode = ApiQuotaMode::PlatformBasic;
+        first_account.balance_display_enabled = true;
+
+        let mut second_account = relay_account_for_tests();
+        second_account.id = "relay-second".to_string();
+        second_account.account_id = "relay-second".to_string();
+        second_account.api_quota_mode = ApiQuotaMode::PlatformBasic;
+        second_account.balance_display_enabled = true;
+
+        let mut store = AccountsStore::default();
+        store.accounts.push(first_account);
+        store.accounts.push(second_account);
+        store
+            .settings
+            .notification_providers
+            .push(notification_provider_for_tests("https://api.example.com"));
+
+        let targets = build_api_quota_refresh_targets(&store, None);
+
+        assert!(
+            targets.is_empty(),
+            "single legacy provider must not be shared across same-base-url accounts"
+        );
+    }
+
+    #[test]
+    fn api_quota_refresh_uses_provider_bound_to_account_key() {
+        let mut first_account = relay_account_for_tests();
+        first_account.id = "relay-first".to_string();
+        first_account.account_id = "relay-first".to_string();
+        first_account.api_quota_mode = ApiQuotaMode::PlatformBasic;
+        first_account.balance_display_enabled = true;
+        let first_account_key = first_account.account_key();
+
+        let mut second_account = relay_account_for_tests();
+        second_account.id = "relay-second".to_string();
+        second_account.account_id = "relay-second".to_string();
+        second_account.api_quota_mode = ApiQuotaMode::PlatformBasic;
+        second_account.balance_display_enabled = true;
+        let second_account_key = second_account.account_key();
+
+        let mut first_provider = notification_provider_for_tests("https://api.example.com");
+        first_provider.id = "provider-first".to_string();
+        first_provider.email = "user-a@example.com".to_string();
+        first_provider.account_key = Some(first_account_key.clone());
+
+        let mut second_provider = notification_provider_for_tests("https://api.example.com");
+        second_provider.id = "provider-second".to_string();
+        second_provider.email = "user-b@example.com".to_string();
+        second_provider.account_key = Some(second_account_key.clone());
+
+        let mut store = AccountsStore::default();
+        store.accounts.push(first_account);
+        store.accounts.push(second_account);
+        store.settings.notification_providers.push(first_provider);
+        store.settings.notification_providers.push(second_provider);
+
+        let targets = build_api_quota_refresh_targets(&store, None);
+
+        assert_eq!(targets.len(), 2);
+        for (account_key, target) in targets {
+            let super::ApiQuotaRefreshTarget::PlatformProvider { provider, .. } = target else {
+                panic!("expected platform provider refresh target");
+            };
+            match account_key.as_str() {
+                value if value == first_account_key => {
+                    assert_eq!(provider.email, "user-a@example.com");
+                    assert_eq!(
+                        provider.account_key.as_deref(),
+                        Some(first_account_key.as_str())
+                    );
+                }
+                value if value == second_account_key => {
+                    assert_eq!(provider.email, "user-b@example.com");
+                    assert_eq!(
+                        provider.account_key.as_deref(),
+                        Some(second_account_key.as_str())
+                    );
+                }
+                other => panic!("unexpected account key {other}"),
+            }
         }
     }
 
@@ -4303,6 +4997,170 @@ mod tests {
         assert!(targets.is_empty());
     }
 
+    #[test]
+    fn api_quota_snapshot_apply_replaces_stale_balance_with_zero() {
+        let mut account = relay_account_for_tests();
+        account.balance_display_enabled = true;
+        account.api_quota_mode = ApiQuotaMode::PlatformBasic;
+        account.balance_text = Some("$144.77".to_string());
+        account.api_quota_remaining_text = Some("$144.77".to_string());
+        account.api_quota_today_used_text = Some("$1.23".to_string());
+        account.api_quota_total_tokens_text = Some("999".to_string());
+
+        let snapshot = notification_service::ApiQuotaSnapshot {
+            mode: ApiQuotaMode::PlatformBasic,
+            today_used_text: Some("$0.00".to_string()),
+            remaining_text: Some("$0.00".to_string()),
+            total_remaining_text: Some("$0.00".to_string()),
+            total_tokens_text: Some("0".to_string()),
+            today_tokens_text: Some("0".to_string()),
+            daily_window: None,
+            total_window: None,
+            subscription_expires_at: None,
+            subscription_name: None,
+        };
+
+        super::apply_api_quota_snapshot(&mut account, &snapshot, 42);
+
+        assert_eq!(account.balance_text.as_deref(), Some("$0.00"));
+        assert_eq!(account.api_quota_remaining_text.as_deref(), Some("$0.00"));
+        assert_eq!(account.api_quota_today_used_text.as_deref(), Some("$0.00"));
+        assert_eq!(account.api_quota_total_tokens_text.as_deref(), Some("0"));
+        assert_eq!(account.api_quota_mode, ApiQuotaMode::PlatformBasic);
+        assert_eq!(account.updated_at, 42);
+    }
+
+    #[test]
+    fn api_quota_snapshot_apply_clears_stale_balance_when_snapshot_has_no_balance() {
+        let mut account = relay_account_for_tests();
+        account.balance_display_enabled = true;
+        account.api_quota_mode = ApiQuotaMode::PlatformBasic;
+        account.balance_text = Some("$144.77".to_string());
+        account.api_quota_remaining_text = Some("$144.77".to_string());
+
+        let snapshot = notification_service::ApiQuotaSnapshot {
+            mode: ApiQuotaMode::PlatformBasic,
+            today_used_text: None,
+            remaining_text: None,
+            total_remaining_text: None,
+            total_tokens_text: None,
+            today_tokens_text: None,
+            daily_window: None,
+            total_window: None,
+            subscription_expires_at: None,
+            subscription_name: None,
+        };
+
+        super::apply_api_quota_snapshot(&mut account, &snapshot, 43);
+
+        assert_eq!(account.balance_text, None);
+        assert_eq!(account.api_quota_remaining_text, None);
+        assert_eq!(account.updated_at, 43);
+    }
+
+    #[test]
+    fn api_quota_snapshot_apply_keeps_manual_subscription_label() {
+        let mut account = relay_account_for_tests();
+        account.balance_display_enabled = true;
+        account.api_quota_mode = ApiQuotaMode::PlatformSubscription;
+        account.api_quota_subscription_name = Some("Plus".to_string());
+
+        let snapshot = notification_service::ApiQuotaSnapshot {
+            mode: ApiQuotaMode::PlatformSubscription,
+            today_used_text: None,
+            remaining_text: None,
+            total_remaining_text: None,
+            total_tokens_text: None,
+            today_tokens_text: None,
+            daily_window: None,
+            total_window: None,
+            subscription_expires_at: None,
+            subscription_name: None,
+        };
+
+        super::apply_api_quota_snapshot(&mut account, &snapshot, 44);
+
+        assert_eq!(account.api_quota_subscription_name.as_deref(), Some("Plus"));
+        assert_eq!(account.updated_at, 44);
+    }
+
+    #[test]
+    fn api_quota_snapshot_apply_replaces_unknown_subscription_label() {
+        let mut account = relay_account_for_tests();
+        account.balance_display_enabled = true;
+        account.api_quota_mode = ApiQuotaMode::PlatformSubscription;
+        account.api_quota_subscription_name = Some("Enterprise".to_string());
+
+        let snapshot = notification_service::ApiQuotaSnapshot {
+            mode: ApiQuotaMode::PlatformSubscription,
+            today_used_text: None,
+            remaining_text: None,
+            total_remaining_text: None,
+            total_tokens_text: None,
+            today_tokens_text: None,
+            daily_window: None,
+            total_window: None,
+            subscription_expires_at: None,
+            subscription_name: Some("Max".to_string()),
+        };
+
+        super::apply_api_quota_snapshot(&mut account, &snapshot, 45);
+
+        assert_eq!(account.api_quota_subscription_name.as_deref(), Some("Max"));
+        assert_eq!(account.updated_at, 45);
+    }
+
+    #[test]
+    fn api_quota_refresh_failure_clears_snapshot_but_keeps_mode() {
+        let mut account = relay_account_for_tests();
+        account.balance_display_enabled = true;
+        account.api_quota_mode = ApiQuotaMode::PlatformSubscription;
+        account.balance_text = Some("$144.77".to_string());
+        account.api_quota_remaining_text = Some("$144.77".to_string());
+        account.api_quota_today_used_text = Some("$1.23".to_string());
+
+        clear_api_quota_snapshot_fields(&mut account);
+
+        assert_eq!(account.balance_text, None);
+        assert_eq!(account.api_quota_remaining_text, None);
+        assert_eq!(account.api_quota_today_used_text, None);
+        assert_eq!(account.api_quota_mode, ApiQuotaMode::PlatformSubscription);
+    }
+
+    #[test]
+    fn api_quota_error_filter_recognizes_platform_endpoint_errors() {
+        assert!(is_api_quota_error_message(
+            "API 平台用量统计接口失败: API 平台接口失败 500: boom"
+        ));
+        assert!(is_api_quota_error_message(
+            "API 平台用户接口失败: API 平台接口返回格式异常"
+        ));
+    }
+
+    #[test]
+    fn api_quota_manual_subscription_labels_cover_known_provider_plans() {
+        for label in [
+            "Plus",
+            "Max",
+            "Ultra",
+            "Lite",
+            "Standard",
+            "Pro",
+            "Adagio",
+            "Moderato",
+            "Allegretto",
+            "Allegro",
+            "Vivace",
+        ] {
+            assert!(
+                is_manual_api_quota_subscription_label(label),
+                "{label} should be kept as a manual quota subscription label"
+            );
+        }
+
+        assert!(!is_manual_api_quota_subscription_label("Enterprise"));
+    }
+
     fn chatgpt_account_for_tests() -> StoredAccount {
         StoredAccount {
             id: "chatgpt-settings".to_string(),
@@ -4321,6 +5179,8 @@ mod tests {
             proxy_key_selection_mode: None,
             proxy_endpoints: Vec::new(),
             model_name: None,
+            model_catalog: Vec::new(),
+            model_routing_enabled: false,
             balance_text: None,
             balance_display_enabled: false,
             api_quota_mode: Default::default(),
@@ -4332,6 +5192,7 @@ mod tests {
             api_quota_daily_window: None,
             api_quota_total_window: None,
             api_quota_subscription_expires_at: None,
+            api_quota_subscription_name: None,
             provider_id: None,
             provider_name: None,
             tags: Vec::new(),
@@ -4666,6 +5527,8 @@ mod tests {
             proxy_key_selection_mode: None,
             proxy_endpoints: Vec::new(),
             model_name: None,
+            model_catalog: Vec::new(),
+            model_routing_enabled: false,
             balance_text: None,
             balance_display_enabled: false,
             api_quota_mode: Default::default(),
@@ -4677,6 +5540,7 @@ mod tests {
             api_quota_daily_window: None,
             api_quota_total_window: None,
             api_quota_subscription_expires_at: None,
+            api_quota_subscription_name: None,
             provider_id: None,
             provider_name: None,
             tags: Vec::new(),
@@ -4840,6 +5704,8 @@ mod tests {
             proxy_key_selection_mode: None,
             proxy_endpoints: Vec::new(),
             model_name: None,
+            model_catalog: Vec::new(),
+            model_routing_enabled: false,
             balance_text: None,
             balance_display_enabled: false,
             api_quota_mode: Default::default(),
@@ -4851,6 +5717,7 @@ mod tests {
             api_quota_daily_window: None,
             api_quota_total_window: None,
             api_quota_subscription_expires_at: None,
+            api_quota_subscription_name: None,
             provider_id: None,
             provider_name: None,
             tags: Vec::new(),
@@ -4929,6 +5796,8 @@ mod tests {
             proxy_key_selection_mode: None,
             proxy_endpoints: Vec::new(),
             model_name: None,
+            model_catalog: Vec::new(),
+            model_routing_enabled: false,
             balance_text: None,
             balance_display_enabled: false,
             api_quota_mode: Default::default(),
@@ -4940,6 +5809,7 @@ mod tests {
             api_quota_daily_window: None,
             api_quota_total_window: None,
             api_quota_subscription_expires_at: None,
+            api_quota_subscription_name: None,
             provider_id: None,
             provider_name: None,
             tags: Vec::new(),

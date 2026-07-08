@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 
 use serde::Deserialize;
+use serde::Deserializer;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -33,16 +34,22 @@ fn default_show_provider_badge() -> bool {
     false
 }
 
-fn default_codex_context_window_k() -> Option<u16> {
-    None
-}
-
 fn default_quota_alert_five_hour_threshold() -> u8 {
     15
 }
 
 fn default_quota_alert_one_week_threshold() -> u8 {
     20
+}
+
+fn deserialize_explicit_nullable_patch<'de, D, T>(
+    deserializer: D,
+) -> Result<Option<Option<T>>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Some(Option::<T>::deserialize(deserializer)?))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -337,6 +344,10 @@ pub(crate) struct StoredAccount {
     #[serde(default)]
     pub(crate) model_name: Option<String>,
     #[serde(default)]
+    pub(crate) model_catalog: Vec<RelayModelCatalogEntry>,
+    #[serde(default)]
+    pub(crate) model_routing_enabled: bool,
+    #[serde(default)]
     pub(crate) balance_text: Option<String>,
     #[serde(default)]
     pub(crate) balance_display_enabled: bool,
@@ -358,6 +369,8 @@ pub(crate) struct StoredAccount {
     pub(crate) api_quota_total_window: Option<UsageWindow>,
     #[serde(default)]
     pub(crate) api_quota_subscription_expires_at: Option<i64>,
+    #[serde(default)]
+    pub(crate) api_quota_subscription_name: Option<String>,
     #[serde(default)]
     pub(crate) provider_id: Option<String>,
     #[serde(default)]
@@ -402,6 +415,8 @@ pub(crate) struct AccountSummary {
     pub(crate) plan_type: Option<String>,
     pub(crate) api_base_url: Option<String>,
     pub(crate) model_name: Option<String>,
+    pub(crate) model_catalog: Vec<RelayModelCatalogEntry>,
+    pub(crate) model_routing_enabled: bool,
     pub(crate) balance_text: Option<String>,
     pub(crate) balance_display_enabled: bool,
     pub(crate) api_quota_mode: ApiQuotaMode,
@@ -413,6 +428,7 @@ pub(crate) struct AccountSummary {
     pub(crate) api_quota_daily_window: Option<UsageWindow>,
     pub(crate) api_quota_total_window: Option<UsageWindow>,
     pub(crate) api_quota_subscription_expires_at: Option<i64>,
+    pub(crate) api_quota_subscription_name: Option<String>,
     pub(crate) provider_id: Option<String>,
     pub(crate) provider_name: Option<String>,
     pub(crate) tags: Vec<String>,
@@ -431,6 +447,106 @@ pub(crate) struct AccountSummary {
     pub(crate) is_current: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RelayModelCatalogEntry {
+    pub(crate) model: String,
+    #[serde(default)]
+    pub(crate) display_name: Option<String>,
+    #[serde(default)]
+    pub(crate) request_model: Option<String>,
+    #[serde(default)]
+    pub(crate) context_window: Option<u32>,
+    #[serde(default = "default_true")]
+    pub(crate) enabled: bool,
+}
+
+impl RelayModelCatalogEntry {
+    pub(crate) fn request_model_or_model(&self) -> &str {
+        self.request_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(self.model.as_str())
+    }
+
+    pub(crate) fn display_name_or_model(&self) -> &str {
+        self.display_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or(self.model.as_str())
+    }
+}
+
+pub(crate) fn normalize_relay_model_catalog(
+    default_model_name: Option<&str>,
+    entries: &[RelayModelCatalogEntry],
+) -> Vec<RelayModelCatalogEntry> {
+    let default_model_name = default_model_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToString::to_string);
+    let mut seen = HashSet::new();
+    let mut output = Vec::new();
+
+    for entry in entries {
+        let request_model = entry
+            .request_model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToString::to_string);
+        let model = if entry.model.trim().is_empty() {
+            request_model.clone().unwrap_or_default()
+        } else {
+            entry.model.trim().to_string()
+        };
+        if model.is_empty() || !seen.insert(model.to_string()) {
+            continue;
+        }
+
+        output.push(RelayModelCatalogEntry {
+            model: model.clone(),
+            display_name: entry
+                .display_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(ToString::to_string),
+            request_model: request_model.filter(|value| value != &model),
+            context_window: entry.context_window.filter(|value| *value > 0),
+            enabled: entry.enabled,
+        });
+    }
+
+    if let Some(default_model_name) = default_model_name {
+        if let Some(existing) = output
+            .iter_mut()
+            .find(|entry| entry.model == default_model_name)
+        {
+            existing.enabled = true;
+        } else if seen.insert(default_model_name.clone()) {
+            output.insert(
+                0,
+                RelayModelCatalogEntry {
+                    model: default_model_name,
+                    display_name: None,
+                    request_model: None,
+                    context_window: None,
+                    enabled: true,
+                },
+            );
+        }
+    }
+
+    if !output.is_empty() && output.iter().all(|entry| !entry.enabled) {
+        output[0].enabled = true;
+    }
+
+    output
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UsageSnapshot {
@@ -445,6 +561,8 @@ pub(crate) struct UsageSnapshot {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UsageWindow {
     pub(crate) used_percent: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) total_percent: Option<f64>,
     pub(crate) window_seconds: i64,
     pub(crate) reset_at: Option<i64>,
 }
@@ -503,6 +621,8 @@ pub(crate) struct CreateApiAccountInput {
     pub(crate) api_key: String,
     pub(crate) model_name: String,
     #[serde(default)]
+    pub(crate) model_catalog: Vec<RelayModelCatalogEntry>,
+    #[serde(default)]
     pub(crate) tags: Vec<String>,
     #[serde(default)]
     pub(crate) force_save: bool,
@@ -527,6 +647,8 @@ pub(crate) struct CreateApiAccountInput {
     #[serde(default)]
     pub(crate) api_quota_subscription_expires_at: Option<i64>,
     #[serde(default)]
+    pub(crate) api_quota_subscription_name: Option<String>,
+    #[serde(default)]
     pub(crate) platform_login_email: Option<String>,
     #[serde(default)]
     pub(crate) platform_login_password: Option<String>,
@@ -540,6 +662,8 @@ pub(crate) struct UpdateApiAccountInput {
     #[serde(default)]
     pub(crate) api_key: Option<String>,
     pub(crate) model_name: String,
+    #[serde(default)]
+    pub(crate) model_catalog: Vec<RelayModelCatalogEntry>,
     #[serde(default)]
     pub(crate) balance_display_enabled: Option<bool>,
     #[serde(default)]
@@ -560,6 +684,8 @@ pub(crate) struct UpdateApiAccountInput {
     pub(crate) api_quota_total_window: Option<UsageWindow>,
     #[serde(default)]
     pub(crate) api_quota_subscription_expires_at: Option<i64>,
+    #[serde(default)]
+    pub(crate) api_quota_subscription_name: Option<String>,
     #[serde(default)]
     pub(crate) platform_login_email: Option<String>,
     #[serde(default)]
@@ -610,7 +736,7 @@ pub(crate) struct OauthCallbackFinishedEvent {
     pub(crate) error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AccountPoolConfig {
     pub(crate) id: String,
@@ -679,6 +805,8 @@ pub(crate) enum NotificationScheduleMode {
 pub(crate) struct NotificationProviderConfig {
     pub(crate) id: String,
     pub(crate) name: String,
+    #[serde(default)]
+    pub(crate) account_key: Option<String>,
     #[serde(default)]
     pub(crate) kind: NotificationProviderKind,
     #[serde(default = "default_true")]
@@ -861,7 +989,14 @@ pub(crate) struct ActiveHybridProfile {
     pub(crate) relay_account_id: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ModelRouterRouteSelection {
+    pub(crate) account_id: String,
+    pub(crate) model: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default, rename_all = "camelCase")]
 pub(crate) struct AppSettings {
     pub(crate) launch_at_startup: bool,
@@ -871,6 +1006,34 @@ pub(crate) struct AppSettings {
     pub(crate) smart_switch_include_api: bool,
     #[serde(default)]
     pub(crate) api_enhanced_launch_enabled: bool,
+    #[serde(default)]
+    pub(crate) codex_multi_model_mode_enabled: bool,
+    #[serde(default)]
+    pub(crate) codex_model_instructions_fix_enabled: bool,
+    #[serde(default)]
+    pub(crate) codex_disable_gpu_acceleration: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) codex_multi_model_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) codex_multi_model_workspace: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) codex_multi_model_restore_point: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) codex_multi_model_controlled_app_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) codex_multi_model_controlled_exe_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) codex_multi_model_controlled_app_asar_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) codex_multi_model_source_app_root: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) codex_multi_model_patch_state_path: Option<String>,
+    #[serde(default)]
+    pub(crate) model_router_enabled: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) model_router_account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) model_router_route_selections: Vec<ModelRouterRouteSelection>,
     #[serde(default = "default_usage_auto_refresh_enabled")]
     pub(crate) usage_auto_refresh_enabled: bool,
     #[serde(default = "default_usage_auto_refresh_interval_secs")]
@@ -883,14 +1046,6 @@ pub(crate) struct AppSettings {
     pub(crate) quota_alert_enabled: bool,
     #[serde(default = "default_show_provider_badge")]
     pub(crate) show_provider_badge: bool,
-    #[serde(default = "default_codex_context_window_k")]
-    pub(crate) codex_context_window_k: Option<u16>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) codex_context_window_model: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) codex_context_window_limit_k: Option<u16>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) codex_context_window_effective_limit_k: Option<u16>,
     #[serde(default = "default_quota_alert_five_hour_threshold")]
     pub(crate) quota_alert_five_hour_threshold: u8,
     #[serde(default = "default_quota_alert_one_week_threshold")]
@@ -904,6 +1059,8 @@ pub(crate) struct AppSettings {
     pub(crate) restart_opencode_desktop_on_switch: bool,
     pub(crate) restart_editors_on_switch: bool,
     pub(crate) restart_editor_targets: Vec<EditorAppId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) account_card_order: Vec<String>,
     #[serde(default)]
     pub(crate) account_pools: Vec<AccountPoolConfig>,
     #[serde(default)]
@@ -930,16 +1087,26 @@ impl Default for AppSettings {
             launch_codex_after_switch: true,
             smart_switch_include_api: false,
             api_enhanced_launch_enabled: false,
+            codex_multi_model_mode_enabled: false,
+            codex_model_instructions_fix_enabled: false,
+            codex_disable_gpu_acceleration: false,
+            codex_multi_model_status: None,
+            codex_multi_model_workspace: None,
+            codex_multi_model_restore_point: None,
+            codex_multi_model_controlled_app_root: None,
+            codex_multi_model_controlled_exe_path: None,
+            codex_multi_model_controlled_app_asar_path: None,
+            codex_multi_model_source_app_root: None,
+            codex_multi_model_patch_state_path: None,
+            model_router_enabled: false,
+            model_router_account_id: None,
+            model_router_route_selections: Vec::new(),
             usage_auto_refresh_enabled: default_usage_auto_refresh_enabled(),
             usage_auto_refresh_interval_secs: default_usage_auto_refresh_interval_secs(),
             api_quota_auto_refresh_enabled: default_api_quota_auto_refresh_enabled(),
             api_quota_auto_refresh_interval_secs: default_api_quota_auto_refresh_interval_secs(),
             quota_alert_enabled: default_quota_alert_enabled(),
             show_provider_badge: default_show_provider_badge(),
-            codex_context_window_k: default_codex_context_window_k(),
-            codex_context_window_model: None,
-            codex_context_window_limit_k: None,
-            codex_context_window_effective_limit_k: None,
             quota_alert_five_hour_threshold: default_quota_alert_five_hour_threshold(),
             quota_alert_one_week_threshold: default_quota_alert_one_week_threshold(),
             codex_launch_path: None,
@@ -949,6 +1116,7 @@ impl Default for AppSettings {
             restart_opencode_desktop_on_switch: false,
             restart_editors_on_switch: false,
             restart_editor_targets: Vec::new(),
+            account_card_order: Vec::new(),
             account_pools: Vec::new(),
             notification_providers: Vec::new(),
             notification_targets: Vec::new(),
@@ -970,20 +1138,44 @@ pub(crate) struct AppSettingsPatch {
     pub(crate) launch_codex_after_switch: Option<bool>,
     pub(crate) smart_switch_include_api: Option<bool>,
     pub(crate) api_enhanced_launch_enabled: Option<bool>,
+    pub(crate) codex_multi_model_mode_enabled: Option<bool>,
+    pub(crate) codex_model_instructions_fix_enabled: Option<bool>,
+    pub(crate) codex_disable_gpu_acceleration: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_patch")]
+    pub(crate) codex_multi_model_status: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_patch")]
+    pub(crate) codex_multi_model_workspace: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_patch")]
+    pub(crate) codex_multi_model_restore_point: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_patch")]
+    pub(crate) codex_multi_model_controlled_app_root: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_patch")]
+    pub(crate) codex_multi_model_controlled_exe_path: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_patch")]
+    pub(crate) codex_multi_model_controlled_app_asar_path: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_patch")]
+    pub(crate) codex_multi_model_source_app_root: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_patch")]
+    pub(crate) codex_multi_model_patch_state_path: Option<Option<String>>,
+    pub(crate) model_router_enabled: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_patch")]
+    pub(crate) model_router_account_id: Option<Option<String>>,
+    pub(crate) model_router_route_selections: Option<Vec<ModelRouterRouteSelection>>,
     pub(crate) usage_auto_refresh_enabled: Option<bool>,
     pub(crate) usage_auto_refresh_interval_secs: Option<u16>,
     pub(crate) api_quota_auto_refresh_enabled: Option<bool>,
     pub(crate) api_quota_auto_refresh_interval_secs: Option<u16>,
     pub(crate) quota_alert_enabled: Option<bool>,
     pub(crate) show_provider_badge: Option<bool>,
-    pub(crate) codex_context_window_k: Option<Option<u16>>,
     pub(crate) quota_alert_five_hour_threshold: Option<u8>,
     pub(crate) quota_alert_one_week_threshold: Option<u8>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_patch")]
     pub(crate) codex_launch_path: Option<Option<String>>,
     pub(crate) sync_opencode_openai_auth: Option<bool>,
     pub(crate) restart_opencode_desktop_on_switch: Option<bool>,
     pub(crate) restart_editors_on_switch: Option<bool>,
     pub(crate) restart_editor_targets: Option<Vec<EditorAppId>>,
+    pub(crate) account_card_order: Option<Vec<String>>,
     pub(crate) account_pools: Option<Vec<AccountPoolConfig>>,
     pub(crate) notification_providers: Option<Vec<NotificationProviderConfig>>,
     pub(crate) notification_targets: Option<Vec<NotificationTargetConfig>>,
@@ -992,10 +1184,22 @@ pub(crate) struct AppSettingsPatch {
     pub(crate) notification_pipelines: Option<Vec<NotificationPipelineConfig>>,
     pub(crate) notification_schema_version: Option<u8>,
     pub(crate) locale: Option<AppLocale>,
+    #[serde(default, deserialize_with = "deserialize_explicit_nullable_patch")]
     pub(crate) skipped_update_version: Option<Option<String>>,
 }
 
 impl StoredAccount {
+    pub(crate) fn effective_model_catalog(&self) -> Vec<RelayModelCatalogEntry> {
+        normalize_relay_model_catalog(self.model_name.as_deref(), &self.model_catalog)
+    }
+
+    pub(crate) fn enabled_model_catalog(&self) -> Vec<RelayModelCatalogEntry> {
+        self.effective_model_catalog()
+            .into_iter()
+            .filter(|entry| entry.enabled)
+            .collect()
+    }
+
     fn proxy_priority_or_default(&self) -> i32 {
         self.proxy_priority.unwrap_or(100)
     }
@@ -1091,8 +1295,17 @@ impl StoredAccount {
             AccountSourceKind::Relay => {
                 let base_url = self.api_base_url.as_deref()?.trim().trim_end_matches('/');
                 let model_name = self.model_name.as_deref()?.trim();
+                let models = self
+                    .enabled_model_catalog()
+                    .into_iter()
+                    .map(|entry| entry.model)
+                    .collect::<Vec<_>>();
                 let keys = self.resolved_relay_proxy_keys();
-                if base_url.is_empty() || keys.is_empty() || model_name.is_empty() {
+                if base_url.is_empty()
+                    || keys.is_empty()
+                    || model_name.is_empty()
+                    || models.is_empty()
+                {
                     return None;
                 }
                 ProxyChannel {
@@ -1112,7 +1325,7 @@ impl StoredAccount {
                     health_status: ProxyHealthStatus::Healthy,
                     cooldown_until: None,
                     last_error: None,
-                    models: vec![model_name.to_string()],
+                    models,
                     endpoints: self.default_proxy_endpoint_capabilities(),
                     keys,
                 }
@@ -1339,6 +1552,8 @@ impl StoredAccount {
             plan_type: self.plan_type.clone(),
             api_base_url: self.api_base_url.clone(),
             model_name: self.model_name.clone(),
+            model_catalog: self.effective_model_catalog(),
+            model_routing_enabled: self.model_routing_enabled,
             balance_text: self.balance_text.clone(),
             balance_display_enabled: self.balance_display_enabled,
             api_quota_mode: self.api_quota_mode,
@@ -1350,6 +1565,7 @@ impl StoredAccount {
             api_quota_daily_window: self.api_quota_daily_window.clone(),
             api_quota_total_window: self.api_quota_total_window.clone(),
             api_quota_subscription_expires_at: self.api_quota_subscription_expires_at,
+            api_quota_subscription_name: self.api_quota_subscription_name.clone(),
             profile_auth_ready: self.profile_auth_ready,
             profile_config_ready: self.profile_config_ready,
             profile_integrity_error: self.profile_integrity_error.clone(),
@@ -1392,10 +1608,20 @@ pub(crate) fn infer_provider_metadata_from_base_url(
         ("google", "Google AI")
     } else if host_lower.contains("deepseek") {
         ("deepseek", "DeepSeek")
+    } else if host_lower.contains("minimaxi") || host_lower.contains("minimax") {
+        ("minimax", "MiniMax")
+    } else if host_lower.contains("xiaomimimo") || host_lower.contains("mimo") {
+        ("xiaomi-mimo", "Xiaomi MiMo")
     } else if host_lower.contains("siliconflow") {
         ("siliconflow", "SiliconFlow")
     } else if host_lower.contains("moonshot") || host_lower.contains("kimi") {
-        ("moonshot", "Moonshot")
+        ("moonshot", "Moonshot AI")
+    } else if host_lower.contains("bigmodel")
+        || host_lower.contains("zhipu")
+        || host_lower == "z.ai"
+        || host_lower.ends_with(".z.ai")
+    {
+        ("zhipu", "Zhipu AI")
     } else if host_lower.contains("dashscope") || host_lower.contains("aliyuncs") {
         ("dashscope", "DashScope")
     } else if host_lower.contains("volcengine")
@@ -1512,6 +1738,13 @@ fn merge_duplicate_account_variant(left: StoredAccount, right: StoredAccount) ->
     if preferred.model_name.is_none() {
         preferred.model_name = alternate.model_name.clone();
     }
+    if preferred.model_catalog.is_empty() {
+        preferred.model_catalog = alternate.model_catalog.clone();
+    }
+    preferred.model_catalog =
+        normalize_relay_model_catalog(preferred.model_name.as_deref(), &preferred.model_catalog);
+    preferred.model_routing_enabled =
+        preferred.model_routing_enabled || alternate.model_routing_enabled;
     if preferred.balance_text.is_none() {
         preferred.balance_text = alternate.balance_text.clone();
     }
@@ -1544,6 +1777,9 @@ fn merge_duplicate_account_variant(left: StoredAccount, right: StoredAccount) ->
     }
     if preferred.api_quota_subscription_expires_at.is_none() {
         preferred.api_quota_subscription_expires_at = alternate.api_quota_subscription_expires_at;
+    }
+    if preferred.api_quota_subscription_name.is_none() {
+        preferred.api_quota_subscription_name = alternate.api_quota_subscription_name.clone();
     }
     if preferred.provider_id.is_none() {
         preferred.provider_id = alternate.provider_id.clone();
@@ -1633,11 +1869,13 @@ mod tests {
             plan_type: Some(plan_type.to_string()),
             five_hour: Some(UsageWindow {
                 used_percent: 10.0,
+                total_percent: None,
                 window_seconds: 18_000,
                 reset_at: Some(20),
             }),
             one_week: Some(UsageWindow {
                 used_percent: 20.0,
+                total_percent: None,
                 window_seconds: 604_800,
                 reset_at: Some(30),
             }),
@@ -1677,6 +1915,8 @@ mod tests {
             proxy_key_selection_mode: None,
             proxy_endpoints: Vec::new(),
             model_name: None,
+            model_catalog: Vec::new(),
+            model_routing_enabled: false,
             balance_text: None,
             balance_display_enabled: false,
             api_quota_mode: Default::default(),
@@ -1688,6 +1928,7 @@ mod tests {
             api_quota_daily_window: None,
             api_quota_total_window: None,
             api_quota_subscription_expires_at: None,
+            api_quota_subscription_name: None,
             provider_id: None,
             provider_name: None,
             tags: Vec::new(),
@@ -1803,6 +2044,8 @@ mod tests {
             proxy_key_selection_mode: None,
             proxy_endpoints: Vec::new(),
             model_name: None,
+            model_catalog: Vec::new(),
+            model_routing_enabled: false,
             balance_text: None,
             balance_display_enabled: false,
             api_quota_mode: Default::default(),
@@ -1814,6 +2057,7 @@ mod tests {
             api_quota_daily_window: None,
             api_quota_total_window: None,
             api_quota_subscription_expires_at: None,
+            api_quota_subscription_name: None,
             provider_id: None,
             provider_name: None,
             tags: Vec::new(),
@@ -1862,6 +2106,8 @@ mod tests {
             proxy_key_selection_mode: None,
             proxy_endpoints: Vec::new(),
             model_name: None,
+            model_catalog: Vec::new(),
+            model_routing_enabled: false,
             balance_text: None,
             balance_display_enabled: false,
             api_quota_mode: Default::default(),
@@ -1873,6 +2119,7 @@ mod tests {
             api_quota_daily_window: None,
             api_quota_total_window: None,
             api_quota_subscription_expires_at: None,
+            api_quota_subscription_name: None,
             provider_id: None,
             provider_name: None,
             tags: Vec::new(),
@@ -1915,6 +2162,8 @@ mod tests {
                 proxy_key_selection_mode: None,
                 proxy_endpoints: Vec::new(),
                 model_name: None,
+                model_catalog: Vec::new(),
+                model_routing_enabled: false,
                 balance_text: None,
                 balance_display_enabled: false,
                 api_quota_mode: Default::default(),
@@ -1926,6 +2175,7 @@ mod tests {
                 api_quota_daily_window: None,
                 api_quota_total_window: None,
                 api_quota_subscription_expires_at: None,
+                api_quota_subscription_name: None,
                 provider_id: None,
                 provider_name: None,
                 tags: Vec::new(),
@@ -1961,6 +2211,8 @@ mod tests {
                 proxy_key_selection_mode: None,
                 proxy_endpoints: Vec::new(),
                 model_name: None,
+                model_catalog: Vec::new(),
+                model_routing_enabled: false,
                 balance_text: None,
                 balance_display_enabled: false,
                 api_quota_mode: Default::default(),
@@ -1972,6 +2224,7 @@ mod tests {
                 api_quota_daily_window: None,
                 api_quota_total_window: None,
                 api_quota_subscription_expires_at: None,
+                api_quota_subscription_name: None,
                 provider_id: None,
                 provider_name: None,
                 tags: Vec::new(),
@@ -2024,6 +2277,8 @@ mod tests {
             proxy_key_selection_mode: None,
             proxy_endpoints: Vec::new(),
             model_name: None,
+            model_catalog: Vec::new(),
+            model_routing_enabled: false,
             balance_text: None,
             balance_display_enabled: false,
             api_quota_mode: Default::default(),
@@ -2035,6 +2290,7 @@ mod tests {
             api_quota_daily_window: None,
             api_quota_total_window: None,
             api_quota_subscription_expires_at: None,
+            api_quota_subscription_name: None,
             provider_id: None,
             provider_name: None,
             tags: vec!["核心".to_string()],
@@ -2092,6 +2348,8 @@ mod tests {
             proxy_key_selection_mode: None,
             proxy_endpoints: Vec::new(),
             model_name: Some("gpt-5.4".to_string()),
+            model_catalog: Vec::new(),
+            model_routing_enabled: false,
             balance_text: None,
             balance_display_enabled: false,
             api_quota_mode: Default::default(),
@@ -2103,6 +2361,7 @@ mod tests {
             api_quota_daily_window: None,
             api_quota_total_window: None,
             api_quota_subscription_expires_at: None,
+            api_quota_subscription_name: None,
             provider_id: Some("custom".to_string()),
             provider_name: Some("Custom".to_string()),
             tags: vec!["API".to_string()],

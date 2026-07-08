@@ -1,3 +1,4 @@
+@import "./styles/tokens.css";
 @import "./styles/themes/light.css";
 @import "./styles/themes/dark.css";
 @import "./styles/antd-theme.css";
@@ -9,3 +10,5 @@
 @import "./styles/notifications.css";
 @import "./styles/accounts.css";
 @import "./styles/responsive.css";
+@import "./styles/ui-polish.css";
+@import "./styles/classic-restore.css";

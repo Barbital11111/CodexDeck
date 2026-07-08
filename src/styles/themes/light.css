@@ -1,4 +1,5 @@
-:root {
+:root[data-ui-skin="modern"]:not([data-theme="dark"]),
+:root[data-ui-skin="modern"][data-theme="light"] {
   --font-ui:
     -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Segoe UI", sans-serif;
   --font-mono:
@@ -167,11 +168,35 @@
   --notification-warn: #c98419;
 }
 
-:root {
+:root:not([data-ui-skin]):not([data-theme="dark"]),
+:root[data-ui-skin="classic"]:not([data-theme="dark"]),
+:root[data-ui-skin="classic"][data-theme="light"] {
   --font-ui:
     "MiSans", "HarmonyOS Sans SC", "Microsoft YaHei UI", "PingFang SC", "Segoe UI", sans-serif;
   --font-mono:
     "Maple Mono NF CN", "JetBrains Mono", "SFMono-Regular", Consolas, monospace;
+  --ui-font-xs: 0.72rem;
+  --ui-font-sm: 0.78rem;
+  --ui-font-md: 0.86rem;
+  --ui-font-lg: 1rem;
+  --ui-font-xl: 1.14rem;
+  --ui-line-tight: 1.2;
+  --ui-line-normal: 1.45;
+  --ui-gap-xs: 4px;
+  --ui-gap-sm: 8px;
+  --ui-gap-md: 12px;
+  --ui-gap-lg: 16px;
+  --ui-gap-xl: 20px;
+  --ui-radius-xs: 6px;
+  --ui-radius-sm: 8px;
+  --ui-radius-md: 10px;
+  --ui-radius-lg: 12px;
+  --ui-radius-xl: 14px;
+  --ui-control-sm: 30px;
+  --ui-control-md: 34px;
+  --ui-control-lg: 40px;
+  --ui-surface-shadow: 0 1px 2px rgba(5, 5, 5, 0.04);
+  --ui-card-shadow: 0 4px 12px rgba(5, 5, 5, 0.05);
   --ink: #1f1f1f;
   --subtle: #595959;
   --bg-0: #ffffff;

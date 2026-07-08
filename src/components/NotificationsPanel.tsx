@@ -614,6 +614,7 @@ function buildProviderFromDraft(
   return {
     id: existing?.id ?? createLocalId("provider"),
     name: draft.name.trim() || "数据源",
+    accountKey: existing?.accountKey ?? null,
     kind: "sub2api",
     enabled: existing?.enabled ?? true,
     costMultiplier: normalizeCostMultiplier(draft.costMultiplier),

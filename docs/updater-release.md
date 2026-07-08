@@ -83,11 +83,7 @@ $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = "你的密码"
 npm run release:build-local-signed
 ```
 
-也可以显式传参：
-
-```powershell
-npm run release:build-local-signed -- -SigningKeyPassword "你的密码"
-```
+安全建议：优先使用 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 环境变量，不要把签名密码写进命令行参数。脚本内部也会通过环境变量把密码交给 Tauri signer。
 
 如果你希望构建完成后顺手整理 `latest.json` 和手工发布目录：
 

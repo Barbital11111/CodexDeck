@@ -1,10 +1,10 @@
-import { Button } from "antd";
 import { useI18n } from "../i18n/I18nProvider";
 
 type AddAccountSectionProps = {
   onOpenAddDialog: () => void;
   onCreatePool: () => void;
   onSmartSwitch: () => void;
+  onSwitchUiSkin?: () => void;
   saving: boolean;
   smartSwitching: boolean;
   hideAccountDetails: boolean;
@@ -15,6 +15,7 @@ export function AddAccountSection({
   onOpenAddDialog,
   onCreatePool,
   onSmartSwitch,
+  onSwitchUiSkin,
   saving,
   smartSwitching,
   hideAccountDetails,
@@ -51,13 +52,23 @@ export function AddAccountSection({
       >
         {hideAccountDetails ? "显示信息" : "隐藏信息"}
       </button>
-      <Button
-        type="primary"
+      {onSwitchUiSkin ? (
+        <button
+          className="ghost"
+          onClick={onSwitchUiSkin}
+          title="切到新版界面"
+          aria-label="切到新版界面"
+        >
+          新版界面
+        </button>
+      ) : null}
+      <button
+        type="button"
         className="importPrimary"
         onClick={onOpenAddDialog}
       >
         {copy.addAccount.startButton}
-      </Button>
+      </button>
     </section>
   );
 }

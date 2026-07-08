@@ -1,21 +1,27 @@
 import { Suspense, lazy, useEffect, useMemo, useState } from "react";
-import { Modal, Radio, Typography } from "antd";
+import { ConfigProvider } from "antd";
 import "./App.css";
-import { AddAccountSection } from "./components/AddAccountSection";
-import { AddAccountDialog } from "./components/AddAccountDialog";
-import { AccountPoolManager } from "./components/AccountPoolManager";
+import { AppHeader } from "./components/AppHeader";
 import { BottomDock } from "./components/BottomDock";
-import { HybridLaunchPanel } from "./components/HybridLaunchPanel";
+import { ClassicAccountPoolManager } from "./components/classic/ClassicAccountPoolManager";
+import { ClassicAddAccountSection } from "./components/classic/ClassicAddAccountSection";
+import { ClassicBottomDock } from "./components/classic/ClassicBottomDock";
+import { ClassicMetaStrip } from "./components/classic/ClassicMetaStrip";
+import { ClassicNotificationsPanel } from "./components/classic/ClassicNotificationsPanel";
+import { ClassicSettingsPanel } from "./components/classic/ClassicSettingsPanel";
 import { MetaStrip } from "./components/MetaStrip";
 import { NoticeBanner } from "./components/NoticeBanner";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { WindowTitleBar } from "./components/WindowTitleBar";
 import { useCodexController } from "./hooks/useCodexController";
 import { useI18n } from "./i18n/I18nProvider";
+import { useUiSkinMode } from "./hooks/useUiSkinMode";
 import { useThemeMode } from "./hooks/useThemeMode";
+import { codexSwitchAntdThemes } from "./theme/codexSwitchTokens";
 import type { AccountPoolConfig, AccountSummary, AccountsExportFormat } from "./types/app";
+import { displayAccountLabel } from "./utils/privacy";
 
-type AppTab = "accounts" | "notifications" | "settings";
+type AppTab = "accounts" | "providers" | "notifications" | "settings";
 type NotificationViewTab = "settings" | "pipelines" | "templates" | "tests" | "activity";
 const BROWSER_PREVIEW_WINDOW_PARAM = "codexdeckPreviewWindow";
 
@@ -25,9 +31,39 @@ const NotificationsPanel = lazy(() =>
     })),
 );
 
+const AddAccountDialog = lazy(() =>
+    import("./components/AddAccountDialog").then((module) => ({
+        default: module.AddAccountDialog,
+    })),
+);
+
+const AccountPoolManager = lazy(() =>
+    import("./components/AccountPoolManager").then((module) => ({
+        default: module.AccountPoolManager,
+    })),
+);
+
+const HybridLaunchPanel = lazy(() =>
+    import("./components/HybridLaunchPanel").then((module) => ({
+        default: module.HybridLaunchPanel,
+    })),
+);
+
+const ExportFormatDialog = lazy(() =>
+    import("./components/ExportFormatDialog").then((module) => ({
+        default: module.ExportFormatDialog,
+    })),
+);
+
 const SettingsPanel = lazy(() =>
     import("./components/SettingsPanel").then((module) => ({
         default: module.SettingsPanel,
+    })),
+);
+
+const ProvidersView = lazy(() =>
+    import("./components/ProvidersView").then((module) => ({
+        default: module.ProvidersView,
     })),
 );
 
@@ -73,6 +109,13 @@ function normalizeAccountPools(
     });
 }
 
+function normalizeAccountCardOrder(
+    accountKeys: string[],
+    activeAccountKeys: Set<string>,
+) {
+    return Array.from(new Set(accountKeys)).filter((accountKey) => activeAccountKeys.has(accountKey));
+}
+
 function normalizeApiQuotaProviderBaseUrl(value: string | null | undefined) {
     return (value ?? "")
         .trim()
@@ -98,7 +141,11 @@ function hasTauriRuntime() {
 }
 
 function shouldRenderBrowserPreviewWindow() {
-    if (typeof window === "undefined" || hasTauriRuntime() || !import.meta.env.DEV) {
+    if (
+        typeof window === "undefined" ||
+        hasTauriRuntime() ||
+        !import.meta.env.DEV
+    ) {
         return false;
     }
 
@@ -132,7 +179,17 @@ function CodexDeckApp() {
     const [exportDialog, setExportDialog] = useState<ExportDialogState | null>(null);
     const [exportFormat, setExportFormat] = useState<AccountsExportFormat>("codexDeck");
     const tauriRuntime = hasTauriRuntime();
+    const shellClassName = [
+        "shell",
+        tauriRuntime ? "shellHasWindowTitleBar" : "",
+    ]
+        .filter(Boolean)
+        .join(" ");
     const { copy } = useI18n();
+    const { uiSkinMode, setUiSkinMode } = useUiSkinMode();
+    const isClassicSkin = uiSkinMode === "classic";
+    const visibleActiveTab: AppTab = isClassicSkin && activeTab === "providers" ? "accounts" : activeTab;
+    const classicActiveTab = visibleActiveTab === "providers" ? "accounts" : visibleActiveTab;
     const { themeMode, toggleTheme } = useThemeMode();
     const {
         accounts,
@@ -169,6 +226,7 @@ function CodexDeckApp() {
         installPendingUpdate,
         openManualDownloadPage,
         closeUpdateDialog,
+        reloadSettings,
         updateSettings,
         onOpenAddDialog,
         onReauthorizeAccount,
@@ -180,6 +238,7 @@ function CodexDeckApp() {
         onImportCurrentAuth,
         onCreateApiAccount,
         onUpdateApiAccount,
+        onProbeApiModels,
         onUpdateAccountTags,
         onImportAuthFiles,
         onExportAccounts,
@@ -187,6 +246,8 @@ function CodexDeckApp() {
         onDelete,
         onSwitch,
         onSwitchHybrid,
+        onSetModelRouterMode,
+        onLaunchCurrentCodexConfig,
         onSmartSwitch,
         smartSwitching,
     } = useCodexController();
@@ -206,9 +267,20 @@ function CodexDeckApp() {
         [accounts, groupedAccountKeys],
     );
 
+    const currentAccountLabel = useMemo(() => {
+        const currentAccount = accounts.find((account) => account.isCurrent);
+        return currentAccount ? displayAccountLabel(currentAccount, hideAccountDetails) : null;
+    }, [accounts, hideAccountDetails]);
+
     const persistAccountPools = (accountPools: AccountPoolConfig[]) =>
         void updateSettings(
             { accountPools: normalizeAccountPools(accountPools, activeAccountKeys) },
+            { silent: true, keepInteractive: true },
+        );
+
+    const persistAccountCardOrder = (accountKeys: string[]) =>
+        void updateSettings(
+            { accountCardOrder: normalizeAccountCardOrder(accountKeys, activeAccountKeys) },
             { silent: true, keepInteractive: true },
         );
 
@@ -348,31 +420,48 @@ function CodexDeckApp() {
     }, [accounts, refreshApiQuotaForAccountKeys, refreshTokenUsage, refreshUsage, settings.notificationProviders]);
 
     return (
-        <div className={`shell${tauriRuntime ? " shellHasWindowTitleBar" : ""}`}>
+        <ConfigProvider theme={codexSwitchAntdThemes[uiSkinMode]}>
+        <div key={uiSkinMode} className={shellClassName} data-ui-skin={uiSkinMode}>
             <div className="ambient" />
             <WindowTitleBar visible={tauriRuntime} />
             <main className="panel">
-                <BottomDock
-                    activeTab={activeTab}
-                    onSelectTab={setActiveTab}
-                    notificationView={notificationView}
-                    onSelectNotificationView={setNotificationView}
-                />
-                <div className="appMainPane">
-                    <AddAccountDialog
-                        open={addDialogOpen}
-                        reauthorizeAccount={reauthorizeAccount}
-                        importingAccounts={importingAccounts}
-                        oauthWaitingForCallback={oauthWaitingForCallback}
-                        onPrepareOauth={onPrepareOauthLogin}
-                        onOpenOauthPage={onOpenOauthAuthorizationPage}
-                        onCompleteOauth={onCompleteOauthCallbackLogin}
-                        onCancelOauth={onCancelOauthLogin}
-                        onImportCurrentAuth={onImportCurrentAuth}
-                        onCreateApiAccount={onCreateApiAccount}
-                        onImportFiles={onImportAuthFiles}
-                        onClose={onCloseAddDialog}
+                {isClassicSkin ? (
+                    <ClassicBottomDock
+                        activeTab={classicActiveTab}
+                        onSelectTab={setActiveTab}
+                        notificationView={notificationView}
+                        onSelectNotificationView={setNotificationView}
                     />
+                ) : (
+                    <BottomDock
+                        activeTab={visibleActiveTab}
+                        onSelectTab={setActiveTab}
+                        uiSkinMode={uiSkinMode}
+                        notificationView={notificationView}
+                        onSelectNotificationView={setNotificationView}
+                    />
+                )}
+                <div className="appMainPane">
+                    {addDialogOpen || reauthorizeAccount ? (
+                        <Suspense fallback={null}>
+                            <AddAccountDialog
+                                open={addDialogOpen}
+                                reauthorizeAccount={reauthorizeAccount}
+                                importingAccounts={importingAccounts}
+                                oauthWaitingForCallback={oauthWaitingForCallback}
+                                onPrepareOauth={onPrepareOauthLogin}
+                                onOpenOauthPage={onOpenOauthAuthorizationPage}
+                                onCompleteOauth={onCompleteOauthCallbackLogin}
+                                onCancelOauth={onCancelOauthLogin}
+                                onImportCurrentAuth={onImportCurrentAuth}
+                                onCreateApiAccount={onCreateApiAccount}
+                                onProbeApiModels={onProbeApiModels}
+                                onImportFiles={onImportAuthFiles}
+                                onClose={onCloseAddDialog}
+                                uiSkinMode={uiSkinMode}
+                            />
+                        </Suspense>
+                    ) : null}
 
                     <NoticeBanner notice={notice} />
                     <UpdateBanner
@@ -385,166 +474,289 @@ function CodexDeckApp() {
                         onSkipVersion={() => void skipPendingUpdateVersion()}
                         onInstallNow={() => void installPendingUpdate()}
                     />
-                    <Modal
-                        title={copy.exportDialog.title}
-                        open={exportDialog !== null}
-                        onOk={() => void confirmExportDialog()}
-                        onCancel={closeExportDialog}
-                        okText={copy.exportDialog.ok}
-                        cancelText={copy.exportDialog.cancel}
-                        confirmLoading={exportingAccounts}
-                        destroyOnHidden
-                    >
-                        <div className="exportFormatDialog">
-                            <Typography.Text type="secondary">
-                                {exportDialog?.account
-                                    ? copy.exportDialog.singleDescription
-                                    : exportDialog?.accountKeys?.length
-                                      ? copy.exportDialog.selectedDescription(
-                                            exportDialog.accountKeys.length,
-                                        )
-                                    : copy.exportDialog.allDescription}
-                            </Typography.Text>
-                            <Radio.Group
-                                className="exportFormatOptions"
-                                value={exportFormat}
-                                onChange={(event) =>
-                                    setExportFormat(event.target.value as AccountsExportFormat)
-                                }
-                                options={[
-                                    {
-                                        value: "codexDeck",
-                                        label: (
-                                            <span className="exportFormatOption">
-                                                <strong>{copy.exportDialog.codexDeckTitle}</strong>
-                                                <span>{copy.exportDialog.codexDeckDescription}</span>
-                                            </span>
-                                        ),
-                                    },
-                                    {
-                                        value: "sub2api",
-                                        label: (
-                                            <span className="exportFormatOption">
-                                                <strong>{copy.exportDialog.sub2apiTitle}</strong>
-                                                <span>{copy.exportDialog.sub2apiDescription}</span>
-                                            </span>
-                                        ),
-                                    },
-                                ]}
+                    {exportDialog ? (
+                        <Suspense fallback={null}>
+                            <ExportFormatDialog
+                                open={exportDialog !== null}
+                                account={exportDialog.account}
+                                accountKeys={exportDialog.accountKeys}
+                                exportFormat={exportFormat}
+                                exportingAccounts={exportingAccounts}
+                                copy={copy.exportDialog}
+                                onChangeFormat={setExportFormat}
+                                onConfirm={() => void confirmExportDialog()}
+                                onClose={closeExportDialog}
                             />
-                        </div>
-                    </Modal>
+                        </Suspense>
+                    ) : null}
+
+                    {!isClassicSkin ? (
+                        <AppHeader
+                            activeTab={visibleActiveTab}
+                            onOpenAddDialog={onOpenAddDialog}
+                            onCreatePool={createAccountPool}
+                            onSmartSwitch={() => void onSmartSwitch()}
+                            onExportAccounts={() => openExportDialog()}
+                            onToggleHideAccountDetails={() =>
+                                setHideAccountDetails((current) => !current)
+                            }
+                            onSetUiSkin={setUiSkinMode}
+                            saving={savingSettings}
+                            smartSwitching={smartSwitching}
+                            exportingAccounts={exportingAccounts}
+                            accountCount={accounts.length}
+                            hideAccountDetails={hideAccountDetails}
+                            uiSkinMode={uiSkinMode}
+                        />
+                    ) : null}
 
                     <section className="viewStage">
-                        {activeTab === "accounts" ? (
+                        {visibleActiveTab === "accounts" ? (
                             <div className="accountsPage">
-                                <div className="accountsHero">
-                                    <MetaStrip
-                                        accountCount={accounts.length}
-                                        tokenUsage={tokenUsage}
-                                        tokenUsageError={tokenUsageError}
-                                        exportingAccounts={exportingAccounts}
-                                        onExportAccounts={() => openExportDialog()}
-                                    />
-                                    <AddAccountSection
-                                        onOpenAddDialog={onOpenAddDialog}
-                                        onCreatePool={createAccountPool}
-                                        onSmartSwitch={() => void onSmartSwitch()}
-                                        saving={savingSettings}
-                                        smartSwitching={smartSwitching}
-                                        hideAccountDetails={hideAccountDetails}
-                                        onToggleHideAccountDetails={() =>
-                                            setHideAccountDetails((current) => !current)
-                                        }
-                                    />
-                                    <HybridLaunchPanel
+                                {isClassicSkin ? (
+                                    <div className="accountsHero">
+                                        <ClassicMetaStrip
+                                            accountCount={accounts.length}
+                                            tokenUsage={tokenUsage}
+                                            tokenUsageError={tokenUsageError}
+                                            exportingAccounts={exportingAccounts}
+                                            onExportAccounts={() => openExportDialog()}
+                                        />
+                                        <ClassicAddAccountSection
+                                            onOpenAddDialog={onOpenAddDialog}
+                                            onCreatePool={createAccountPool}
+                                            onSmartSwitch={() => void onSmartSwitch()}
+                                            saving={savingSettings}
+                                            smartSwitching={smartSwitching}
+                                            hideAccountDetails={hideAccountDetails}
+                                            onToggleHideAccountDetails={() =>
+                                                setHideAccountDetails((current) => !current)
+                                            }
+                                        />
+                                        <Suspense fallback={<ViewLoadingFallback />}>
+                                            <HybridLaunchPanel
+                                                accounts={accounts}
+                                                switchingId={switchingId}
+                                                hideAccountDetails={hideAccountDetails}
+                                                variant="classic"
+                                                onSwitchHybrid={(chatgptAccount, relayAccount, options) =>
+                                                    void onSwitchHybrid(chatgptAccount, relayAccount, options)
+                                                }
+                                            />
+                                        </Suspense>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <Suspense fallback={<ViewLoadingFallback />}>
+                                            <HybridLaunchPanel
+                                                accounts={accounts}
+                                                switchingId={switchingId}
+                                                hideAccountDetails={hideAccountDetails}
+                                                onSwitchHybrid={(chatgptAccount, relayAccount, options) =>
+                                                    void onSwitchHybrid(chatgptAccount, relayAccount, options)
+                                                }
+                                            />
+                                        </Suspense>
+                                        <MetaStrip
+                                            accountCount={accounts.length}
+                                            currentActiveLabel={currentAccountLabel}
+                                            tokenUsage={tokenUsage}
+                                            tokenUsageError={tokenUsageError}
+                                        />
+                                    </>
+                                )}
+                                {isClassicSkin ? (
+                                    <ClassicAccountPoolManager
                                         accounts={accounts}
+                                        ungroupedAccounts={ungroupedAccounts}
+                                        loading={loading}
+                                        accountPools={settings.accountPools}
+                                        saving={savingSettings}
+                                        exportingAccounts={exportingAccounts}
                                         switchingId={switchingId}
+                                        renamingAccountId={renamingAccountId}
+                                        pendingDeleteId={pendingDeleteId}
+                                        notificationProviders={settings.notificationProviders}
+                                        usageDisplayMode={settings.trayUsageDisplayMode}
                                         hideAccountDetails={hideAccountDetails}
-                                        onSwitchHybrid={(chatgptAccount, relayAccount) =>
-                                            void onSwitchHybrid(chatgptAccount, relayAccount)
+                                        routerSettings={settings}
+                                        onRenamePool={(poolId, name) =>
+                                            updateAccountPool(poolId, (pool) => ({ ...pool, name }))
                                         }
+                                        onDeletePool={(poolId) =>
+                                            persistAccountPools(
+                                                settings.accountPools.filter((pool) => pool.id !== poolId),
+                                            )
+                                        }
+                                        onTogglePoolCollapsed={(poolId, collapsed) =>
+                                            updateAccountPool(poolId, (pool) => ({
+                                                ...pool,
+                                                collapsed,
+                                            }))
+                                        }
+                                        onReorderPool={(poolId, accountKeys) =>
+                                            updateAccountPool(poolId, (pool) => ({
+                                                ...pool,
+                                                accountKeys: sortAndNormalizeAccountKeys(accountKeys, activeAccountKeys),
+                                            }))
+                                        }
+                                        onRefreshPoolUsage={(accountKeys, apiAccountKeys) => {
+                                            if (accountKeys.length > 0) {
+                                                void refreshUsageForAccountKeys(accountKeys, {
+                                                    notice: copy.notices.groupUsageRefreshed(accountKeys.length),
+                                                });
+                                            }
+                                            if (apiAccountKeys.length > 0) {
+                                                void refreshApiQuotaForAccountKeys(apiAccountKeys, {
+                                                    notice: copy.notices.apiQuotaRefreshed(apiAccountKeys.length),
+                                                });
+                                            }
+                                        }}
+                                        accountCardOrder={settings.accountCardOrder ?? []}
+                                        onReorderAccountCards={persistAccountCardOrder}
+                                        onAssignAccountToPool={assignAccountToPool}
+                                        onRemoveAccountFromAllPools={removeAccountFromAllPools}
+                                        onExportAccountKeys={openBulkExportDialog}
+                                        onExport={(account) => openExportDialog(account)}
+                                        onReauthorize={(account) => void onReauthorizeAccount(account)}
+                                        onRename={(account, label) => onRenameAccountLabel(account, label)}
+                                        onUpdateApiAccount={(account, input) =>
+                                            onUpdateApiAccount(account, input)
+                                        }
+                                        onProbeApiModels={onProbeApiModels}
+                                        onUpdateTags={(account, value) => onUpdateAccountTags(account, value)}
+                                        onRefreshApiQuota={(account) =>
+                                            void refreshApiQuotaForAccountKeys([account.accountKey], {
+                                                notice: copy.notices.apiQuotaRefreshed(1),
+                                            })
+                                        }
+                                        onSwitch={(account) => void onSwitch(account)}
+                                        onDelete={(account) => void onDelete(account)}
+                                        onSetModelRouterMode={(enabled, relayAccountId) =>
+                                            void onSetModelRouterMode(enabled, relayAccountId)
+                                        }
+                                        onLaunchCurrentCodexConfig={() =>
+                                            void onLaunchCurrentCodexConfig()
+                                        }
+                                        onUpdateSettings={updateSettings}
                                     />
-                                </div>
-                                <AccountPoolManager
+                                ) : (
+                                    <Suspense fallback={<ViewLoadingFallback />}>
+                                        <AccountPoolManager
+                                            accounts={accounts}
+                                            ungroupedAccounts={ungroupedAccounts}
+                                            loading={loading}
+                                            accountPools={settings.accountPools}
+                                            saving={savingSettings}
+                                            exportingAccounts={exportingAccounts}
+                                            switchingId={switchingId}
+                                            renamingAccountId={renamingAccountId}
+                                            pendingDeleteId={pendingDeleteId}
+                                            notificationProviders={settings.notificationProviders}
+                                            usageDisplayMode={settings.trayUsageDisplayMode}
+                                            hideAccountDetails={hideAccountDetails}
+                                            routerSettings={settings}
+                                            onRenamePool={(poolId, name) =>
+                                                updateAccountPool(poolId, (pool) => ({ ...pool, name }))
+                                            }
+                                            onDeletePool={(poolId) =>
+                                                persistAccountPools(
+                                                    settings.accountPools.filter((pool) => pool.id !== poolId),
+                                                )
+                                            }
+                                            onTogglePoolCollapsed={(poolId, collapsed) =>
+                                                updateAccountPool(poolId, (pool) => ({
+                                                    ...pool,
+                                                    collapsed,
+                                                }))
+                                            }
+                                            onReorderPool={(poolId, accountKeys) =>
+                                                updateAccountPool(poolId, (pool) => ({
+                                                    ...pool,
+                                                    accountKeys: sortAndNormalizeAccountKeys(accountKeys, activeAccountKeys),
+                                                }))
+                                            }
+                                            onRefreshPoolUsage={(accountKeys, apiAccountKeys) => {
+                                                if (accountKeys.length > 0) {
+                                                    void refreshUsageForAccountKeys(accountKeys, {
+                                                        notice: copy.notices.groupUsageRefreshed(accountKeys.length),
+                                                    });
+                                                }
+                                                if (apiAccountKeys.length > 0) {
+                                                    void refreshApiQuotaForAccountKeys(apiAccountKeys, {
+                                                        notice: copy.notices.apiQuotaRefreshed(apiAccountKeys.length),
+                                                    });
+                                                }
+                                            }}
+                                            accountCardOrder={settings.accountCardOrder ?? []}
+                                            onReorderAccountCards={persistAccountCardOrder}
+                                            onAssignAccountToPool={assignAccountToPool}
+                                            onRemoveAccountFromAllPools={removeAccountFromAllPools}
+                                            onExportAccountKeys={openBulkExportDialog}
+                                            onExport={(account) => openExportDialog(account)}
+                                            onReauthorize={(account) => void onReauthorizeAccount(account)}
+                                            onRename={(account, label) => onRenameAccountLabel(account, label)}
+                                            onUpdateApiAccount={(account, input) =>
+                                                onUpdateApiAccount(account, input)
+                                            }
+                                            onProbeApiModels={onProbeApiModels}
+                                            onUpdateTags={(account, value) => onUpdateAccountTags(account, value)}
+                                            onRefreshApiQuota={(account) =>
+                                                void refreshApiQuotaForAccountKeys([account.accountKey], {
+                                                    notice: copy.notices.apiQuotaRefreshed(1),
+                                                })
+                                            }
+                                            onSwitch={(account) => void onSwitch(account)}
+                                            onDelete={(account) => void onDelete(account)}
+                                            onSetModelRouterMode={(enabled, relayAccountId) =>
+                                                void onSetModelRouterMode(enabled, relayAccountId)
+                                            }
+                                            onLaunchCurrentCodexConfig={() =>
+                                                void onLaunchCurrentCodexConfig()
+                                            }
+                                            onUpdateSettings={updateSettings}
+                                        />
+                                    </Suspense>
+                                )}
+
+                            </div>
+                        ) : visibleActiveTab === "providers" ? (
+                            <Suspense fallback={<ViewLoadingFallback />}>
+                                <ProvidersView
                                     accounts={accounts}
-                                    ungroupedAccounts={ungroupedAccounts}
-                                    loading={loading}
-                                    accountPools={settings.accountPools}
-                                    saving={savingSettings}
-                                    exportingAccounts={exportingAccounts}
-                                    switchingId={switchingId}
-                                    renamingAccountId={renamingAccountId}
-                                    pendingDeleteId={pendingDeleteId}
                                     notificationProviders={settings.notificationProviders}
-                                    usageDisplayMode={settings.trayUsageDisplayMode}
                                     hideAccountDetails={hideAccountDetails}
-                                    apiEnhancedLaunchEnabled={settings.apiEnhancedLaunchEnabled}
-                                    onRenamePool={(poolId, name) =>
-                                        updateAccountPool(poolId, (pool) => ({ ...pool, name }))
-                                    }
-                                    onDeletePool={(poolId) =>
-                                        persistAccountPools(
-                                            settings.accountPools.filter((pool) => pool.id !== poolId),
-                                        )
-                                    }
-                                    onTogglePoolCollapsed={(poolId, collapsed) =>
-                                        updateAccountPool(poolId, (pool) => ({
-                                            ...pool,
-                                            collapsed,
-                                        }))
-                                    }
-                                    onReorderPool={(poolId, accountKeys) =>
-                                        updateAccountPool(poolId, (pool) => ({
-                                            ...pool,
-                                            accountKeys: sortAndNormalizeAccountKeys(accountKeys, activeAccountKeys),
-                                        }))
-                                    }
-                                    onRefreshPoolUsage={(accountKeys, apiAccountKeys) => {
-                                        if (accountKeys.length > 0) {
-                                            void refreshUsageForAccountKeys(accountKeys, {
-                                                notice: copy.notices.groupUsageRefreshed(accountKeys.length),
-                                            });
-                                        }
-                                        if (apiAccountKeys.length > 0) {
-                                            void refreshApiQuotaForAccountKeys(apiAccountKeys, {
-                                                notice: copy.notices.apiQuotaRefreshed(apiAccountKeys.length),
-                                            });
-                                        }
-                                    }}
-                                    onAssignAccountToPool={assignAccountToPool}
-                                    onRemoveAccountFromAllPools={removeAccountFromAllPools}
-                                    onExportAccountKeys={openBulkExportDialog}
-                                    onExport={(account) => openExportDialog(account)}
-                                    onReauthorize={(account) => void onReauthorizeAccount(account)}
-                                    onRename={(account, label) => onRenameAccountLabel(account, label)}
-                                    onUpdateApiAccount={(account, input) =>
-                                        onUpdateApiAccount(account, input)
-                                    }
-                                    onUpdateTags={(account, value) => onUpdateAccountTags(account, value)}
+                                    onOpenAddDialog={onOpenAddDialog}
                                     onRefreshApiQuota={(account) =>
                                         void refreshApiQuotaForAccountKeys([account.accountKey], {
                                             notice: copy.notices.apiQuotaRefreshed(1),
                                         })
                                     }
-                                    onSwitch={(account) => void onSwitch(account)}
-                                    onDelete={(account) => void onDelete(account)}
                                 />
-
-                            </div>
-                        ) : activeTab === "notifications" ? (
-                            <Suspense fallback={<ViewLoadingFallback />}>
-                                <NotificationsPanel
+                            </Suspense>
+                        ) : visibleActiveTab === "notifications" ? (
+                            isClassicSkin ? (
+                                <ClassicNotificationsPanel
                                     settings={settings}
                                     saving={savingSettings}
                                     viewTab={notificationView}
                                     onViewTabChange={setNotificationView}
                                     onUpdateSettings={updateSettings}
                                 />
-                            </Suspense>
+                            ) : (
+                                <Suspense fallback={<ViewLoadingFallback />}>
+                                    <NotificationsPanel
+                                        settings={settings}
+                                        saving={savingSettings}
+                                        viewTab={notificationView}
+                                        onViewTabChange={setNotificationView}
+                                        onUpdateSettings={updateSettings}
+                                    />
+                                </Suspense>
+                            )
                         ) : (
-                            <Suspense fallback={<ViewLoadingFallback />}>
-                                <SettingsPanel
+                            isClassicSkin ? (
+                                <ClassicSettingsPanel
                                     themeMode={themeMode}
                                     onToggleTheme={toggleTheme}
                                     checkingUpdate={checkingUpdate}
@@ -553,14 +765,33 @@ function CodexDeckApp() {
                                     settings={settings}
                                     installedEditorApps={installedEditorApps}
                                     hasOpencodeDesktopApp={hasOpencodeDesktopApp}
+                                    onReloadSettings={() => void reloadSettings()}
                                     onUpdateSettings={updateSettings}
                                 />
-                            </Suspense>
+                            ) : (
+                                <Suspense fallback={<ViewLoadingFallback />}>
+                                    <SettingsPanel
+                                        themeMode={themeMode}
+                                        onToggleTheme={toggleTheme}
+                                        uiSkinMode={uiSkinMode}
+                                        onSetUiSkin={setUiSkinMode}
+                                        checkingUpdate={checkingUpdate}
+                                        onCheckUpdate={() => void checkForAppUpdate(false)}
+                                        onOpenExternalUrl={(url) => void openExternalUrl(url)}
+                                        settings={settings}
+                                        installedEditorApps={installedEditorApps}
+                                        hasOpencodeDesktopApp={hasOpencodeDesktopApp}
+                                        onReloadSettings={() => void reloadSettings()}
+                                        onUpdateSettings={updateSettings}
+                                    />
+                                </Suspense>
+                            )
                         )}
                     </section>
                 </div>
             </main>
         </div>
+        </ConfigProvider>
     );
 }
 

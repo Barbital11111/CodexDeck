@@ -17,7 +17,7 @@ use crate::models::UsageWindow;
 #[cfg(target_os = "macos")]
 use crate::state::AppState;
 #[cfg(target_os = "macos")]
-use crate::store::load_store;
+use crate::store::load_store_read_only;
 #[cfg(target_os = "macos")]
 use std::time::Duration;
 
@@ -63,7 +63,7 @@ fn mode_percent(mode: TrayUsageDisplayMode, window: Option<&UsageWindow>) -> Opt
 
 #[cfg(target_os = "macos")]
 fn read_tray_usage_mode(app: &AppHandle) -> TrayUsageDisplayMode {
-    load_store(app)
+    load_store_read_only(app)
         .map(|store| store.settings.tray_usage_display_mode)
         .unwrap_or_default()
 }
@@ -328,7 +328,7 @@ pub(crate) fn update_macos_tray_snapshot(
 
 #[cfg(target_os = "macos")]
 pub(crate) fn refresh_macos_tray_snapshot(app: &AppHandle) -> Result<(), String> {
-    let store = load_store(app)?;
+    let store = load_store_read_only(app)?;
     let current_account_key = current_auth_account_key();
     let current_variant_key = current_auth_variant_key();
     let summaries: Vec<AccountSummary> = store
@@ -368,7 +368,7 @@ fn setup_macos_status_bar(app: &AppHandle) -> Result<(), String> {
 
     let mode = read_tray_usage_mode(app);
     let locale = i18n::app_locale(app);
-    let store = load_store(app)?;
+    let store = load_store_read_only(app)?;
     let current_account_key = current_auth_account_key();
     let current_variant_key = current_auth_variant_key();
     let summaries: Vec<AccountSummary> = store

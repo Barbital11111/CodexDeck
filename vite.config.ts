@@ -20,23 +20,7 @@ function resolveManualChunk(id: string) {
     return 'vendor-tauri'
   }
 
-  if (
-    normalizedId.includes('/antd/') ||
-    normalizedId.includes('/rc-') ||
-    normalizedId.includes('/@rc-component/') ||
-    normalizedId.includes('/@ant-design/') ||
-    normalizedId.includes('/@ant-design/icons') ||
-    normalizedId.includes('/@ant-design/icons-svg') ||
-    normalizedId.includes('/dayjs/') ||
-    normalizedId.includes('/classnames/') ||
-    normalizedId.includes('/copy-to-clipboard/') ||
-    normalizedId.includes('/resize-observer-polyfill/') ||
-    normalizedId.includes('/throttle-debounce/')
-  ) {
-    return 'vendor-antd'
-  }
-
-  return 'vendor'
+  return undefined
 }
 
 // https://vite.dev/config/
@@ -62,7 +46,7 @@ export default defineConfig({
 
     watch: {
       // tell vite to ignore watching `src-tauri`
-      ignored: ['**/src-tauri/**'],
+      ignored: ['**/src-tauri/**', '**/.dev-runtime/**'],
     },
   },
   // Env variables starting with the item of `envPrefix` will be exposed in tauri's source code through `import.meta.env`.

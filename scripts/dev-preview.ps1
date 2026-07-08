@@ -2,12 +2,12 @@ $ErrorActionPreference = "Stop"
 
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $devRoot = Join-Path $repoRoot ".dev-runtime"
+$repoParent = Split-Path -Parent $repoRoot
+$externalDevRoot = Join-Path $repoParent "CodexDeck-dev-runtime"
 $appDataDir = Join-Path $devRoot "app-data"
-$codexDir = Join-Path $devRoot "codex"
 $copyProdData = $env:CODEX_SWITCH_DEV_COPY_PROD -eq "1"
 
 New-Item -ItemType Directory -Force -Path $appDataDir | Out-Null
-New-Item -ItemType Directory -Force -Path $codexDir | Out-Null
 
 function Copy-IfMissing {
     param(
@@ -27,6 +27,16 @@ function Copy-IfMissing {
     Copy-Item -LiteralPath $Source -Destination $Destination -Recurse -Force
 }
 
+function Set-JsonProperty {
+    param(
+        [Parameter(Mandatory = $true)]$Object,
+        [Parameter(Mandatory = $true)][string]$Name,
+        $Value
+    )
+
+    $Object | Add-Member -NotePropertyName $Name -NotePropertyValue $Value -Force
+}
+
 $prodAppDataDir = Join-Path $env:APPDATA "com.carry.codex-tools"
 $futureProdAppDataDir = Join-Path $env:APPDATA "io.github.barbital11111.codex-switch"
 if ($copyProdData) {
@@ -44,7 +54,18 @@ if (Test-Path -LiteralPath $devAccountsPath) {
     try {
         $store = Get-Content -LiteralPath $devAccountsPath -Raw | ConvertFrom-Json
         if ($store.settings) {
-            $store.settings.launchAtStartup = $false
+            Set-JsonProperty -Object $store.settings -Name "launchAtStartup" -Value $false
+            Set-JsonProperty -Object $store.settings -Name "codexLaunchPath" -Value $null
+            Set-JsonProperty -Object $store.settings -Name "apiEnhancedLaunchEnabled" -Value $false
+            Set-JsonProperty -Object $store.settings -Name "codexMultiModelModeEnabled" -Value $false
+            Set-JsonProperty -Object $store.settings -Name "codexMultiModelStatus" -Value $null
+            Set-JsonProperty -Object $store.settings -Name "codexMultiModelWorkspace" -Value $null
+            Set-JsonProperty -Object $store.settings -Name "codexMultiModelRestorePoint" -Value $null
+            Set-JsonProperty -Object $store.settings -Name "codexMultiModelControlledAppRoot" -Value $null
+            Set-JsonProperty -Object $store.settings -Name "codexMultiModelControlledExePath" -Value $null
+            Set-JsonProperty -Object $store.settings -Name "codexMultiModelControlledAppAsarPath" -Value $null
+            Set-JsonProperty -Object $store.settings -Name "codexMultiModelSourceAppRoot" -Value $null
+            Set-JsonProperty -Object $store.settings -Name "codexMultiModelPatchStatePath" -Value $null
             $store | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $devAccountsPath -Encoding UTF8
         }
     } catch {
@@ -52,14 +73,9 @@ if (Test-Path -LiteralPath $devAccountsPath) {
     }
 }
 
-$prodCodexDir = Join-Path $env:USERPROFILE ".codex"
-if ($copyProdData) {
-    Copy-IfMissing -Source (Join-Path $prodCodexDir "auth.json") -Destination (Join-Path $codexDir "auth.json")
-    Copy-IfMissing -Source (Join-Path $prodCodexDir "config.toml") -Destination (Join-Path $codexDir "config.toml")
-}
-
 $env:CODEX_SWITCH_DEV_DATA_DIR = $appDataDir
-$env:CODEX_SWITCH_DEV_CODEX_DIR = $codexDir
+Remove-Item Env:CODEX_SWITCH_DEV_CODEX_DIR -ErrorAction SilentlyContinue
+Remove-Item Env:CODEX_TOOLS_DEV_CODEX_DIR -ErrorAction SilentlyContinue
 
 $cargoBin = Join-Path $env:USERPROFILE ".cargo\\bin"
 if (Test-Path -LiteralPath $cargoBin) {
@@ -77,7 +93,7 @@ if (Test-Path -LiteralPath $rustToolchainBin) {
 
 Write-Host "Dev preview will use isolated directories:"
 Write-Host ("  app data: {0}" -f $appDataDir)
-Write-Host ("  codex dir: {0}" -f $codexDir)
+Write-Host ("  codex dir: {0}" -f (Join-Path $env:USERPROFILE ".codex"))
 
 $devTauriConfigPath = Join-Path $devRoot "tauri.dev.conf.json"
 $devTauriConfig = @{

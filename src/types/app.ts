@@ -2,6 +2,7 @@ import type { AppLocale } from "../i18n/catalog";
 
 export type UsageWindow = {
   usedPercent: number;
+  totalPercent?: number | null;
   windowSeconds: number;
   resetAt: number | null;
 };
@@ -43,6 +44,19 @@ export type ApiQuotaMode = "apiOnly" | "platformBasic" | "platformSubscription" 
 
 export type AccountsExportFormat = "codexDeck" | "sub2api";
 
+export type RelayModelCatalogEntry = {
+  model: string;
+  displayName?: string | null;
+  requestModel?: string | null;
+  contextWindow?: number | null;
+  enabled: boolean;
+};
+
+export type ModelRouterRouteSelection = {
+  accountId: string;
+  model: string;
+};
+
 export type AccountSummary = {
   id: string;
   label: string;
@@ -53,6 +67,8 @@ export type AccountSummary = {
   planType: string | null;
   apiBaseUrl: string | null;
   modelName: string | null;
+  modelCatalog: RelayModelCatalogEntry[];
+  modelRoutingEnabled: boolean;
   balanceText: string | null;
   balanceDisplayEnabled: boolean;
   apiQuotaMode: ApiQuotaMode;
@@ -64,6 +80,7 @@ export type AccountSummary = {
   apiQuotaDailyWindow?: UsageWindow | null;
   apiQuotaTotalWindow?: UsageWindow | null;
   apiQuotaSubscriptionExpiresAt?: number | null;
+  apiQuotaSubscriptionName?: string | null;
   providerId: string | null;
   providerName: string | null;
   tags: string[];
@@ -104,6 +121,7 @@ export type NotificationScheduleMode = "manual" | "daily" | "interval" | "date";
 export type NotificationProviderConfig = {
   id: string;
   name: string;
+  accountKey?: string | null;
   kind: NotificationProviderKind;
   enabled: boolean;
   costMultiplier: number;
@@ -212,10 +230,12 @@ export type CreateApiAccountInput = {
   baseUrl: string;
   apiKey: string;
   modelName: string;
+  modelCatalog?: RelayModelCatalogEntry[];
   tags: string[];
   forceSave: boolean;
   balanceDisplayEnabled?: boolean;
   apiQuotaMode?: ApiQuotaMode;
+  apiQuotaSubscriptionName?: string | null;
   platformLoginEmail?: string;
   platformLoginPassword?: string;
 };
@@ -225,10 +245,12 @@ export type UpdateApiAccountInput = {
   baseUrl: string;
   apiKey: string | null;
   modelName: string;
+  modelCatalog?: RelayModelCatalogEntry[];
   balanceDisplayEnabled?: boolean;
   apiQuotaMode?: ApiQuotaMode;
   apiQuotaTodayUsedText?: string | null;
   apiQuotaRemainingText?: string | null;
+  apiQuotaSubscriptionName?: string | null;
   platformLoginEmail?: string;
   platformLoginPassword?: string;
 };
@@ -268,6 +290,8 @@ export type PendingUpdateInfo = {
 
 export type ThemeMode = "light" | "dark";
 
+export type UiSkinMode = "classic" | "modern";
+
 export type TrayUsageDisplayMode = "remaining" | "used" | "hidden";
 
 export type EditorAppId =
@@ -290,15 +314,25 @@ export type AppSettings = {
   launchCodexAfterSwitch: boolean;
   smartSwitchIncludeApi: boolean;
   apiEnhancedLaunchEnabled: boolean;
+  codexMultiModelModeEnabled: boolean;
+  codexModelInstructionsFixEnabled: boolean;
+  codexDisableGpuAcceleration: boolean;
+  codexMultiModelStatus?: string | null;
+  codexMultiModelWorkspace?: string | null;
+  codexMultiModelRestorePoint?: string | null;
+  codexMultiModelControlledAppRoot?: string | null;
+  codexMultiModelControlledExePath?: string | null;
+  codexMultiModelControlledAppAsarPath?: string | null;
+  codexMultiModelSourceAppRoot?: string | null;
+  codexMultiModelPatchStatePath?: string | null;
+  modelRouterEnabled: boolean;
+  modelRouterAccountId?: string | null;
+  modelRouterRouteSelections: ModelRouterRouteSelection[];
   usageAutoRefreshEnabled: boolean;
   usageAutoRefreshIntervalSecs: number;
   apiQuotaAutoRefreshEnabled: boolean;
   apiQuotaAutoRefreshIntervalSecs: number;
   quotaAlertEnabled: boolean;
-  codexContextWindowK: number | null;
-  codexContextWindowModel: string | null;
-  codexContextWindowLimitK: number | null;
-  codexContextWindowEffectiveLimitK: number | null;
   quotaAlertFiveHourThreshold: number;
   quotaAlertOneWeekThreshold: number;
   codexLaunchPath: string | null;
@@ -310,6 +344,7 @@ export type AppSettings = {
   restartOpencodeDesktopOnSwitch: boolean;
   restartEditorsOnSwitch: boolean;
   restartEditorTargets: EditorAppId[];
+  accountCardOrder?: string[];
   accountPools: AccountPoolConfig[];
   notificationProviders: NotificationProviderConfig[];
   notificationTargets: NotificationTargetConfig[];

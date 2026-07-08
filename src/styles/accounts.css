@@ -70,7 +70,7 @@
   margin: 0;
   color: var(--ink);
   font: 650 0.98rem/1.2 var(--font-ui);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .accountUngroupedHeading p {
@@ -189,7 +189,7 @@
 .accountGroupIdentity strong {
   color: var(--ink);
   font: 650 1rem/1.2 var(--font-ui);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -225,7 +225,8 @@
 }
 
 .accountGroupActions .accountGroupIconButton.ant-btn:not(:disabled):hover,
-.accountGroupActions .accountGroupIconButton.ant-btn:not(:disabled):focus-visible {
+.accountGroupActions .accountGroupIconButton.ant-btn:not(:disabled):focus-visible,
+.accountGroupActions .accountGroupIconButton.ant-btn.isActive {
   background: #29b7cb;
   color: #fff;
   transform: translateY(-1px);
@@ -328,7 +329,7 @@
 .accountGroupAddPanelHeader strong {
   color: var(--ink);
   font: 650 0.8rem/1.2 var(--font-ui);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .accountGroupAddPanelHeader button {
@@ -451,7 +452,7 @@
   min-width: 0;
   color: var(--ink);
   font: 650 0.76rem/1.2 var(--font-ui);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -578,7 +579,7 @@
   max-width: 100%;
   color: var(--ink);
   font: 650 0.84rem/1.2 var(--font-ui);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -683,7 +684,9 @@
   --account-card-width: clamp(286px, 28vw, 312px);
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(min(100%, var(--account-card-width)), var(--account-card-width)));
+  grid-auto-rows: 1fr;
   gap: 16px;
+  align-items: stretch;
   justify-content: start;
   padding-top: 14px;
   border-top: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
@@ -692,6 +695,8 @@
 .accountGroupMemberCard {
   position: relative;
   width: min(100%, var(--account-card-width, 312px));
+  min-height: 100%;
+  display: flex;
 }
 
 .accountGroupNestedSlot {
@@ -699,10 +704,12 @@
   width: min(100%, var(--account-card-width, 312px));
   min-height: 390px;
   height: 100%;
+  display: flex;
 }
 
-.accountGroupNestedSlot .accountCard .cardHeader {
-  padding-right: 76px;
+.accountGroupNestedSlot > .accountCard {
+  width: 100%;
+  height: 100%;
 }
 
 .accountGroupCardRemoveButton.ant-btn {
@@ -763,11 +770,116 @@
   background: rgba(242, 106, 119, 0.08);
 }
 
-.accountCardSlot {
+.accountCardSlot,
+.accountCardSlot-router {
   position: relative;
   width: min(100%, var(--account-card-width, 312px));
   min-height: 390px;
-  height: auto;
+  height: 100%;
+  display: flex;
+}
+
+.sortableAccountCardSlot {
+  transition:
+    transform 180ms ease,
+    opacity 180ms ease,
+    filter 180ms ease,
+    box-shadow 180ms ease;
+  view-transition-name: var(--account-card-transition-name, none);
+}
+
+.sortableAccountCardSlot.isSorting {
+  opacity: 0.58;
+  transform: scale(0.985);
+  filter: saturate(0.82);
+  z-index: 9;
+}
+
+.accountCardSortHandle.ant-btn {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  min-height: 26px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, var(--surface-tint) 22%);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--card) 94%, var(--surface-tint) 6%);
+  color: color-mix(in srgb, var(--subtle) 84%, var(--ink) 16%);
+  cursor: grab;
+  box-shadow:
+    inset 0 1px var(--surface-highlight-soft),
+    0 6px 14px rgba(15, 23, 42, 0.06);
+}
+
+.accountCardSortHandle.ant-btn:not(:disabled):hover,
+.accountCardSortHandle.ant-btn:not(:disabled):focus-visible {
+  border-color: color-mix(in srgb, var(--button-primary-border, #1677ff) 42%, var(--line) 58%);
+  background: color-mix(in srgb, var(--button-primary-border, #1677ff) 10%, var(--card) 90%);
+  color: var(--button-primary-border, #1677ff);
+}
+
+.accountCardSortHandle.ant-btn:active {
+  cursor: grabbing;
+}
+
+.cardSortBarSlot {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  z-index: 5;
+  width: 92px;
+  display: flex;
+  justify-content: center;
+  margin: 0;
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.accountCardSortBar.ant-btn {
+  width: 92px;
+  height: 12px;
+  min-width: 92px;
+  min-height: 12px;
+  padding: 0;
+  border: 0 !important;
+  border-radius: 999px;
+  background: transparent !important;
+  color: color-mix(in srgb, var(--subtle) 70%, var(--ink) 30%);
+  cursor: grab;
+  box-shadow: none !important;
+  pointer-events: auto;
+}
+
+.accountCardSortBar.ant-btn:hover,
+.accountCardSortBar.ant-btn:focus-visible {
+  background: transparent !important;
+  color: var(--button-primary-border, #1677ff);
+}
+
+.accountCardSortBar.ant-btn:active {
+  cursor: grabbing;
+}
+
+.accountCardSortBarGrip {
+  width: 84px;
+  height: 2px;
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      90deg,
+      transparent,
+      color-mix(in srgb, currentColor 70%, transparent) 18%,
+      color-mix(in srgb, currentColor 90%, transparent) 50%,
+      color-mix(in srgb, currentColor 70%, transparent) 82%,
+      transparent
+    );
+  box-shadow: none;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation-duration: 170ms;
+  animation-timing-function: cubic-bezier(0.2, 0, 0, 1);
 }
 
 .referenceCardSlot,
@@ -1159,7 +1271,7 @@
   margin: 0;
   color: var(--ink);
   font: 650 1.2rem/1.2 var(--font-ui);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .emptyState p {
@@ -1326,11 +1438,61 @@
   --stamp-plan-bg: rgba(112, 126, 163, 0.28);
 }
 
+:root[data-theme="dark"] .subscriptionBadge {
+  border-color: rgba(172, 184, 220, 0.62);
+  background: rgba(112, 126, 163, 0.26);
+  color: #eef2ff;
+}
+
+:root[data-theme="dark"] .subscriptionBadge-free {
+  border-color: rgba(168, 182, 220, 0.64);
+  background: rgba(120, 133, 168, 0.26);
+  color: #e4ebff;
+}
+
+:root[data-theme="dark"] .subscriptionBadge-plus {
+  border-color: rgba(181, 146, 255, 0.7);
+  background: rgba(130, 95, 219, 0.26);
+  color: #f0e0ff;
+}
+
+:root[data-theme="dark"] .subscriptionBadge-pro {
+  border-color: rgba(255, 170, 115, 0.68);
+  background: rgba(219, 118, 54, 0.26);
+  color: #ffe0c7;
+}
+
+:root[data-theme="dark"] .subscriptionBadge-max {
+  border-color: rgba(255, 202, 91, 0.72);
+  background: rgba(209, 143, 33, 0.28);
+  color: #fff1cc;
+}
+
+:root[data-theme="dark"] .subscriptionBadge-ultra {
+  border-color: rgba(193, 152, 255, 0.72);
+  background: rgba(111, 76, 196, 0.3);
+  color: #f2e6ff;
+}
+
+:root[data-theme="dark"] .subscriptionBadge-team {
+  border-color: rgba(89, 226, 212, 0.66);
+  background: rgba(55, 193, 178, 0.24);
+  color: #c5fff8;
+}
+
 .cardHeader {
   display: flex;
   align-items: flex-start;
-  justify-content: space-between;
-  gap: 10px;
+  justify-content: flex-start;
+  gap: 8px;
+}
+
+.cardSortHandleSlot {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 1px;
 }
 
 .cardIdentity {
@@ -1369,6 +1531,53 @@
 .stateBadge {
   min-height: 23px;
   padding: 0 9px;
+}
+
+.subscriptionBadge {
+  max-width: 132px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  border: 1px solid rgba(154, 165, 191, 0.24);
+  background: rgba(196, 205, 223, 0.12);
+  color: #4f5f7c;
+  text-transform: none;
+  letter-spacing: 0.01em;
+}
+
+.subscriptionBadge-free {
+  border-color: rgba(135, 147, 174, 0.28);
+  background: rgba(187, 197, 219, 0.12);
+  color: #4f5f7c;
+}
+
+.subscriptionBadge-plus {
+  border-color: rgba(158, 122, 242, 0.3);
+  background: rgba(191, 151, 255, 0.14);
+  color: #5f4294;
+}
+
+.subscriptionBadge-pro {
+  border-color: rgba(226, 131, 60, 0.3);
+  background: rgba(255, 164, 95, 0.13);
+  color: #7d3f13;
+}
+
+.subscriptionBadge-max {
+  border-color: rgba(212, 153, 44, 0.34);
+  background: rgba(255, 203, 93, 0.16);
+  color: #775016;
+}
+
+.subscriptionBadge-ultra {
+  border-color: rgba(133, 92, 214, 0.34);
+  background: rgba(176, 136, 255, 0.16);
+  color: #54328d;
+}
+
+.subscriptionBadge-team {
+  border-color: rgba(56, 190, 178, 0.3);
+  background: rgba(118, 231, 221, 0.14);
+  color: #0f6f68;
 }
 
 .stateBadge {
@@ -1439,7 +1648,7 @@
   margin: 0;
   color: var(--ink);
   font: 760 0.92rem/1.18 var(--font-ui);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1495,7 +1704,7 @@
 }
 
 .relayInfoPanel {
-  min-height: 194px;
+  min-height: 208px;
   overflow: hidden;
   border: 1px solid color-mix(in srgb, var(--line) 90%, var(--surface-tint) 10%);
   border-radius: 15px;
@@ -1514,8 +1723,8 @@
 .apiQuotaPanel {
   min-width: 0;
   display: grid;
-  gap: 8px;
-  padding: 10px;
+  gap: 10px;
+  padding: 12px;
   border: 1px solid var(--cs-border-soft, rgba(5, 5, 5, 0.06));
   border-radius: var(--cs-radius-sm, 8px);
   background: var(--cs-paper, #fff);
@@ -1525,25 +1734,35 @@
 .apiQuotaUsagePanel {
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
-  padding: 10px 8px;
+  gap: 10px;
+  padding: 12px 10px;
 }
 
 .apiQuotaUsagePanel .usageDial {
+  gap: 6px;
   padding: 0 2px;
 }
 
 .apiQuotaUsagePanel .usageDialChart {
-  width: 52px;
-  height: 52px;
+  width: 72px;
+  height: 72px;
 }
 
 .apiQuotaUsagePanel .usageDialTrack,
 .apiQuotaUsagePanel .usageDialProgress {
-  stroke-width: 8;
+  stroke-width: 7;
 }
 
 .apiQuotaUsagePanel .usageDialReset {
-  min-height: 26px;
+  min-height: 32px;
+}
+
+.apiQuotaUsagePanel .usageDialCenter strong {
+  font-size: 0.86rem;
+}
+
+.apiQuotaUsagePanel .usageDialCenter span {
+  font-size: 0.54rem;
 }
 
 .apiQuotaPanel-single {
@@ -1622,37 +1841,6 @@
   white-space: normal;
   word-break: break-word;
   overflow-wrap: anywhere;
-}
-
-.accountLaunchModeHint {
-  width: fit-content;
-  max-width: 100%;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 5px 8px;
-  border: 1px solid color-mix(in srgb, var(--line) 76%, var(--surface-tint) 24%);
-  border-radius: 999px;
-  background: color-mix(in srgb, var(--card) 70%, var(--surface-tint) 30%);
-}
-
-.accountLaunchModeHint span {
-  min-width: 0;
-  color: var(--subtle);
-  font: 720 0.68rem/1.15 var(--font-ui);
-  letter-spacing: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.accountLaunchModeHint.isEnhanced {
-  border-color: color-mix(in srgb, var(--tone-a) 38%, var(--line) 62%);
-  background: color-mix(in srgb, var(--tone-a) 11%, var(--card) 89%);
-}
-
-.accountLaunchModeHint.isEnhanced span {
-  color: color-mix(in srgb, var(--tone-a) 66%, var(--ink) 34%);
 }
 
 .accountMetaPanel {
@@ -1845,7 +2033,7 @@
 .usageDialReset strong {
   color: color-mix(in srgb, var(--ink) 72%, var(--subtle) 28%);
   font: 640 0.56rem/1.16 var(--font-ui);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
   display: block;
   white-space: nowrap;
   overflow: hidden;
@@ -1936,6 +2124,7 @@
 .accountApiDrawer .ant-drawer-body {
   padding: 16px 18px;
   background: var(--cs-paper, #fff);
+  overflow-x: hidden;
 }
 
 .accountApiDrawer .ant-drawer-footer {
@@ -1946,11 +2135,13 @@
 .accountApiDrawerBody {
   display: grid;
   gap: 14px;
+  min-width: 0;
 }
 
 .accountApiDrawerSection {
   display: grid;
   gap: 12px;
+  min-width: 0;
   padding: 14px;
   border: 1px solid var(--cs-border, #d9d9d9);
   border-radius: var(--cs-radius-lg, 12px);
@@ -2028,8 +2219,178 @@
   gap: 8px;
 }
 
+.accountApiDrawerModelHeader {
+  min-width: 0;
+}
+
+.accountApiDrawer .accountApiDrawerModelPanel,
+.accountApiDrawer .apiModelCatalogTable,
+.accountApiDrawer .apiModelCatalogRow,
+.accountApiDrawer .apiModelCatalogRow .ant-input,
+.accountApiDrawer .apiModelCatalogRow .ant-btn {
+  min-width: 0;
+}
+
+.accountApiDrawer .apiModelCatalogRow {
+  position: relative;
+  grid-template-columns: 24px 24px minmax(0, 1fr) auto;
+  gap: 8px;
+  padding: 8px;
+  border: 1px solid var(--cs-border-soft, rgba(5, 5, 5, 0.06));
+  border-radius: var(--cs-radius-md, 10px);
+  background: color-mix(in srgb, var(--cs-paper, #fff) 94%, var(--cs-accent, #1677ff) 6%);
+}
+
+.accountApiDrawer .apiModelCatalogRow.isSorting {
+  grid-template-columns: 24px 24px minmax(0, 1fr) auto;
+  padding-left: 42px;
+}
+
+.accountApiDrawer .apiModelCatalogDragHandle.ant-btn {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+}
+
+.accountApiDrawer .apiModelCatalogColumnHeader {
+  display: none;
+}
+
+.accountApiDrawer .accountApiDrawerModelInput {
+  grid-column: 3;
+}
+
+.accountApiDrawer .accountApiDrawerModelRemoveButton {
+  grid-column: 4;
+  justify-self: end;
+}
+
+.accountApiDrawer .accountApiDrawerModelDisplayInput {
+  grid-column: 3 / 5;
+}
+
+.accountApiDrawer .accountApiDrawerModelRequestInput {
+  grid-column: 3 / 5;
+}
+
+.accountApiDrawer .accountApiDrawerModelContextInput {
+  grid-column: 3 / 4;
+}
+
 @media (max-width: 620px) {
   .accountApiDrawerGrid {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+/* UI baseline cleanup: keep account surfaces on one compact, consistent scale. */
+.cards {
+  --account-card-width: clamp(300px, 26vw, 328px);
+  gap: var(--ui-gap-lg, 16px);
+}
+
+.accountCard {
+  min-height: 420px;
+  padding: var(--ui-gap-lg, 16px);
+  gap: var(--ui-gap-md, 12px);
+  border-radius: var(--ui-radius-xl, 14px);
+  background: var(--card);
+  box-shadow: var(--ui-card-shadow, 0 4px 12px rgba(5, 5, 5, 0.05));
+}
+
+.accountCard:hover,
+.accountCard:focus-within,
+.accountCard.isSwitching {
+  transform: none;
+  box-shadow: var(--ui-card-shadow, 0 4px 12px rgba(5, 5, 5, 0.05));
+}
+
+.cardIdentity {
+  gap: var(--ui-gap-sm, 8px);
+}
+
+.cardIdentity h3 {
+  font: 750 var(--ui-font-lg, 1rem) / var(--ui-line-tight, 1.2) var(--font-ui);
+  letter-spacing: 0;
+}
+
+.cardBadge {
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: var(--ui-radius-sm, 8px);
+  font: 700 0.68rem/1 var(--font-ui);
+  letter-spacing: 0;
+}
+
+.relayInfoPanel,
+.usageGrid,
+.accountMetaPanel {
+  border-radius: var(--ui-radius-lg, 12px);
+  background: color-mix(in srgb, var(--card) 92%, var(--meta-bg) 8%);
+  box-shadow: none;
+}
+
+.relayInfoPanel {
+  min-height: 216px;
+  gap: var(--ui-gap-md, 12px);
+  padding: var(--ui-gap-md, 12px);
+}
+
+.apiQuotaPanel {
+  gap: var(--ui-gap-sm, 8px);
+  padding: var(--ui-gap-md, 12px);
+  border-radius: var(--ui-radius-md, 10px);
+}
+
+.apiQuotaUsagePanel {
+  gap: var(--ui-gap-md, 12px);
+}
+
+.apiQuotaUsagePanel .usageDial {
+  gap: var(--ui-gap-sm, 8px);
+}
+
+.apiQuotaUsagePanel .usageDialChart {
+  width: 68px;
+  height: 68px;
+}
+
+.apiQuotaUsagePanel .usageDialCenter strong {
+  font-size: 0.88rem;
+}
+
+.apiQuotaUsagePanel .usageDialCenter span,
+.usageDialReset span,
+.apiQuotaMetric span,
+.relayInfoRow span,
+.accountMetaLabel {
+  font-size: var(--ui-font-xs, 0.72rem);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.usageDialReset strong,
+.relayInfoRow strong,
+.accountMetaValue,
+.apiQuotaMetric strong {
+  font-size: var(--ui-font-sm, 0.78rem);
+  line-height: var(--ui-line-normal, 1.45);
+}
+
+.cardFooterActions {
+  gap: var(--ui-gap-sm, 8px);
+}
+
+.cardFooterActions .cardFooterAction.ant-btn {
+  height: var(--ui-control-md, 34px);
+  min-height: var(--ui-control-md, 34px);
+  border-radius: var(--ui-radius-sm, 8px);
+  background: color-mix(in srgb, var(--meta-bg) 76%, var(--card) 24%);
+}
+
+.cardFooterActions .cardFooterAction.ant-btn:not(:disabled):hover,
+.cardFooterActions .cardFooterAction.ant-btn:not(:disabled):focus-visible {
+  background: var(--cs-brand, #1677ff);
+  color: #fff;
+  transform: none;
 }

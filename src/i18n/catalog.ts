@@ -121,6 +121,10 @@ export type MessageCatalog = {
     uploadDescription: string;
     apiTab: string;
     apiDescription: string;
+    apiProviderPresetTitle: string;
+    apiProviderPresetHint: string;
+    apiProviderCustomHint: string;
+    apiProviderSelectedHint: (label: string) => string;
     apiNameLabel: string;
     apiNamePlaceholder: string;
     apiBaseUrlLabel: string;
@@ -167,7 +171,6 @@ export type MessageCatalog = {
     apiBadge: string;
     profileIncomplete: string;
     validationFailed: string;
-    enhancedLaunchLabel: string;
     providerLabel: string;
     endpointLabel: string;
     modelLabel: string;
@@ -572,11 +575,6 @@ export type MessageCatalog = {
       checkedText: string;
       uncheckedText: string;
     };
-    apiEnhancedLaunch: {
-      label: string;
-      checkedText: string;
-      uncheckedText: string;
-    };
     autoRefresh: {
       label: string;
       description: string;
@@ -602,18 +600,6 @@ export type MessageCatalog = {
       description: string;
       checkedText: string;
       uncheckedText: string;
-    };
-    contextWindow: {
-      label: string;
-      description: string;
-      groupAriaLabel: string;
-      defaultOption: string;
-      option400k: string;
-      inputPlaceholder: string;
-      hint: string;
-      modelLimitHint: (model: string, hardLimitK: number, effectiveLimitK: number) => string;
-      modelLimitSingleHint: (model: string, effectiveLimitK: number) => string;
-      apply: string;
     };
     quotaAlertFiveHourThreshold: {
       label: string;
@@ -694,12 +680,10 @@ export type MessageCatalog = {
   notices: {
     settingsUpdated: string;
     updateSettingsFailed: (error: string) => string;
-    contextWindowClamped: (model: string, limitK: number) => string;
     usageRefreshed: string;
     groupUsageRefreshed: (count: number) => string;
     groupUsageRefreshNoNativeAccounts: string;
     refreshFailed: (error: string) => string;
-    reloginRequired: (label: string) => string;
     preparingUpdateDownload: string;
     alreadyLatest: string;
     updateDownloadStarted: string;
@@ -818,10 +802,6 @@ function compileLocale(raw: RawMessageCatalog): MessageCatalog {
   const settingsRaw = {
     ...zhFallback.settings,
     ...raw.settings,
-    contextWindow: {
-      ...zhFallback.settings.contextWindow,
-      ...raw.settings.contextWindow,
-    },
   };
   const noticesRaw = {
     ...zhFallback.notices,
@@ -852,6 +832,8 @@ function compileLocale(raw: RawMessageCatalog): MessageCatalog {
       ...addAccountRaw,
       reauthorizeDialogSubtitle: (label) =>
         fillTemplate(addAccountRaw.reauthorizeDialogSubtitle, { label }),
+      apiProviderSelectedHint: (label) =>
+        fillTemplate(addAccountRaw.apiProviderSelectedHint, { label }),
       uploadFileSummary: (firstPath, count) =>
         fillTemplate(addAccountRaw.uploadFileSummary, {
           firstPath,
@@ -879,20 +861,6 @@ function compileLocale(raw: RawMessageCatalog): MessageCatalog {
     },
     settings: {
       ...settingsRaw,
-      contextWindow: {
-        ...settingsRaw.contextWindow,
-        modelLimitHint: (model, hardLimitK, effectiveLimitK) =>
-          fillTemplate(settingsRaw.contextWindow.modelLimitHint, {
-            model,
-            hardLimitK,
-            effectiveLimitK,
-          }),
-        modelLimitSingleHint: (model, effectiveLimitK) =>
-          fillTemplate(settingsRaw.contextWindow.modelLimitSingleHint, {
-            model,
-            effectiveLimitK,
-          }),
-      },
     },
     editorPicker: raw.editorPicker,
     editorAppLabels: raw.editorAppLabels,
@@ -906,12 +874,9 @@ function compileLocale(raw: RawMessageCatalog): MessageCatalog {
     notices: {
       ...noticesRaw,
       updateSettingsFailed: (error) => fillTemplate(noticesRaw.updateSettingsFailed, { error }),
-      contextWindowClamped: (model, limitK) =>
-        fillTemplate(noticesRaw.contextWindowClamped, { model, limitK }),
       groupUsageRefreshed: (count) =>
         fillTemplate(noticesRaw.groupUsageRefreshed, { count }),
       refreshFailed: (error) => fillTemplate(noticesRaw.refreshFailed, { error }),
-      reloginRequired: (label) => fillTemplate(noticesRaw.reloginRequired, { label }),
       updateDownloadingPercent: (percent) =>
         fillTemplate(noticesRaw.updateDownloadingPercent, { percent }),
       updateInstallFailed: (error) => fillTemplate(noticesRaw.updateInstallFailed, { error }),

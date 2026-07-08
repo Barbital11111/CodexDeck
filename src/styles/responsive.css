@@ -5,6 +5,9 @@
   }
 
   .panel {
+    grid-template-columns: clamp(88px, 18vw, 164px) minmax(0, 1fr);
+    width: auto;
+    max-width: 100%;
     height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px);
     min-height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 24px);
     padding: 0;
@@ -48,8 +51,18 @@
   }
 
   .settingsHeader {
-    flex-direction: column;
+    align-items: flex-start;
     padding: 2px 2px 4px;
+  }
+
+  .settingsHeader > div:first-child {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .settingsHeader > .iconButton {
+    flex: 0 0 auto;
+    margin-left: auto;
   }
 
   .settingsShell {
@@ -129,21 +142,8 @@
   }
 
   .settingFieldGroup,
-  .settingFieldGroupStart,
-  .settingFieldGroupContext,
-  .settingContextEditor,
-  .settingContextActions,
-  .settingContextHint {
+  .settingFieldGroupStart {
     width: 100%;
-  }
-
-  .settingContextInputWrap {
-    width: 100%;
-  }
-
-  .settingContextActions {
-    flex-wrap: wrap;
-    justify-content: flex-start;
   }
 
   .settingActionGroup {
@@ -179,17 +179,21 @@
     width: 100%;
   }
 
-  .hybridLaunchPanel {
+  .launchModePanel,
+  .launchModeCard {
     grid-template-columns: 1fr;
     align-items: stretch;
   }
 
   .hybridLaunchControls {
+    grid-template-columns: minmax(0, 1fr);
     width: 100%;
   }
 
   .hybridLaunchSelect-account,
-  .hybridLaunchSelect-relay {
+  .hybridLaunchSelect-relay,
+  .hybridLaunchSelect-routerRelay,
+  .hybridLaunchButton {
     width: 100%;
   }
 
@@ -222,6 +226,14 @@
     align-self: stretch;
     gap: 6px;
     padding: 6px;
+    overflow: auto;
+    scrollbar-width: none;
+  }
+
+  .bottomDock::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
   }
 
   button.bottomDockButton {
@@ -234,5 +246,61 @@
     bottom: calc(env(safe-area-inset-bottom, 0px) + 14px);
     right: 14px;
     width: calc(100vw - 28px);
+  }
+}
+
+@media (max-width: 620px) {
+  .shell {
+    padding: 8px;
+  }
+
+  .panel {
+    grid-template-columns: 64px minmax(0, 1fr);
+    height: calc(100dvh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 16px);
+    min-height: calc(100vh - env(safe-area-inset-top, 0px) - env(safe-area-inset-bottom, 0px) - 16px);
+  }
+
+  .bottomDock {
+    justify-items: center;
+    gap: 8px;
+    padding: 8px 6px;
+  }
+
+  .dockBrand {
+    justify-content: center;
+    padding: 6px 0;
+  }
+
+  .dockBrand strong,
+  .dockSectionLabel,
+  .bottomDockLabel {
+    display: none;
+  }
+
+  .dockLogoMark {
+    width: 30px;
+    height: 30px;
+  }
+
+  .dockSection {
+    width: 100%;
+    justify-items: center;
+  }
+
+  button.bottomDockButton {
+    width: 44px;
+    min-height: 40px;
+    grid-template-columns: 1fr;
+    justify-items: center;
+    gap: 0;
+    padding: 0;
+  }
+
+  button.bottomDockButton::after {
+    display: none;
+  }
+
+  .dockSubmenu {
+    display: none;
   }
 }

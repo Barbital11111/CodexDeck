@@ -2,33 +2,43 @@ import {
   DeleteOutlined,
   EditOutlined,
   ExportOutlined,
+  MinusCircleOutlined,
   PlusOutlined,
   SortAscendingOutlined,
   SyncOutlined,
 } from "@ant-design/icons";
+import { DndContext, PointerSensor, useSensor, useSensors, type DragEndEvent } from "@dnd-kit/core";
+import { rectSortingStrategy, SortableContext } from "@dnd-kit/sortable";
 import { Button, Modal, Tooltip } from "antd";
 import { useMemo, useState } from "react";
 import { useI18n } from "../i18n/I18nProvider";
 import type {
   AccountPoolConfig,
   AccountSummary,
+  AppSettings,
   NotificationProviderConfig,
+  RelayModelCatalogEntry,
   TrayUsageDisplayMode,
+  UpdateSettingsOptions,
   UpdateApiAccountInput,
-  UsageWindow,
 } from "../types/app";
 import {
   compareAccountsByRemaining,
   compareAccountsForDisplay,
 } from "../utils/accountRanking";
-import { formatPlan, percent, remainingPercent, toProgressWidth } from "../utils/usage";
+import {
+  moveAccountKeyToTarget,
+} from "../utils/accountCardOrder";
+import { formatPlan, percent, remainingPercent } from "../utils/usage";
 import {
   displayAccountLabel,
   displayModelName,
-  displayRelayEndpoint,
 } from "../utils/privacy";
 import { AccountCard } from "./AccountCard";
 import { AccountsGrid } from "./AccountsGrid";
+import { QuotaMeter } from "./QuotaMeter";
+import { RouterLaunchCard } from "./RouterLaunchCard";
+import { SortableAccountCardSlot } from "./SortableAccountCardSlot";
 
 type LogicalAccountEntry = {
   accountKey: string;
@@ -54,12 +64,14 @@ type AccountPoolManagerProps = {
   notificationProviders: NotificationProviderConfig[];
   usageDisplayMode: TrayUsageDisplayMode;
   hideAccountDetails: boolean;
-  apiEnhancedLaunchEnabled: boolean;
+  routerSettings: AppSettings;
+  accountCardOrder: string[];
   onRenamePool: (poolId: string, name: string) => void;
   onDeletePool: (poolId: string) => void;
   onTogglePoolCollapsed: (poolId: string, collapsed: boolean) => void;
   onReorderPool: (poolId: string, accountKeys: string[]) => void;
   onRefreshPoolUsage: (accountKeys: string[], apiAccountKeys: string[], label: string) => void;
+  onReorderAccountCards: (accountKeys: string[]) => void;
   onAssignAccountToPool: (accountKey: string, poolId: string) => void;
   onRemoveAccountFromAllPools: (accountKey: string) => void;
   onExportAccountKeys: (accountKeys: string[]) => void;
@@ -67,10 +79,21 @@ type AccountPoolManagerProps = {
   onReauthorize: (account: AccountSummary) => void;
   onRename: (account: AccountSummary, label: string) => Promise<boolean>;
   onUpdateApiAccount: (account: AccountSummary, input: UpdateApiAccountInput) => Promise<boolean>;
+  onProbeApiModels: (
+    baseUrl: string,
+    apiKey: string | null,
+    accountKey?: string,
+  ) => Promise<RelayModelCatalogEntry[]>;
   onUpdateTags: (account: AccountSummary, value: string) => Promise<boolean>;
   onRefreshApiQuota: (account: AccountSummary) => void;
   onSwitch: (account: AccountSummary) => void;
   onDelete: (account: AccountSummary) => void;
+  onSetModelRouterMode: (enabled: boolean, relayAccountId: string | null) => void | Promise<void>;
+  onLaunchCurrentCodexConfig: () => void | Promise<void>;
+  onUpdateSettings: (
+    patch: Partial<AppSettings>,
+    options?: UpdateSettingsOptions,
+  ) => void | Promise<void>;
 };
 
 const PLAN_PRIORITY: Record<string, number> = {
@@ -83,6 +106,14 @@ const PLAN_PRIORITY: Record<string, number> = {
   free: 5,
   unknown: 6,
 };
+
+function isEndpointCapabilityNotice(message: string | null | undefined) {
+  return Boolean(
+    message &&
+      (message.includes("接口能力已重置为仅 /v1/chat/completions") ||
+        message.includes("已跳过接口探测，仅启用 /v1/chat/completions")),
+  );
+}
 
 function planPriority(planType: string | null | undefined): number {
   const normalized = planType?.trim().toLowerCase() ?? "";
@@ -113,11 +144,41 @@ function normalizeProviderBaseUrl(value: string | null | undefined) {
     .replace(/\/v1$/i, "");
 }
 
+function supportsProviderApiKeyQuota(baseUrl: string | null | undefined) {
+  const normalized = normalizeProviderBaseUrl(baseUrl);
+  return (
+    normalized.includes("api.deepseek.com") ||
+    normalized.includes("api.moonshot.cn") ||
+    normalized.includes("api.moonshot.ai") ||
+    normalized.includes("api.moonshot.com") ||
+    normalized.includes("api.kimi.com") ||
+    normalized.includes("api.z.ai") ||
+    normalized.includes("bigmodel.cn") ||
+    normalized.includes("api.minimaxi.com") ||
+    normalized.includes("minimaxi.com") ||
+    normalized.includes("api.minimax.io") ||
+    normalized.includes("minimax.io")
+  );
+}
+
 function hasApiQuotaProvider(account: AccountSummary, providers: NotificationProviderConfig[]) {
   if (account.sourceKind !== "relay" || !account.balanceDisplayEnabled) {
     return false;
   }
+  if (supportsProviderApiKeyQuota(account.apiBaseUrl)) {
+    return true;
+  }
   if (account.apiQuotaMode === "apiOnly" && Boolean(account.balanceText)) {
+    return true;
+  }
+  const accountKey = account.accountKey.trim();
+  const boundProvider = providers.find(
+    (provider) =>
+      provider.accountKey === accountKey &&
+      Boolean(provider.email.trim()) &&
+      Boolean(provider.password?.trim()),
+  );
+  if (boundProvider) {
     return true;
   }
   const accountBaseUrl = normalizeProviderBaseUrl(account.apiBaseUrl);
@@ -125,12 +186,14 @@ function hasApiQuotaProvider(account: AccountSummary, providers: NotificationPro
     return false;
   }
 
-  return providers.some(
+  const unboundMatches = providers.filter(
     (provider) =>
+      !provider.accountKey?.trim() &&
       normalizeProviderBaseUrl(provider.baseUrl) === accountBaseUrl &&
       Boolean(provider.email.trim()) &&
       Boolean(provider.password?.trim()),
   );
+  return unboundMatches.length === 1;
 }
 
 function formatResetValue(epochSec: number | null | undefined, locale?: string) {
@@ -182,7 +245,10 @@ function buildLogicalAccountMap(
           hasIssue: sortedVariants.some(
             (item) =>
               Boolean(item.profileIntegrityError) ||
-              Boolean(item.profileLastValidationError) ||
+              Boolean(
+                item.profileLastValidationError &&
+                  !isEndpointCapabilityNotice(item.profileLastValidationError),
+              ) ||
               Boolean(item.authRefreshBlocked),
           ),
         },
@@ -205,59 +271,6 @@ function compareLogicalEntriesForDisplay(left: LogicalAccountEntry, right: Logic
   return left.accountKey.localeCompare(right.accountKey, "zh-Hans-CN");
 }
 
-function CompactUsageBar({
-  label,
-  window,
-  tone,
-  locale,
-}: {
-  label: string;
-  window: UsageWindow | null;
-  tone: "hot" | "cool";
-  locale: string;
-}) {
-  const value = remainingPercent(window);
-  return (
-    <div className={`accountGroupCompactQuota accountGroupCompactQuota-${tone}`}>
-      <div className="accountGroupCompactQuotaTop">
-        <span>{label}</span>
-        <strong>{percent(value)}</strong>
-      </div>
-      <div className="accountGroupCompactQuotaTrack" aria-hidden="true">
-        <span style={{ width: toProgressWidth(value) }} />
-      </div>
-      <small>{formatResetValue(window?.resetAt, locale)}</small>
-    </div>
-  );
-}
-
-function fiveHourResetAt(entry: LogicalAccountEntry): number | null {
-  const resetAt = entry.primary.usage?.fiveHour?.resetAt;
-  return typeof resetAt === "number" && Number.isFinite(resetAt) ? resetAt : null;
-}
-
-function compareLogicalEntriesByFiveHourReset(
-  left: LogicalAccountEntry,
-  right: LogicalAccountEntry,
-) {
-  const leftResetAt = fiveHourResetAt(left);
-  const rightResetAt = fiveHourResetAt(right);
-
-  if (leftResetAt !== null && rightResetAt !== null && leftResetAt !== rightResetAt) {
-    return leftResetAt - rightResetAt;
-  }
-
-  if (leftResetAt === null && rightResetAt !== null) {
-    return 1;
-  }
-
-  if (leftResetAt !== null && rightResetAt === null) {
-    return -1;
-  }
-
-  return compareLogicalEntriesForDisplay(left, right);
-}
-
 export function AccountPoolManager({
   accounts,
   ungroupedAccounts,
@@ -271,12 +284,14 @@ export function AccountPoolManager({
   notificationProviders,
   usageDisplayMode,
   hideAccountDetails,
-  apiEnhancedLaunchEnabled,
+  routerSettings,
+  accountCardOrder,
   onRenamePool,
   onDeletePool,
   onTogglePoolCollapsed,
   onReorderPool,
   onRefreshPoolUsage,
+  onReorderAccountCards,
   onAssignAccountToPool,
   onRemoveAccountFromAllPools,
   onExportAccountKeys,
@@ -284,10 +299,14 @@ export function AccountPoolManager({
   onReauthorize,
   onRename,
   onUpdateApiAccount,
+  onProbeApiModels,
   onUpdateTags,
   onRefreshApiQuota,
   onSwitch,
   onDelete,
+  onSetModelRouterMode,
+  onLaunchCurrentCodexConfig,
+  onUpdateSettings,
 }: AccountPoolManagerProps) {
   const { copy, locale } = useI18n();
   const groupCopy = copy.accountPools;
@@ -296,9 +315,11 @@ export function AccountPoolManager({
   const [collapsedOverrides, setCollapsedOverrides] = useState<Record<string, boolean>>({});
   const [addingToPoolId, setAddingToPoolId] = useState<string | null>(null);
   const [focusedExpandedPoolId, setFocusedExpandedPoolId] = useState<string | null>(null);
+  const [sortingPoolId, setSortingPoolId] = useState<string | null>(null);
   const [deletePoolCandidate, setDeletePoolCandidate] = useState<
     (AccountPoolConfig & { entries: LogicalAccountEntry[] }) | null
   >(null);
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }));
 
   const logicalAccountMap = useMemo(
     () => buildLogicalAccountMap(copy, accounts),
@@ -356,6 +377,21 @@ export function AccountPoolManager({
     return indexedGroups.map(({ pool }) => pool);
   }, [collapsedOverrides, focusedExpandedPoolId, groupSummaries]);
 
+  const renderRouterCard = () => (
+    <div className="accountCardSlot accountCardSlot-router">
+      <RouterLaunchCard
+        accounts={accounts}
+        switchingId={switchingId}
+        hideAccountDetails={hideAccountDetails}
+        settings={routerSettings}
+        skin="modern"
+        onSetModelRouterMode={onSetModelRouterMode}
+        onLaunchCurrentCodexConfig={onLaunchCurrentCodexConfig}
+        onUpdateSettings={onUpdateSettings}
+      />
+    </div>
+  );
+
   const togglePoolCollapsed = (pool: AccountPoolConfig) => {
     const nextCollapsed = !resolveCollapsed(pool);
     setCollapsedOverrides((current) => ({ ...current, [pool.id]: nextCollapsed }));
@@ -398,11 +434,35 @@ export function AccountPoolManager({
     setDraftPoolName("");
   };
 
-  const reorderPoolByFiveHourReset = (pool: AccountPoolConfig & { entries: LogicalAccountEntry[] }) => {
-    const nextAccountKeys = [...pool.entries]
-      .sort(compareLogicalEntriesByFiveHourReset)
-      .map((entry) => entry.accountKey);
-    onReorderPool(pool.id, nextAccountKeys);
+  const togglePoolSorting = (pool: AccountPoolConfig) => {
+    if (resolveCollapsed(pool)) {
+      setCollapsedOverrides((current) => ({ ...current, [pool.id]: false }));
+      setFocusedExpandedPoolId(pool.id);
+      onTogglePoolCollapsed(pool.id, false);
+    }
+    setAddingToPoolId((current) => (current === pool.id ? null : current));
+    setSortingPoolId((current) => (current === pool.id ? null : pool.id));
+  };
+
+  const handlePoolDragEnd = (
+    event: DragEndEvent,
+    pool: AccountPoolConfig & { entries: LogicalAccountEntry[] },
+  ) => {
+    const activeKey = String(event.active.id);
+    const overKey = event.over ? String(event.over.id) : "";
+    if (!overKey || activeKey === overKey) {
+      return;
+    }
+    const currentKeys = pool.entries.map((entry) => entry.accountKey);
+    const nextKeys = moveAccountKeyToTarget(currentKeys, activeKey, overKey);
+    if (nextKeys.join("\n") !== currentKeys.join("\n")) {
+      const viewTransition = document.startViewTransition?.bind(document);
+      if (viewTransition) {
+        viewTransition(() => onReorderPool(pool.id, nextKeys));
+      } else {
+        onReorderPool(pool.id, nextKeys);
+      }
+    }
   };
 
   const refreshPoolUsage = (pool: AccountPoolConfig & { entries: LogicalAccountEntry[] }) => {
@@ -425,14 +485,14 @@ export function AccountPoolManager({
   const renderCardEntryActions = (entry: LogicalAccountEntry) => (
     <Tooltip title={groupCopy.removeSingle}>
       <Button
-        type="default"
+        type="text"
         size="small"
         className="accountGroupCardRemoveButton"
+        icon={<MinusCircleOutlined />}
         onClick={() => onRemoveAccountFromAllPools(entry.accountKey)}
         disabled={saving}
-      >
-        {groupCopy.removeSingle}
-      </Button>
+        aria-label={groupCopy.removeSingle}
+      />
     </Tooltip>
   );
 
@@ -445,7 +505,7 @@ export function AccountPoolManager({
           <div className="accountGroupCompactHeader">
             <strong title={displayLabel}>{displayLabel}</strong>
             {entry.isCurrent ? (
-              <mark className="accountGroupCurrentGlass">{copy.accountCard.currentStamp}</mark>
+              <mark className="accountGroupCurrentBadge">{copy.accountCard.currentStamp}</mark>
             ) : null}
           </div>
           <div className="accountGroupCompactBadges">
@@ -456,22 +516,24 @@ export function AccountPoolManager({
 
         {entry.sourceKind === "relay" ? (
           <div className="accountGroupCompactRelay">
-            <span>{displayRelayEndpoint(entry.primary.apiBaseUrl, hideAccountDetails)}</span>
+            <span>{copy.accountCard.modelLabel}</span>
             <strong>{displayModelName(entry.primary.modelName, hideAccountDetails)}</strong>
           </div>
         ) : (
           <div className="accountGroupCompactQuotaGrid">
-            <CompactUsageBar
+            <QuotaMeter
+              variant="bar"
+              size="sm"
               label={copy.accountCard.fiveHourFallback}
-              window={entry.primary.usage?.fiveHour ?? null}
-              tone="hot"
-              locale={locale}
+              percent={remainingPercent(entry.primary.usage?.fiveHour ?? null)}
+              caption={formatResetValue(entry.primary.usage?.fiveHour?.resetAt, locale)}
             />
-            <CompactUsageBar
+            <QuotaMeter
+              variant="bar"
+              size="sm"
               label={copy.accountCard.oneWeekLabel}
-              window={entry.primary.usage?.oneWeek ?? null}
-              tone="cool"
-              locale={locale}
+              percent={remainingPercent(entry.primary.usage?.oneWeek ?? null)}
+              caption={formatResetValue(entry.primary.usage?.oneWeek?.resetAt, locale)}
             />
           </div>
         )}
@@ -483,10 +545,12 @@ export function AccountPoolManager({
     <section className="accountGroupsWorkspace">
       {groupSummaries.length > 0 ? (
         <div className="accountGroupsGrid">
-          {orderedGroupSummaries.map((pool) => {
+          {orderedGroupSummaries.map((pool, poolIndex) => {
             const collapsed = resolveCollapsed(pool);
             const isAdding = addingToPoolId === pool.id;
             const showCards = !collapsed;
+            const showRouterCardInPool = poolIndex === 0 && showCards;
+            const isSorting = sortingPoolId === pool.id && showCards;
 
             return (
               <article className={`accountGroupCard${collapsed ? "" : " isExpanded"}`} key={pool.id}>
@@ -564,11 +628,12 @@ export function AccountPoolManager({
                     <Tooltip title={groupCopy.reorder}>
                       <Button
                         type="text"
-                        className="accountGroupIconButton"
+                        className={`accountGroupIconButton${isSorting ? " isActive" : ""}`}
                         icon={<SortAscendingOutlined />}
-                        onClick={() => reorderPoolByFiveHourReset(pool)}
+                        onClick={() => togglePoolSorting(pool)}
                         disabled={saving || pool.entries.length < 2}
                         aria-label={groupCopy.reorder}
+                        aria-pressed={isSorting}
                       />
                     </Tooltip>
                     <Tooltip title={groupCopy.rename}>
@@ -656,9 +721,7 @@ export function AccountPoolManager({
                               <div className="accountGroupAddMeta">
                                 {entry.sourceKind === "relay" ? (
                                   <>
-                                    <span>
-                                      {displayRelayEndpoint(entry.primary.apiBaseUrl, hideAccountDetails)}
-                                    </span>
+                                    <span>{copy.accountCard.modelLabel}</span>
                                     <strong>
                                       {displayModelName(entry.primary.modelName, hideAccountDetails)}
                                     </strong>
@@ -685,38 +748,56 @@ export function AccountPoolManager({
                 ) : null}
 
                 {showCards ? (
-                  <div className="accountGroupNestedCards">
-                    {pool.entries.length === 0 ? (
-                      <p className="accountGroupEmptyText">{groupCopy.groupEmpty}</p>
-                    ) : (
-                      pool.entries.map((entry) => (
-                        <div className="accountGroupMemberCard" key={entry.accountKey}>
-                          <div className="accountGroupNestedSlot">
-                            {renderCardEntryActions(entry)}
-                            <AccountCard
-                              accounts={entry.variants}
-                              exportingAccounts={exportingAccounts}
-                              switchingId={switchingId}
-                              renamingAccountId={renamingAccountId}
-                              pendingDeleteId={pendingDeleteId}
-                              notificationProviders={notificationProviders}
-                              usageDisplayMode={usageDisplayMode}
-                              hideAccountDetails={hideAccountDetails}
-                              apiEnhancedLaunchEnabled={apiEnhancedLaunchEnabled}
-                              onExport={onExport}
-                              onReauthorize={onReauthorize}
-                              onRename={onRename}
-                              onUpdateApiAccount={onUpdateApiAccount}
-                              onUpdateTags={onUpdateTags}
-                              onRefreshApiQuota={onRefreshApiQuota}
-                              onSwitch={onSwitch}
-                              onDelete={onDelete}
-                            />
-                          </div>
-                        </div>
-                      ))
-                    )}
-                  </div>
+                  <DndContext sensors={sensors} onDragEnd={(event) => handlePoolDragEnd(event, pool)}>
+                    <div className="accountGroupNestedCards">
+                      {showRouterCardInPool ? renderRouterCard() : null}
+                      {pool.entries.length === 0 && !showRouterCardInPool ? (
+                        <p className="accountGroupEmptyText">{groupCopy.groupEmpty}</p>
+                      ) : (
+                        <SortableContext
+                          items={pool.entries.map((entry) => entry.accountKey)}
+                          strategy={rectSortingStrategy}
+                        >
+                          {pool.entries.map((entry) => (
+                            <SortableAccountCardSlot
+                              key={entry.accountKey}
+                              id={entry.accountKey}
+                              className="accountGroupMemberCard"
+                              enabled={isSorting}
+                              handleVariant="bar"
+                            >
+                              {(sortHandle) => (
+                                <div className="accountGroupNestedSlot">
+                                  {renderCardEntryActions(entry)}
+                                  <AccountCard
+                                    accounts={entry.variants}
+                                    exportingAccounts={exportingAccounts}
+                                    switchingId={switchingId}
+                                    renamingAccountId={renamingAccountId}
+                                    pendingDeleteId={pendingDeleteId}
+                                    notificationProviders={notificationProviders}
+                                    usageDisplayMode={usageDisplayMode}
+                                    hideAccountDetails={hideAccountDetails}
+                                    sortHandle={sortHandle}
+                                    sortHandlePlacement="body"
+                                    onExport={onExport}
+                                    onReauthorize={onReauthorize}
+                                    onRename={onRename}
+                                    onUpdateApiAccount={onUpdateApiAccount}
+                                    onProbeApiModels={onProbeApiModels}
+                                    onUpdateTags={onUpdateTags}
+                                    onRefreshApiQuota={onRefreshApiQuota}
+                                    onSwitch={onSwitch}
+                                    onDelete={onDelete}
+                                  />
+                                </div>
+                              )}
+                            </SortableAccountCardSlot>
+                          ))}
+                        </SortableContext>
+                      )}
+                    </div>
+                  </DndContext>
                 ) : null}
               </article>
             );
@@ -759,6 +840,8 @@ export function AccountPoolManager({
             <AccountsGrid
               accounts={ungroupedAccountsForDisplay}
               loading={loading}
+              accountCardOrder={accountCardOrder}
+              leadingSlot={groupSummaries.length === 0 ? renderRouterCard() : null}
               exportingAccounts={exportingAccounts}
               switchingId={switchingId}
               renamingAccountId={renamingAccountId}
@@ -766,13 +849,14 @@ export function AccountPoolManager({
               notificationProviders={notificationProviders}
               usageDisplayMode={usageDisplayMode}
               hideAccountDetails={hideAccountDetails}
-              apiEnhancedLaunchEnabled={apiEnhancedLaunchEnabled}
               onExport={onExport}
               onReauthorize={onReauthorize}
               onRename={onRename}
               onUpdateApiAccount={onUpdateApiAccount}
+              onProbeApiModels={onProbeApiModels}
               onUpdateTags={onUpdateTags}
               onRefreshApiQuota={onRefreshApiQuota}
+              onReorderAccountCards={onReorderAccountCards}
               onSwitch={onSwitch}
               onDelete={onDelete}
             />

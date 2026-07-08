@@ -23,6 +23,7 @@ import type {
   OauthCallbackFinishedEvent,
   PendingUpdateInfo,
   PreparedOauthLogin,
+  RelayModelCatalogEntry,
   SwitchAccountResult,
   UpdateApiAccountInput,
   UpdateApiAccountKeyInput,
@@ -33,6 +34,11 @@ import {
   sortAccountsByRemaining,
   sortAccountsForDisplay,
 } from "../utils/accountRanking";
+import { normalizeApiQuotaSubscriptionName } from "../utils/apiQuotaSubscriptions";
+import {
+  normalizeModelCatalogContextWindows,
+  normalizeModelContextWindow,
+} from "../utils/modelContextWindow";
 import { displayAccountLabel } from "../utils/privacy";
 
 const DEFAULT_USAGE_REFRESH_INTERVAL_SECS = 30;
@@ -51,15 +57,25 @@ const DEFAULT_SETTINGS: AppSettings = {
   launchCodexAfterSwitch: true,
   smartSwitchIncludeApi: false,
   apiEnhancedLaunchEnabled: false,
+  codexMultiModelModeEnabled: false,
+  codexModelInstructionsFixEnabled: false,
+  codexDisableGpuAcceleration: false,
+  codexMultiModelStatus: null,
+  codexMultiModelWorkspace: null,
+  codexMultiModelRestorePoint: null,
+  codexMultiModelControlledAppRoot: null,
+  codexMultiModelControlledExePath: null,
+  codexMultiModelControlledAppAsarPath: null,
+  codexMultiModelSourceAppRoot: null,
+  codexMultiModelPatchStatePath: null,
+  modelRouterEnabled: false,
+  modelRouterAccountId: null,
+  modelRouterRouteSelections: [],
   usageAutoRefreshEnabled: true,
   usageAutoRefreshIntervalSecs: DEFAULT_USAGE_REFRESH_INTERVAL_SECS,
   apiQuotaAutoRefreshEnabled: true,
   apiQuotaAutoRefreshIntervalSecs: DEFAULT_API_QUOTA_REFRESH_INTERVAL_SECS,
   quotaAlertEnabled: true,
-  codexContextWindowK: null,
-  codexContextWindowModel: null,
-  codexContextWindowLimitK: null,
-  codexContextWindowEffectiveLimitK: null,
   quotaAlertFiveHourThreshold: 15,
   quotaAlertOneWeekThreshold: 20,
   codexLaunchPath: null,
@@ -67,6 +83,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   restartOpencodeDesktopOnSwitch: false,
   restartEditorsOnSwitch: false,
   restartEditorTargets: [],
+  accountCardOrder: [],
   accountPools: [],
   notificationProviders: [],
   notificationTargets: [],
@@ -80,6 +97,7 @@ const DEFAULT_SETTINGS: AppSettings = {
 
 const PREVIEW_SETTINGS_STORAGE_KEY_V2 = "codexdeck:preview-settings-v2";
 const PREVIEW_ACCOUNTS_STORAGE_KEY_V2 = "codexdeck:preview-accounts-v2";
+const ACCOUNT_SUMMARY_CACHE_STORAGE_KEY_V1 = "codexdeck:account-summary-cache-v1";
 const PREVIEW_CHATGPT_ACCOUNT_KEY = "preview-chatgpt-pro";
 const PREVIEW_RELAY_API_ONLY_KEY = "preview-api-quota-api-only";
 const PREVIEW_RELAY_PLATFORM_BASIC_KEY = "preview-api-quota-platform-basic";
@@ -121,6 +139,7 @@ function createLocalId(prefix: string) {
 
 function buildNotificationProviderFromApiInput(
   input: CreateApiAccountInput,
+  accountKey?: string | null,
   existing?: NotificationProviderConfig,
 ): NotificationProviderConfig | null {
   if (!input.balanceDisplayEnabled) {
@@ -148,6 +167,7 @@ function buildNotificationProviderFromApiInput(
   return {
     id: existing?.id ?? createLocalId("provider"),
     name,
+    accountKey: accountKey ?? existing?.accountKey ?? null,
     kind: "sub2api",
     enabled: existing?.enabled ?? true,
     costMultiplier: existing?.costMultiplier ?? 1,
@@ -163,6 +183,7 @@ function buildNotificationProviderFromApiInput(
 
 function buildNotificationProviderFromApiUpdate(
   input: UpdateApiAccountInput,
+  accountKey?: string | null,
   existing?: NotificationProviderConfig,
 ): NotificationProviderConfig | null {
   if (input.balanceDisplayEnabled === false) {
@@ -190,6 +211,7 @@ function buildNotificationProviderFromApiUpdate(
   return {
     id: existing?.id ?? createLocalId("provider"),
     name,
+    accountKey: accountKey ?? existing?.accountKey ?? null,
     kind: "sub2api",
     enabled: existing?.enabled ?? true,
     costMultiplier: existing?.costMultiplier ?? 1,
@@ -212,6 +234,117 @@ function normalizeApiQuotaProviderBaseUrl(value: string | null | undefined) {
     .replace(/\/v1$/i, "");
 }
 
+function supportsProviderApiKeyQuota(baseUrl: string | null | undefined) {
+  const normalized = normalizeApiQuotaProviderBaseUrl(baseUrl);
+  return (
+    normalized.includes("api.deepseek.com") ||
+    normalized.includes("api.moonshot.cn") ||
+    normalized.includes("api.moonshot.ai") ||
+    normalized.includes("api.moonshot.com") ||
+    normalized.includes("api.kimi.com") ||
+    normalized.includes("api.z.ai") ||
+    normalized.includes("bigmodel.cn") ||
+    normalized.includes("api.minimaxi.com") ||
+    normalized.includes("minimaxi.com") ||
+    normalized.includes("api.minimax.io") ||
+    normalized.includes("minimax.io")
+  );
+}
+
+function normalizeRelayModelCatalog(
+  defaultModelName: string,
+  entries: RelayModelCatalogEntry[] | undefined,
+): RelayModelCatalogEntry[] {
+  const defaultModel = defaultModelName.trim();
+  const seen = new Set<string>();
+  const output: RelayModelCatalogEntry[] = [];
+
+  for (const entry of entries ?? []) {
+    const requestModel = entry.requestModel?.trim() || "";
+    const model = entry.model.trim() || requestModel;
+    if (!model || seen.has(model)) {
+      continue;
+    }
+    seen.add(model);
+    output.push({
+      model,
+      displayName: entry.displayName?.trim() || null,
+      requestModel: requestModel && requestModel !== model ? requestModel : null,
+      contextWindow: normalizeModelContextWindow(entry.contextWindow, model, requestModel),
+      enabled: entry.enabled,
+    });
+  }
+
+  if (defaultModel) {
+    const existing = output.find((entry) => entry.model === defaultModel);
+    if (existing) {
+      existing.enabled = true;
+    } else {
+      output.unshift({
+        model: defaultModel,
+        displayName: null,
+        requestModel: null,
+        contextWindow: null,
+        enabled: true,
+      });
+    }
+  }
+
+  if (output.length > 0 && output.every((entry) => !entry.enabled)) {
+    output[0] = { ...output[0], enabled: true };
+  }
+
+  return output;
+}
+
+function previewModelEntry(
+  model: string,
+  displayName: string,
+  contextWindow: number | null = null,
+): RelayModelCatalogEntry {
+  return {
+    model,
+    displayName,
+    requestModel: null,
+    contextWindow,
+    enabled: true,
+  };
+}
+
+function previewProbeApiModels(baseUrl: string): RelayModelCatalogEntry[] {
+  const normalized = baseUrl.trim().replace(/\/+$/, "").toLowerCase();
+  if (normalized.includes("token-plan-cn.xiaomimimo.com")) {
+    return [previewModelEntry("mimo-v2.5-pro", "MiMo V2.5 Pro", 256_000)];
+  }
+  if (normalized.includes("xiaomimimo.com")) {
+    return [previewModelEntry("mimo-v2.5-pro", "MiMo V2.5 Pro", 256_000)];
+  }
+  if (normalized.includes("deepseek.com")) {
+    return [
+      previewModelEntry("deepseek-v4-flash", "DeepSeek V4 Flash", 256_000),
+      previewModelEntry("deepseek-v4-pro", "DeepSeek V4 Pro", 256_000),
+    ];
+  }
+  if (normalized.includes("api.z.ai") || normalized.includes("bigmodel.cn")) {
+    return [
+      previewModelEntry("glm-5.2", "GLM-5.2", 1_000_000),
+      previewModelEntry("glm-5.1", "GLM-5.1", 200_000),
+    ];
+  }
+  if (normalized.includes("moonshot.cn")) {
+    return [previewModelEntry("kimi-k2.6", "Kimi K2.6", 256_000)];
+  }
+  if (normalized.includes("minimax.io") || normalized.includes("minimaxi.com")) {
+    return [
+      previewModelEntry("MiniMax-M2.7", "MiniMax M2.7", 256_000),
+      previewModelEntry("MiniMax-M2.7-HighSpeed", "MiniMax M2.7 HighSpeed", 256_000),
+      previewModelEntry("MiniMax-M3", "MiniMax M3", 512_000),
+    ];
+  }
+
+  return [previewModelEntry("preview-model", "Preview Model")];
+}
+
 function accountHasApiQuotaProvider(
   account: AccountSummary,
   providers: NotificationProviderConfig[],
@@ -222,34 +355,66 @@ function accountHasApiQuotaProvider(
   if (account.apiQuotaMode === "apiOnly") {
     return true;
   }
+  if (supportsProviderApiKeyQuota(account.apiBaseUrl)) {
+    return true;
+  }
+  const accountKey = account.accountKey.trim();
+  const boundProvider = providers.find(
+    (provider) =>
+      provider.accountKey === accountKey &&
+      Boolean(provider.email.trim()) &&
+      Boolean(provider.password?.trim()),
+  );
+  if (boundProvider) {
+    return true;
+  }
   const accountBaseUrl = normalizeApiQuotaProviderBaseUrl(account.apiBaseUrl);
   if (!accountBaseUrl) {
     return false;
   }
 
-  return providers.some(
+  const unboundMatches = providers.filter(
     (provider) =>
+      !provider.accountKey?.trim() &&
       normalizeApiQuotaProviderBaseUrl(provider.baseUrl) === accountBaseUrl &&
       Boolean(provider.email.trim()) &&
       Boolean(provider.password?.trim()),
   );
+  return unboundMatches.length === 1;
+}
+
+function firstApiQuotaRefreshError(items: AccountSummary[], accountKeys: string[]) {
+  const requested = new Set(accountKeys);
+  return items.find(
+    (account) =>
+      requested.has(account.accountKey) &&
+      account.balanceDisplayEnabled &&
+      Boolean(account.profileLastValidationError),
+  )?.profileLastValidationError ?? null;
 }
 
 async function upsertNotificationProviderForApiUpdate(
   input: UpdateApiAccountInput,
+  accountKey: string,
   providers: NotificationProviderConfig[],
 ) {
   const normalizedBaseUrl = normalizeNotificationProviderBaseUrl(input.baseUrl);
   const normalizedEmail = input.platformLoginEmail?.trim().toLowerCase() ?? "";
+  const boundProvider = providers.find((item) => item.accountKey === accountKey);
+  const matchingUnboundProviders = providers.filter((item) => {
+    const sameBaseUrl = item.baseUrl === normalizedBaseUrl;
+    const sameEmail = item.email.trim().toLowerCase() === normalizedEmail;
+    return !item.accountKey?.trim() && sameBaseUrl && (!normalizedEmail || sameEmail);
+  });
+  const fallbackUnboundProviders =
+    matchingUnboundProviders.length > 0
+      ? matchingUnboundProviders
+      : providers.filter((item) => !item.accountKey?.trim() && item.baseUrl === normalizedBaseUrl);
   const existing =
-    providers.find((item) => {
-      const sameBaseUrl = item.baseUrl === normalizedBaseUrl;
-      const sameEmail = item.email.trim().toLowerCase() === normalizedEmail;
-      return sameBaseUrl && (!normalizedEmail || sameEmail);
-    }) ??
-    providers.find((item) => item.baseUrl === normalizedBaseUrl);
+    boundProvider ??
+    (fallbackUnboundProviders.length === 1 ? fallbackUnboundProviders[0] : undefined);
 
-  const provider = buildNotificationProviderFromApiUpdate(input, existing);
+  const provider = buildNotificationProviderFromApiUpdate(input, accountKey, existing);
   if (!provider) {
     if ((input.platformLoginEmail !== undefined || input.platformLoginPassword !== undefined) && existing) {
       return providers.filter((item) => item.id !== existing.id);
@@ -321,14 +486,17 @@ function buildPreviewRelayAccount(
     apiQuotaTodayUsedText?: string | null;
     apiQuotaRemainingText?: string | null;
     apiQuotaTotalRemainingText?: string | null;
+    apiQuotaSubscriptionName?: string | null;
     apiQuotaTotalTokensText?: string | null;
     apiQuotaTodayTokensText?: string | null;
     apiQuotaDailyWindow?: {
       usedPercent: number;
+      totalPercent?: number | null;
       resetInSeconds: number;
     } | null;
     apiQuotaTotalWindow?: {
       usedPercent: number;
+      totalPercent?: number | null;
       resetInSeconds: number;
       windowSeconds?: number;
     } | null;
@@ -346,6 +514,16 @@ function buildPreviewRelayAccount(
     planType: "api",
     apiBaseUrl: overrides.baseUrl,
     modelName: "gpt-5.5",
+    modelCatalog: [
+      {
+        model: "gpt-5.5",
+        displayName: "GPT-5.5",
+        requestModel: null,
+        contextWindow: null,
+        enabled: true,
+      },
+    ],
+    modelRoutingEnabled: false,
     balanceText: overrides.balanceText,
     balanceDisplayEnabled:
       overrides.balanceDisplayEnabled ??
@@ -354,11 +532,13 @@ function buildPreviewRelayAccount(
     apiQuotaTodayUsedText: overrides.apiQuotaTodayUsedText ?? null,
     apiQuotaRemainingText: overrides.apiQuotaRemainingText ?? null,
     apiQuotaTotalRemainingText: overrides.apiQuotaTotalRemainingText ?? null,
+    apiQuotaSubscriptionName: overrides.apiQuotaSubscriptionName ?? null,
     apiQuotaTotalTokensText: overrides.apiQuotaTotalTokensText ?? null,
     apiQuotaTodayTokensText: overrides.apiQuotaTodayTokensText ?? null,
     apiQuotaDailyWindow: overrides.apiQuotaDailyWindow
       ? {
           usedPercent: overrides.apiQuotaDailyWindow.usedPercent,
+          totalPercent: overrides.apiQuotaDailyWindow.totalPercent ?? null,
           windowSeconds: 86_400,
           resetAt: now + overrides.apiQuotaDailyWindow.resetInSeconds,
         }
@@ -366,6 +546,7 @@ function buildPreviewRelayAccount(
     apiQuotaTotalWindow: overrides.apiQuotaTotalWindow
       ? {
           usedPercent: overrides.apiQuotaTotalWindow.usedPercent,
+          totalPercent: overrides.apiQuotaTotalWindow.totalPercent ?? null,
           windowSeconds:
             overrides.apiQuotaTotalWindow.windowSeconds ??
             overrides.apiQuotaSubscriptionExpiresInSeconds ??
@@ -425,6 +606,8 @@ function buildPreviewChatGptAccount(): AccountSummary {
     planType: "pro",
     apiBaseUrl: null,
     modelName: null,
+    modelCatalog: [],
+    modelRoutingEnabled: false,
     balanceText: null,
     balanceDisplayEnabled: false,
     apiQuotaMode: "apiOnly",
@@ -491,22 +674,25 @@ function buildPreviewAccounts(): AccountSummary[] {
     }),
     buildPreviewRelayAccount({
       key: PREVIEW_RELAY_PLATFORM_SUBSCRIPTION_KEY,
-      label: "平台账号有订阅（演示）",
-      baseUrl: "https://relay-pro.example.com/v1",
+      label: "MiniMax Token Plan（演示）",
+      baseUrl: "https://api.minimaxi.com/v1",
       balanceText: "$126.40",
       apiQuotaMode: "platformSubscription",
       providerId: "preview-notification-provider-subscription",
-      providerName: "订阅额度平台（演示）",
+      providerName: "MiniMax（演示）",
       tags: ["账号密码", "订阅"],
       addedAgo: 78_000,
       apiQuotaTodayUsedText: "$12.80",
       apiQuotaTotalRemainingText: "$126.40",
+      apiQuotaSubscriptionName: "Max",
       apiQuotaDailyWindow: {
-        usedPercent: 43,
+        usedPercent: 8,
+        totalPercent: 100,
         resetInSeconds: 8_400,
       },
       apiQuotaTotalWindow: {
-        usedPercent: 62,
+        usedPercent: 8,
+        totalPercent: 150,
         resetInSeconds: 1_728_000,
       },
       apiQuotaSubscriptionExpiresInSeconds: 1_728_000,
@@ -900,6 +1086,55 @@ function writePreviewAccounts(accounts: AccountSummary[]) {
   window.localStorage.setItem(PREVIEW_ACCOUNTS_STORAGE_KEY_V2, JSON.stringify(accounts));
 }
 
+type AccountSummaryCachePayload = {
+  version: 1;
+  updatedAt: number;
+  accounts: AccountSummary[];
+};
+
+function readCachedAccountSummaries(): AccountSummary[] {
+  if (typeof window === "undefined" || isPreviewRuntime()) {
+    return [];
+  }
+
+  try {
+    const raw = window.localStorage.getItem(ACCOUNT_SUMMARY_CACHE_STORAGE_KEY_V1);
+    if (!raw) {
+      return [];
+    }
+    const parsed = JSON.parse(raw) as Partial<AccountSummaryCachePayload>;
+    if (parsed.version !== 1 || !Array.isArray(parsed.accounts)) {
+      return [];
+    }
+    return parsed.accounts.filter(
+      (account) =>
+        account &&
+        typeof account.id === "string" &&
+        typeof account.accountKey === "string" &&
+        typeof account.label === "string",
+    );
+  } catch {
+    return [];
+  }
+}
+
+function writeCachedAccountSummaries(accounts: AccountSummary[]) {
+  if (typeof window === "undefined" || isPreviewRuntime()) {
+    return;
+  }
+
+  try {
+    const payload: AccountSummaryCachePayload = {
+      version: 1,
+      updatedAt: nowUnixSeconds(),
+      accounts,
+    };
+    window.localStorage.setItem(ACCOUNT_SUMMARY_CACHE_STORAGE_KEY_V1, JSON.stringify(payload));
+  } catch {
+    // 缓存只用于首屏加速；WebView 存储不可用时直接退回后端读取。
+  }
+}
+
 function buildPreviewTokenUsage(): CodexTokenUsageSnapshot {
   const now = nowUnixSeconds();
   return {
@@ -926,6 +1161,8 @@ function buildPreviewTokenUsage(): CodexTokenUsageSnapshot {
 
 const HIDE_ACCOUNT_DETAILS_STORAGE_KEY = "codex-switch:hide-account-details";
 const LEGACY_HIDE_ACCOUNT_DETAILS_STORAGE_KEY = "codex-tools:hide-account-details";
+const PROFILE_INTEGRITY_NOTICE_ACK_STORAGE_KEY =
+  "codexdeck:profile-integrity-notice-ack-v1";
 
 function readHideAccountDetailsPreference() {
   if (typeof window === "undefined") {
@@ -951,6 +1188,64 @@ function writeHideAccountDetailsPreference(value: boolean) {
     window.localStorage.setItem(HIDE_ACCOUNT_DETAILS_STORAGE_KEY, value ? "true" : "false");
   } catch {
     // localStorage can be unavailable in restricted webviews; hiding still works in memory.
+  }
+}
+
+function hashProfileIntegrityNoticeInput(value: string) {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, "0");
+}
+
+function buildProfileIntegrityNoticeAck(items: AccountSummary[]) {
+  const incompleteAccounts = items
+    .filter((account) => account.profileIntegrityError)
+    .map((account) =>
+      [
+        account.sourceKind,
+        account.accountKey,
+        account.profileAuthReady ? "auth-ready" : "auth-missing",
+        account.profileConfigReady ? "config-ready" : "config-missing",
+      ].join(":"),
+    )
+    .sort();
+
+  if (incompleteAccounts.length === 0) {
+    return null;
+  }
+
+  return {
+    count: incompleteAccounts.length,
+    key: `v1:${incompleteAccounts.length}:${hashProfileIntegrityNoticeInput(
+      incompleteAccounts.join("|"),
+    )}`,
+  };
+}
+
+function readProfileIntegrityNoticeAck() {
+  if (typeof window === "undefined") {
+    return null;
+  }
+
+  try {
+    return window.localStorage.getItem(PROFILE_INTEGRITY_NOTICE_ACK_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function writeProfileIntegrityNoticeAck(value: string) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  try {
+    window.localStorage.setItem(PROFILE_INTEGRITY_NOTICE_ACK_STORAGE_KEY, value);
+  } catch {
+    // localStorage can be unavailable in restricted webviews; the in-memory guard still applies.
   }
 }
 
@@ -1026,10 +1321,15 @@ function parseTagInput(input: string): string[] {
 
 export function useCodexController() {
   const { copy, locale } = useI18n();
-  const [accounts, setAccounts] = useState<AccountSummary[]>([]);
+  const initialCachedAccountsRef = useRef<AccountSummary[] | null>(null);
+  if (initialCachedAccountsRef.current === null) {
+    initialCachedAccountsRef.current = readCachedAccountSummaries();
+  }
+  const initialCachedAccounts = initialCachedAccountsRef.current;
+  const [accounts, setAccounts] = useState<AccountSummary[]>(initialCachedAccounts);
   const [tokenUsage, setTokenUsage] = useState<CodexTokenUsageSnapshot | null>(null);
   const [tokenUsageError, setTokenUsageError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(initialCachedAccounts.length === 0);
   const [refreshing, setRefreshing] = useState(false);
   const [refreshingTokenUsage, setRefreshingTokenUsage] = useState(false);
   const [addDialogOpen, setAddDialogOpen] = useState(false);
@@ -1056,10 +1356,10 @@ export function useCodexController() {
   const deleteConfirmTimerRef = useRef<number | null>(null);
   const settingsUpdateQueueRef = useRef<Promise<void>>(Promise.resolve());
   const settingsRef = useRef<AppSettings>(DEFAULT_SETTINGS);
-  const accountsRef = useRef<AccountSummary[]>([]);
-  const reloginPromptedAccountKeysRef = useRef<Set<string>>(new Set());
-  const profileIntegrityPromptedRef = useRef(false);
+  const accountsRef = useRef<AccountSummary[]>(initialCachedAccounts);
+  const profileIntegrityPromptedRef = useRef<string | null>(null);
   const lastQuotaAlertKeyRef = useRef<string | null>(null);
+  const localeRelocalizeReadyRef = useRef(false);
 
   hideAccountDetailsRef.current = hideAccountDetails;
 
@@ -1093,44 +1393,11 @@ export function useCodexController() {
   );
 
   const applyAccounts = useCallback(
-    (items: AccountSummary[], options?: { notifyBlocked?: boolean }) => {
+    (items: AccountSummary[]) => {
       const localized = localizeAccounts(items);
+      writeCachedAccountSummaries(localized);
       accountsRef.current = localized;
       setAccounts(localized);
-
-      const shouldSurfaceBlockedRelogin = (account: AccountSummary) =>
-        account.authRefreshBlocked &&
-        Boolean(account.authRefreshError) &&
-        (!account.usage || Boolean(account.usageError));
-
-      const activeBlockedKeys = new Set(
-        localized
-          .filter(shouldSurfaceBlockedRelogin)
-          .map((account) => account.accountKey),
-      );
-      reloginPromptedAccountKeysRef.current.forEach((accountKey) => {
-        if (!activeBlockedKeys.has(accountKey)) {
-          reloginPromptedAccountKeysRef.current.delete(accountKey);
-        }
-      });
-
-      if (options?.notifyBlocked === false) {
-        return false;
-      }
-
-      const nextBlockedAccount = localized.find(
-        (account) =>
-          shouldSurfaceBlockedRelogin(account) &&
-          !reloginPromptedAccountKeysRef.current.has(account.accountKey),
-      );
-      if (nextBlockedAccount) {
-        reloginPromptedAccountKeysRef.current.add(nextBlockedAccount.accountKey);
-        setNotice({
-          type: "info",
-          message: copy.notices.reloginRequired(noticeAccountLabel(nextBlockedAccount)),
-        });
-        return true;
-      }
 
       const currentSettings = settingsRef.current;
       const currentAccount = localized.find((account) => account.isCurrent) ?? null;
@@ -1187,6 +1454,46 @@ export function useCodexController() {
     [copy.notices, localizeAccounts, noticeAccountLabel],
   );
 
+  const updateAccountsState = useCallback((updater: (items: AccountSummary[]) => AccountSummary[]) => {
+    setAccounts((prev) => {
+      const next = updater(prev);
+      accountsRef.current = next;
+      writeCachedAccountSummaries(next);
+      return next;
+    });
+  }, []);
+
+  const applyRefreshAccounts = useCallback(
+    (items: AccountSummary[], quiet: boolean, source: string) => {
+      if (items.length === 0 && accountsRef.current.length > 0) {
+        if (!quiet) {
+          setNotice({
+            type: "error",
+            message: `${source} 返回了空账号列表，已保留当前账号数据。`,
+          });
+        }
+        return false;
+      }
+      return applyAccounts(items);
+    },
+    [applyAccounts],
+  );
+
+  const applyLoadedAccounts = useCallback(
+    (items: AccountSummary[], source: string) => {
+      if (items.length === 0 && accountsRef.current.length > 0) {
+        setNotice({
+          type: "error",
+          message: `${source} 返回了空账号列表，已保留当前账号数据。`,
+        });
+        return accountsRef.current;
+      }
+      applyAccounts(items);
+      return items;
+    },
+    [applyAccounts],
+  );
+
   useEffect(() => {
     writeHideAccountDetailsPreference(hideAccountDetails);
   }, [hideAccountDetails]);
@@ -1205,28 +1512,41 @@ export function useCodexController() {
   const loadAccounts = useCallback(async () => {
     if (isPreviewRuntime()) {
       const data = readPreviewAccounts();
-      applyAccounts(data);
+      applyLoadedAccounts(data, "预览账号加载");
       return data;
     }
 
     const data = await invoke<AccountSummary[]>("list_accounts");
-    applyAccounts(data);
-    return data;
-  }, [applyAccounts]);
+    return applyLoadedAccounts(data, "账号加载");
+  }, [applyLoadedAccounts]);
+
+  const runStartupMaintenance = useCallback(async () => {
+    if (isPreviewRuntime()) {
+      return accountsRef.current;
+    }
+    const data = await invoke<AccountSummary[]>("run_startup_maintenance");
+    return applyLoadedAccounts(data, "启动维护");
+  }, [applyLoadedAccounts]);
 
   const maybeShowProfileIntegrityNotice = useCallback(
     (items: AccountSummary[]) => {
-      if (profileIntegrityPromptedRef.current) {
+      const ack = buildProfileIntegrityNoticeAck(items);
+      if (!ack) {
+        profileIntegrityPromptedRef.current = null;
         return;
       }
-      const incompleteCount = items.filter((account) => account.profileIntegrityError).length;
-      if (incompleteCount <= 0) {
+      if (
+        profileIntegrityPromptedRef.current === ack.key ||
+        readProfileIntegrityNoticeAck() === ack.key
+      ) {
+        profileIntegrityPromptedRef.current = ack.key;
         return;
       }
-      profileIntegrityPromptedRef.current = true;
+      profileIntegrityPromptedRef.current = ack.key;
+      writeProfileIntegrityNoticeAck(ack.key);
       setNotice({
         type: "info",
-        message: copy.notices.profileIntegrityWarning(incompleteCount),
+        message: copy.notices.profileIntegrityWarning(ack.count),
       });
     },
     [copy.notices],
@@ -1299,25 +1619,7 @@ export function useCodexController() {
           const data = await invoke<AppSettings>("update_app_settings", { patch });
           settingsRef.current = data;
           setSettings(data);
-          const requestedContextWindow =
-            Object.prototype.hasOwnProperty.call(patch, "codexContextWindowK")
-              ? patch.codexContextWindowK
-              : undefined;
-          if (
-            requestedContextWindow !== undefined &&
-            requestedContextWindow !== null &&
-            data.codexContextWindowK !== null &&
-            requestedContextWindow > data.codexContextWindowK &&
-            data.codexContextWindowEffectiveLimitK !== null
-          ) {
-            setNotice({
-              type: "info",
-              message: copy.notices.contextWindowClamped(
-                data.codexContextWindowModel ?? "当前模型",
-                data.codexContextWindowEffectiveLimitK,
-              ),
-            });
-          } else if (!options?.silent) {
+          if (!options?.silent) {
             setNotice({ type: "ok", message: copy.notices.settingsUpdated });
           }
         } catch (error) {
@@ -1349,8 +1651,8 @@ export function useCodexController() {
       }
       if (isPreviewRuntime()) {
         const data = readPreviewAccounts();
-        const promptedRelogin = applyAccounts(data);
-        if (!quiet && !promptedRelogin) {
+        const accountNoticeShown = applyAccounts(data);
+        if (!quiet && !accountNoticeShown) {
           setNotice({ type: "ok", message: "预览账号额度已刷新。" });
         }
         return;
@@ -1359,8 +1661,8 @@ export function useCodexController() {
       const data = await invoke<AccountSummary[]>("refresh_all_usage", {
         forceAuthRefresh: !quiet,
       });
-      const promptedRelogin = applyAccounts(data);
-      if (!quiet && !promptedRelogin) {
+      const accountNoticeShown = applyRefreshAccounts(data, quiet, copy.notices.usageRefreshed);
+      if (!quiet && !accountNoticeShown) {
         setNotice({ type: "ok", message: copy.notices.usageRefreshed });
       }
     } catch (error) {
@@ -1375,7 +1677,7 @@ export function useCodexController() {
         setRefreshing(false);
       }
     }
-  }, [applyAccounts, copy.notices, localizeError]);
+  }, [applyAccounts, applyRefreshAccounts, copy.notices, localizeError]);
 
   const refreshUsageForAccountKeys = useCallback(
     async (accountKeys: string[], options?: { quiet?: boolean; notice?: string }) => {
@@ -1394,8 +1696,8 @@ export function useCodexController() {
         }
         if (isPreviewRuntime()) {
           const data = readPreviewAccounts();
-          const promptedRelogin = applyAccounts(data);
-          if (!quiet && !promptedRelogin) {
+          const accountNoticeShown = applyAccounts(data);
+          if (!quiet && !accountNoticeShown) {
             setNotice({
               type: "ok",
               message: options?.notice ?? copy.notices.groupUsageRefreshed(normalizedKeys.length),
@@ -1408,8 +1710,12 @@ export function useCodexController() {
           accountKeys: normalizedKeys,
           forceAuthRefresh: !quiet,
         });
-        const promptedRelogin = applyAccounts(data);
-        if (!quiet && !promptedRelogin) {
+        const accountNoticeShown = applyRefreshAccounts(
+          data,
+          quiet,
+          options?.notice ?? copy.notices.groupUsageRefreshed(normalizedKeys.length),
+        );
+        if (!quiet && !accountNoticeShown) {
           setNotice({
             type: "ok",
             message: options?.notice ?? copy.notices.groupUsageRefreshed(normalizedKeys.length),
@@ -1428,7 +1734,7 @@ export function useCodexController() {
         }
       }
     },
-    [applyAccounts, copy.notices, localizeError],
+    [applyAccounts, applyRefreshAccounts, copy.notices, localizeError],
   );
 
   const refreshApiQuotaForAccountKeys = useCallback(
@@ -1461,8 +1767,8 @@ export function useCodexController() {
               : account,
           );
           writePreviewAccounts(data);
-          const promptedRelogin = applyAccounts(data);
-          if (!quiet && !promptedRelogin) {
+          const accountNoticeShown = applyAccounts(data);
+          if (!quiet && !accountNoticeShown) {
             setNotice({
               type: "ok",
               message: options?.notice ?? copy.notices.apiQuotaRefreshed(normalizedKeys.length),
@@ -1474,12 +1780,25 @@ export function useCodexController() {
         const data = await invoke<AccountSummary[]>("refresh_api_quota_for_account_keys", {
           accountKeys: normalizedKeys,
         });
-        const promptedRelogin = applyAccounts(data);
-        if (!quiet && !promptedRelogin) {
-          setNotice({
-            type: "ok",
-            message: options?.notice ?? copy.notices.apiQuotaRefreshed(normalizedKeys.length),
-          });
+        const accountNoticeShown = applyRefreshAccounts(
+          data,
+          quiet,
+          options?.notice ?? copy.notices.apiQuotaRefreshed(normalizedKeys.length),
+        );
+        if (!quiet && !accountNoticeShown) {
+          const refreshError = firstApiQuotaRefreshError(data, normalizedKeys);
+          setNotice(
+            refreshError
+              ? {
+                  type: "error",
+                  message: copy.notices.apiQuotaRefreshFailed(localizeError(refreshError)),
+                }
+              : {
+                  type: "ok",
+                  message:
+                    options?.notice ?? copy.notices.apiQuotaRefreshed(normalizedKeys.length),
+                },
+          );
         }
       } catch (error) {
         if (!quiet) {
@@ -1494,21 +1813,23 @@ export function useCodexController() {
         }
       }
     },
-    [applyAccounts, copy.notices, localizeError],
+    [applyAccounts, applyRefreshAccounts, copy.notices, localizeError],
   );
 
   const refreshAllApiQuota = useCallback(
     async (quiet = false) => {
+      const providers = settingsRef.current.notificationProviders ?? [];
+      const targetAccountKeys = accountsRef.current
+        .filter((account) => accountHasApiQuotaProvider(account, providers))
+        .map((account) => account.accountKey);
+      const refreshedCount = targetAccountKeys.length;
+
       try {
         if (!quiet) {
           setRefreshing(true);
         }
         if (isPreviewRuntime()) {
           const now = nowUnixSeconds();
-          const providers = settingsRef.current.notificationProviders ?? [];
-          const refreshedCount = accountsRef.current.filter((account) =>
-            accountHasApiQuotaProvider(account, providers),
-          ).length;
           const data = readPreviewAccounts().map((account) =>
             accountHasApiQuotaProvider(account, providers)
               ? {
@@ -1519,20 +1840,29 @@ export function useCodexController() {
               : account,
           );
           writePreviewAccounts(data);
-          const promptedRelogin = applyAccounts(data);
-          if (!quiet && !promptedRelogin) {
+          const accountNoticeShown = applyAccounts(data);
+          if (!quiet && !accountNoticeShown) {
             setNotice({ type: "ok", message: copy.notices.apiQuotaRefreshed(refreshedCount) });
           }
           return;
         }
 
         const data = await invoke<AccountSummary[]>("refresh_all_api_quota");
-        const refreshedCount = data.filter((account) =>
-          accountHasApiQuotaProvider(account, settingsRef.current.notificationProviders ?? []),
-        ).length;
-        const promptedRelogin = applyAccounts(data);
-        if (!quiet && !promptedRelogin) {
-          setNotice({ type: "ok", message: copy.notices.apiQuotaRefreshed(refreshedCount) });
+        const refreshError = firstApiQuotaRefreshError(data, targetAccountKeys);
+        const accountNoticeShown = applyRefreshAccounts(
+          data,
+          quiet,
+          copy.notices.apiQuotaRefreshed(refreshedCount),
+        );
+        if (!quiet && !accountNoticeShown) {
+          setNotice(
+            refreshError
+              ? {
+                  type: "error",
+                  message: copy.notices.apiQuotaRefreshFailed(localizeError(refreshError)),
+                }
+              : { type: "ok", message: copy.notices.apiQuotaRefreshed(refreshedCount) },
+          );
         }
       } catch (error) {
         if (!quiet) {
@@ -1547,7 +1877,7 @@ export function useCodexController() {
         }
       }
     },
-    [applyAccounts, copy.notices, localizeError],
+    [applyAccounts, applyRefreshAccounts, copy.notices, localizeError],
   );
 
   const refreshTokenUsage = useCallback(async (quiet = false) => {
@@ -1793,86 +2123,183 @@ export function useCodexController() {
     );
   }, [pendingUpdate, updateSettings]);
 
-  useEffect(() => {
-    let cancelled = false;
-
-    const bootstrap = async () => {
-      try {
-        await loadInstalledEditorApps();
-        await loadOpencodeDesktopAppInstalled();
-        await loadSettings();
-        const initialAccounts = await loadAccounts();
-        maybeShowProfileIntegrityNotice(initialAccounts);
-        await refreshUsage(true);
-        await refreshAllApiQuota(true);
-        await refreshTokenUsage(true);
-        await checkForAppUpdate(true);
-      } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
-      }
-    };
-
-    void bootstrap();
-
-    const usageTimer =
-      settings.usageAutoRefreshEnabled
-        ? setInterval(() => {
-            void refreshUsage(true);
-          }, Math.max(15, settings.usageAutoRefreshIntervalSecs) * 1000)
-        : null;
-
-    const apiQuotaTimer =
-      settings.apiQuotaAutoRefreshEnabled
-        ? setInterval(() => {
-            void refreshAllApiQuota(true);
-          }, Math.max(60, settings.apiQuotaAutoRefreshIntervalSecs) * 1000)
-        : null;
-
-    const tokenUsageTimer = setInterval(() => {
-      void refreshTokenUsage(true);
-    }, TOKEN_USAGE_REFRESH_MS);
-
-    const editorTimer = setInterval(() => {
-      void loadInstalledEditorApps();
-      void loadOpencodeDesktopAppInstalled();
-    }, EDITOR_SCAN_MS);
-
-    const updateTimer = setInterval(() => {
-      void checkForAppUpdate(true);
-    }, UPDATE_CHECK_MS);
-
-    return () => {
-      cancelled = true;
-      if (usageTimer !== null) {
-        clearInterval(usageTimer);
-      }
-      if (apiQuotaTimer !== null) {
-        clearInterval(apiQuotaTimer);
-      }
-      clearInterval(tokenUsageTimer);
-      clearInterval(editorTimer);
-      clearInterval(updateTimer);
-    };
-  }, [
+  const startupCallbacksRef = useRef({
     checkForAppUpdate,
     loadAccounts,
     loadInstalledEditorApps,
     loadOpencodeDesktopAppInstalled,
     loadSettings,
+    localizeError,
     maybeShowProfileIntegrityNotice,
     refreshAllApiQuota,
     refreshTokenUsage,
     refreshUsage,
+    runStartupMaintenance,
+  });
+  startupCallbacksRef.current = {
+    checkForAppUpdate,
+    loadAccounts,
+    loadInstalledEditorApps,
+    loadOpencodeDesktopAppInstalled,
+    loadSettings,
+    localizeError,
+    maybeShowProfileIntegrityNotice,
+    refreshAllApiQuota,
+    refreshTokenUsage,
+    refreshUsage,
+    runStartupMaintenance,
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    let startupMaintenanceTimer: number | null = null;
+    let startupFailureNoticeShown = false;
+
+    const showStartupFailure = (message: string) => {
+      if (cancelled || startupFailureNoticeShown) {
+        return;
+      }
+      startupFailureNoticeShown = true;
+      setNotice({
+        type: "error",
+        message,
+      });
+    };
+
+    const scheduleDeferredStartupWork = () => {
+      if (startupMaintenanceTimer !== null) {
+        return;
+      }
+      startupMaintenanceTimer = window.setTimeout(() => {
+        if (cancelled) {
+          return;
+        }
+        const callbacks = startupCallbacksRef.current;
+        void callbacks.loadInstalledEditorApps();
+        void callbacks.loadOpencodeDesktopAppInstalled();
+        void callbacks.runStartupMaintenance()
+          .then((items) => {
+            if (!cancelled) {
+              callbacks.maybeShowProfileIntegrityNotice(items);
+            }
+          })
+          .catch((error) => {
+            console.warn("startup maintenance failed", error);
+          });
+        if (settingsRef.current.usageAutoRefreshEnabled) {
+          void callbacks.refreshUsage(true);
+        }
+        if (settingsRef.current.apiQuotaAutoRefreshEnabled) {
+          void callbacks.refreshAllApiQuota(true);
+        }
+        void callbacks.refreshTokenUsage(true);
+        void callbacks.checkForAppUpdate(true);
+      }, 3000);
+    };
+
+    const bootstrap = async () => {
+      const callbacks = startupCallbacksRef.current;
+      const settingsPromise = callbacks.loadSettings().catch((error) => {
+        showStartupFailure(`启动设置加载失败：${callbacks.localizeError(String(error))}`);
+      });
+
+      try {
+        const initialAccounts = await callbacks.loadAccounts();
+        callbacks.maybeShowProfileIntegrityNotice(initialAccounts);
+      } catch (error) {
+        showStartupFailure(`启动账号加载失败：${callbacks.localizeError(String(error))}`);
+      } finally {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      }
+
+      void settingsPromise.finally(() => {
+        if (!cancelled) {
+          scheduleDeferredStartupWork();
+        }
+      });
+    };
+
+    void bootstrap();
+
+    return () => {
+      cancelled = true;
+      if (startupMaintenanceTimer !== null) {
+        clearTimeout(startupMaintenanceTimer);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!settings.usageAutoRefreshEnabled) {
+      return;
+    }
+    const usageTimer =
+      setInterval(() => {
+        void refreshUsage(true);
+      }, Math.max(15, settings.usageAutoRefreshIntervalSecs) * 1000);
+
+    return () => {
+      clearInterval(usageTimer);
+    };
+  }, [refreshUsage, settings.usageAutoRefreshEnabled, settings.usageAutoRefreshIntervalSecs]);
+
+  useEffect(() => {
+    if (!settings.apiQuotaAutoRefreshEnabled) {
+      return;
+    }
+    const apiQuotaTimer =
+      setInterval(() => {
+        void refreshAllApiQuota(true);
+      }, Math.max(60, settings.apiQuotaAutoRefreshIntervalSecs) * 1000);
+
+    return () => {
+      clearInterval(apiQuotaTimer);
+    };
+  }, [
+    refreshAllApiQuota,
     settings.apiQuotaAutoRefreshEnabled,
     settings.apiQuotaAutoRefreshIntervalSecs,
-    settings.usageAutoRefreshEnabled,
-    settings.usageAutoRefreshIntervalSecs,
   ]);
 
   useEffect(() => {
+    const tokenUsageTimer = setInterval(() => {
+      void refreshTokenUsage(true);
+    }, TOKEN_USAGE_REFRESH_MS);
+
+    return () => {
+      clearInterval(tokenUsageTimer);
+    };
+  }, [refreshTokenUsage]);
+
+  useEffect(() => {
+    const editorTimer = setInterval(() => {
+      void loadInstalledEditorApps();
+      void loadOpencodeDesktopAppInstalled();
+    }, EDITOR_SCAN_MS);
+
+    return () => {
+      clearInterval(editorTimer);
+    };
+  }, [loadInstalledEditorApps, loadOpencodeDesktopAppInstalled]);
+
+  useEffect(() => {
+    const updateTimer = setInterval(() => {
+      void checkForAppUpdate(true);
+    }, UPDATE_CHECK_MS);
+
+    return () => {
+      clearInterval(updateTimer);
+    };
+  }, [checkForAppUpdate]);
+
+  useEffect(() => {
     if (loading) {
+      return;
+    }
+    if (!localeRelocalizeReadyRef.current) {
+      localeRelocalizeReadyRef.current = true;
       return;
     }
 
@@ -2044,6 +2471,18 @@ export function useCodexController() {
   const onCreateApiAccount = useCallback(
     async (input: CreateApiAccountInput) => {
       setImportingAccounts(true);
+      const normalizedModelCatalog = normalizeRelayModelCatalog(
+        input.modelName,
+        input.modelCatalog,
+      );
+      const normalizedInput: CreateApiAccountInput = {
+        ...input,
+        modelCatalog: normalizedModelCatalog,
+        apiQuotaSubscriptionName:
+          input.balanceDisplayEnabled === false
+            ? null
+            : normalizeApiQuotaSubscriptionName(input.apiQuotaSubscriptionName),
+      };
       try {
         if (isPreviewRuntime()) {
           const now = nowUnixSeconds();
@@ -2055,14 +2494,17 @@ export function useCodexController() {
             accountKey: `preview-api-${now}`,
             accountId: `preview-api-${now}`,
             planType: "api",
-            apiBaseUrl: input.baseUrl.trim(),
-            modelName: input.modelName.trim(),
-            balanceText: input.balanceDisplayEnabled ? "$50.00" : null,
-            balanceDisplayEnabled: Boolean(input.balanceDisplayEnabled),
-            apiQuotaMode: input.apiQuotaMode ?? "apiOnly",
+            apiBaseUrl: normalizedInput.baseUrl.trim(),
+            modelName: normalizedInput.modelName.trim(),
+            modelCatalog: normalizedModelCatalog,
+            modelRoutingEnabled: false,
+            balanceText: normalizedInput.balanceDisplayEnabled ? "$50.00" : null,
+            balanceDisplayEnabled: Boolean(normalizedInput.balanceDisplayEnabled),
+            apiQuotaMode: normalizedInput.apiQuotaMode ?? "apiOnly",
+            apiQuotaSubscriptionName: normalizedInput.apiQuotaSubscriptionName ?? null,
             providerId: null,
             providerName: null,
-            tags: input.tags,
+            tags: normalizedInput.tags,
             profileAuthReady: true,
             profileConfigReady: true,
             profileIntegrityError: null,
@@ -2098,14 +2540,19 @@ export function useCodexController() {
           const nextAccounts = [...readPreviewAccounts(), nextAccount];
           writePreviewAccounts(nextAccounts);
           applyAccounts(nextAccounts);
-          const provider = buildNotificationProviderFromApiInput(input);
+          const provider = buildNotificationProviderFromApiInput(
+            normalizedInput,
+            nextAccount.accountKey,
+          );
           if (provider) {
             const testedProvider = await probeNotificationProviderForImport(provider);
             const providers = settingsRef.current.notificationProviders ?? [];
             const existingIndex = providers.findIndex(
               (item) =>
-                item.baseUrl === testedProvider.baseUrl &&
-                item.email.trim().toLowerCase() === testedProvider.email.trim().toLowerCase(),
+                item.accountKey === nextAccount.accountKey ||
+                (!item.accountKey?.trim() &&
+                  item.baseUrl === testedProvider.baseUrl &&
+                  item.email.trim().toLowerCase() === testedProvider.email.trim().toLowerCase()),
             );
             const nextProviders =
               existingIndex >= 0
@@ -2131,20 +2578,24 @@ export function useCodexController() {
           setAddDialogOpen(false);
           setNotice({
             type: "ok",
-            message: copy.notices.apiAccountCreated(input.label),
+            message: copy.notices.apiAccountCreated(normalizedInput.label),
           });
           return;
         }
 
-        await invoke<AccountSummary>("create_api_account", { input });
-        const provider = buildNotificationProviderFromApiInput(input);
+        const created = await invoke<AccountSummary>("create_api_account", {
+          input: normalizedInput,
+        });
+        const provider = buildNotificationProviderFromApiInput(normalizedInput, created.accountKey);
         if (provider) {
           const testedProvider = await probeNotificationProviderForImport(provider);
           const providers = settingsRef.current.notificationProviders ?? [];
           const existingIndex = providers.findIndex(
             (item) =>
-              item.baseUrl === testedProvider.baseUrl &&
-              item.email.trim().toLowerCase() === testedProvider.email.trim().toLowerCase(),
+              item.accountKey === created.accountKey ||
+              (!item.accountKey?.trim() &&
+                item.baseUrl === testedProvider.baseUrl &&
+                item.email.trim().toLowerCase() === testedProvider.email.trim().toLowerCase()),
           );
           const nextProviders =
             existingIndex >= 0
@@ -2198,7 +2649,7 @@ export function useCodexController() {
           accountKey: account.accountKey,
           tags,
         });
-        setAccounts((prev) =>
+        updateAccountsState((prev) =>
           prev.map((item) =>
             item.accountKey === account.accountKey
               ? {
@@ -2221,7 +2672,7 @@ export function useCodexController() {
         return false;
       }
     },
-    [copy.notices, localizeError, noticeAccountLabel],
+    [copy.notices, localizeError, noticeAccountLabel, updateAccountsState],
   );
 
   const onCompleteOauthCallbackLogin = useCallback(
@@ -2333,7 +2784,7 @@ export function useCodexController() {
           accountKey: account.accountKey,
           label: normalizedLabel,
         });
-        setAccounts((prev) =>
+        updateAccountsState((prev) =>
           prev.map((item) =>
             item.accountKey === account.accountKey
               ? {
@@ -2368,6 +2819,7 @@ export function useCodexController() {
       localizeError,
       noticeAccountLabel,
       renamingAccountId,
+      updateAccountsState,
     ],
   );
 
@@ -2377,8 +2829,16 @@ export function useCodexController() {
       const normalizedBaseUrl = input.baseUrl.trim();
       const normalizedApiKey = input.apiKey?.trim() ?? "";
       const normalizedModelName = input.modelName.trim();
+      const normalizedModelCatalog = normalizeRelayModelCatalog(
+        normalizedModelName,
+        input.modelCatalog,
+      );
       const normalizedQuotaTodayUsedText = input.apiQuotaTodayUsedText?.trim() || null;
       const normalizedQuotaRemainingText = input.apiQuotaRemainingText?.trim() || null;
+      const normalizedQuotaSubscriptionName =
+        input.balanceDisplayEnabled === false
+          ? null
+          : normalizeApiQuotaSubscriptionName(input.apiQuotaSubscriptionName);
 
       if (!normalizedLabel || !normalizedBaseUrl || !normalizedModelName) {
         return false;
@@ -2397,6 +2857,8 @@ export function useCodexController() {
                   label: normalizedLabel,
                   apiBaseUrl: normalizedBaseUrl,
                   modelName: normalizedModelName,
+                  modelCatalog: normalizedModelCatalog,
+                  modelRoutingEnabled: false,
                   balanceDisplayEnabled: input.balanceDisplayEnabled ?? item.balanceDisplayEnabled,
                   balanceText: input.balanceDisplayEnabled === false ? null : item.balanceText,
                   apiQuotaMode:
@@ -2421,6 +2883,10 @@ export function useCodexController() {
                     input.balanceDisplayEnabled === false
                       ? null
                       : item.apiQuotaSubscriptionExpiresAt,
+                  apiQuotaSubscriptionName:
+                    input.balanceDisplayEnabled === false
+                      ? null
+                      : normalizedQuotaSubscriptionName,
                   profileLastValidationError:
                     input.balanceDisplayEnabled === false ? null : item.profileLastValidationError,
                   updatedAt: nowUnixSeconds(),
@@ -2432,6 +2898,7 @@ export function useCodexController() {
           if (input.platformLoginEmail !== undefined || input.platformLoginPassword !== undefined) {
             const nextProviders = await upsertNotificationProviderForApiUpdate(
               input,
+              account.accountKey,
               settingsRef.current.notificationProviders ?? [],
             );
             if (nextProviders !== settingsRef.current.notificationProviders) {
@@ -2466,10 +2933,12 @@ export function useCodexController() {
             baseUrl: normalizedBaseUrl,
             apiKey: normalizedApiKey ? normalizedApiKey : null,
             modelName: normalizedModelName,
+            modelCatalog: normalizedModelCatalog,
             balanceDisplayEnabled: input.balanceDisplayEnabled,
             apiQuotaMode: input.apiQuotaMode ?? "apiOnly",
             apiQuotaTodayUsedText: normalizedQuotaTodayUsedText,
             apiQuotaRemainingText: normalizedQuotaRemainingText,
+            apiQuotaSubscriptionName: normalizedQuotaSubscriptionName,
             platformLoginEmail: input.platformLoginEmail,
             platformLoginPassword: input.platformLoginPassword,
           },
@@ -2477,6 +2946,7 @@ export function useCodexController() {
         if (input.platformLoginEmail !== undefined || input.platformLoginPassword !== undefined) {
           const nextProviders = await upsertNotificationProviderForApiUpdate(
             input,
+            account.accountKey,
             settingsRef.current.notificationProviders ?? [],
           );
           await updateSettings(
@@ -2485,7 +2955,7 @@ export function useCodexController() {
           );
         }
 
-        setAccounts((prev) =>
+        updateAccountsState((prev) =>
           prev.map((item) =>
             item.accountKey === account.accountKey
               ? {
@@ -2519,8 +2989,40 @@ export function useCodexController() {
       localizeError,
       noticeAccountLabel,
       renamingAccountId,
+      updateAccountsState,
       updateSettings,
     ],
+  );
+
+  const onProbeApiModels = useCallback(
+    async (
+      baseUrl: string,
+      apiKey: string | null,
+      accountKey?: string,
+    ): Promise<RelayModelCatalogEntry[]> => {
+      const normalizedBaseUrl = baseUrl.trim();
+      const normalizedApiKey = apiKey?.trim() ?? "";
+      const normalizedAccountKey = accountKey?.trim() ?? "";
+      if (!normalizedBaseUrl || (!normalizedApiKey && !normalizedAccountKey)) {
+        throw new Error("请先填写 Base URL 和 API Key。");
+      }
+      if (isPreviewRuntime()) {
+        return normalizeModelCatalogContextWindows(previewProbeApiModels(normalizedBaseUrl));
+      }
+
+      const entries = normalizedAccountKey
+        ? await invoke<RelayModelCatalogEntry[]>("probe_api_account_models", {
+            accountKey: normalizedAccountKey,
+            baseUrl: normalizedBaseUrl,
+            apiKey: normalizedApiKey || null,
+          })
+        : await invoke<RelayModelCatalogEntry[]>("probe_api_models", {
+            baseUrl: normalizedBaseUrl,
+            apiKey: normalizedApiKey,
+          });
+      return normalizeModelCatalogContextWindows(entries);
+    },
+    [],
   );
 
   const onUpdateApiAccountKeys = useCallback(
@@ -2547,7 +3049,7 @@ export function useCodexController() {
           keys,
         });
 
-        setAccounts((prev) =>
+        updateAccountsState((prev) =>
           prev.map((item) =>
             item.accountKey === account.accountKey
               ? {
@@ -2575,7 +3077,7 @@ export function useCodexController() {
         );
       }
     },
-    [copy.notices, localizeError, noticeAccountLabel, renamingAccountId],
+    [copy.notices, localizeError, noticeAccountLabel, renamingAccountId, updateAccountsState],
   );
 
   const onProbeApiAccountKey = useCallback(
@@ -2598,7 +3100,7 @@ export function useCodexController() {
           accountKey: account.accountKey,
           keyId,
         });
-        setAccounts((prev) =>
+        updateAccountsState((prev) =>
           prev.map((item) =>
             item.accountKey === account.accountKey
               ? {
@@ -2626,7 +3128,7 @@ export function useCodexController() {
         );
       }
     },
-    [copy.notices, localizeError, noticeAccountLabel, renamingAccountId],
+    [copy.notices, localizeError, noticeAccountLabel, renamingAccountId, updateAccountsState],
   );
 
   const onDelete = useCallback(async (account: AccountSummary) => {
@@ -2662,7 +3164,7 @@ export function useCodexController() {
       }
 
       await invoke<void>("delete_account", { id: account.id });
-      setAccounts((prev) => prev.filter((item) => item.id !== account.id));
+      updateAccountsState((prev) => prev.filter((item) => item.id !== account.id));
       setNotice({ type: "ok", message: copy.notices.accountDeleted });
     } catch (error) {
       setNotice({
@@ -2670,11 +3172,20 @@ export function useCodexController() {
         message: copy.notices.deleteFailed(localizeError(String(error))),
       });
     }
-  }, [applyAccounts, copy.notices, localizeError, noticeAccountLabel, pendingDeleteId]);
+  }, [
+    applyAccounts,
+    copy.notices,
+    localizeError,
+    noticeAccountLabel,
+    pendingDeleteId,
+    updateAccountsState,
+  ]);
 
   const onSwitch = useCallback(
-    async (account: AccountSummary) => {
-      setSwitchingId(account.id);
+    async (account: AccountSummary, options?: { useModelRouter?: boolean }) => {
+      const useModelRouter = Boolean(options?.useModelRouter);
+      const switchingKey = useModelRouter ? `router:${account.id}` : account.id;
+      setSwitchingId(switchingKey);
       try {
         if (isPreviewRuntime()) {
           const nextAccounts = readPreviewAccounts().map((item) => ({
@@ -2691,6 +3202,7 @@ export function useCodexController() {
           id: account.id,
           workspacePath: null,
           launchCodex: settings.launchCodexAfterSwitch,
+          useModelRouter,
           restartEditorsOnSwitch: settings.restartEditorsOnSwitch,
           restartEditorTargets: settings.restartEditorTargets,
         });
@@ -2792,8 +3304,13 @@ export function useCodexController() {
   );
 
   const onSwitchHybrid = useCallback(
-    async (chatgptAccount: AccountSummary, relayAccount: AccountSummary) => {
-      const switchingKey = `hybrid:${chatgptAccount.id}:${relayAccount.id}`;
+    async (
+      chatgptAccount: AccountSummary,
+      relayAccount: AccountSummary,
+      options?: { useModelRouter?: boolean },
+    ) => {
+      const useModelRouter = Boolean(options?.useModelRouter);
+      const switchingKey = `${useModelRouter ? "router-hybrid" : "hybrid"}:${chatgptAccount.id}:${relayAccount.id}`;
       setSwitchingId(switchingKey);
       try {
         if (isPreviewRuntime()) {
@@ -2812,6 +3329,7 @@ export function useCodexController() {
           relayAccountId: relayAccount.id,
           workspacePath: null,
           launchCodex: settings.launchCodexAfterSwitch,
+          useModelRouter,
           restartEditorsOnSwitch: settings.restartEditorsOnSwitch,
           restartEditorTargets: settings.restartEditorTargets,
         });
@@ -2876,6 +3394,114 @@ export function useCodexController() {
     ],
   );
 
+  const onSetModelRouterMode = useCallback(
+    async (enabled: boolean, relayAccountId: string | null) => {
+      const switchingKey = enabled ? `router-mode:${relayAccountId ?? "auto"}` : "router-mode:off";
+      setSwitchingId(switchingKey);
+      try {
+        if (isPreviewRuntime()) {
+          const data = {
+            ...settingsRef.current,
+            modelRouterEnabled: enabled,
+            modelRouterAccountId: relayAccountId,
+          };
+          settingsRef.current = data;
+          setSettings(data);
+          writePreviewSettings(data);
+          setNotice({
+            type: "ok",
+            message: enabled ? "路由模式已开启。" : "路由模式已关闭，已恢复之前的 Codex 配置。",
+          });
+          return;
+        }
+
+        const data = await invoke<AppSettings>("set_model_router_mode", {
+          enabled,
+          relayAccountId,
+        });
+        settingsRef.current = data;
+        setSettings(data);
+        await loadAccounts();
+        setNotice({
+          type: "ok",
+          message: enabled ? "路由模式已开启并写入 Codex 配置。" : "路由模式已关闭，已恢复之前的 Codex 配置。",
+        });
+      } catch (error) {
+        setNotice({
+          type: "error",
+          message: enabled
+            ? `开启路由模式失败：${localizeError(String(error))}`
+            : `关闭路由模式失败：${localizeError(String(error))}`,
+        });
+      } finally {
+        setSwitchingId(null);
+      }
+    },
+    [loadAccounts, localizeError],
+  );
+
+  const onLaunchCurrentCodexConfig = useCallback(async () => {
+    setSwitchingId("router-launch");
+    try {
+      if (isPreviewRuntime()) {
+        setNotice({ type: "ok", message: copy.notices.switchedAndLaunching });
+        return;
+      }
+
+      const result = await invoke<SwitchAccountResult>("launch_current_codex_config", {
+        workspacePath: null,
+        restartEditorsOnSwitch: settings.restartEditorsOnSwitch,
+        restartEditorTargets: settings.restartEditorTargets,
+      });
+      await loadAccounts();
+
+      let baseNotice: Notice = result.usedFallbackCli
+        ? { type: "info", message: copy.notices.switchedAndLaunchByCli }
+        : { type: "ok", message: copy.notices.switchedAndLaunching };
+
+      if (settings.restartEditorsOnSwitch) {
+        if (result.editorRestartError) {
+          baseNotice = {
+            type: "error",
+            message: copy.notices.editorRestartFailed(
+              baseNotice.message,
+              localizeError(result.editorRestartError),
+            ),
+          };
+        } else if (result.restartedEditorApps.length > 0) {
+          const restartedLabels = result.restartedEditorApps
+            .map((id) => copy.editorAppLabels[id] ?? id)
+            .join(" / ");
+          baseNotice = {
+            ...baseNotice,
+            message: copy.notices.editorsRestarted(baseNotice.message, restartedLabels),
+          };
+        } else {
+          baseNotice = {
+            ...baseNotice,
+            message: copy.notices.noEditorRestarted(baseNotice.message),
+          };
+        }
+      }
+
+      setNotice(baseNotice);
+    } catch (error) {
+      setNotice({
+        type: "error",
+        message: copy.notices.switchFailed(localizeError(String(error))),
+      });
+    } finally {
+      setSwitchingId(null);
+    }
+  }, [
+    copy.editorAppLabels,
+    copy.notices,
+    loadAccounts,
+    localizeError,
+    settings.restartEditorsOnSwitch,
+    settings.restartEditorTargets,
+  ]);
+
   const onSmartSwitch = useCallback(async () => {
     if (switchingId) {
       return;
@@ -2938,6 +3564,7 @@ export function useCodexController() {
     installPendingUpdate,
     openManualDownloadPage,
     closeUpdateDialog,
+    reloadSettings: loadSettings,
     updateSettings,
     onOpenAddDialog,
     onReauthorizeAccount,
@@ -2953,11 +3580,14 @@ export function useCodexController() {
     onExportAccounts,
     onRenameAccountLabel,
     onUpdateApiAccount,
+    onProbeApiModels,
     onUpdateApiAccountKeys,
     onProbeApiAccountKey,
     onDelete,
     onSwitch,
     onSwitchHybrid,
+    onSetModelRouterMode,
+    onLaunchCurrentCodexConfig,
     onSmartSwitch,
     smartSwitching: switchingId !== null,
   };

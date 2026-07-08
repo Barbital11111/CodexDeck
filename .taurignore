@@ -1,0 +1,8 @@
+.dev-runtime/
+.tmp/
+dist/
+node_modules/
+release/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/resources/

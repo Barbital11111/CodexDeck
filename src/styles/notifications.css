@@ -37,7 +37,7 @@
 .proxy-note-card h3 {
   margin: 0;
   color: var(--ink);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .proxy-hero h2 {
@@ -246,8 +246,8 @@
 .notificationPageHeader h2 {
   margin: 0;
   color: var(--ink);
-  font: 820 clamp(1.05rem, 0.28vw + 0.96rem, 1.28rem)/1.04 var(--font-ui);
-  letter-spacing: -0.045em;
+  font: 820 1.18rem/1.08 var(--font-ui);
+  letter-spacing: 0;
 }
 
 .notificationPageHeader p {
@@ -323,7 +323,7 @@
   margin: 0;
   color: var(--ink);
   font: 780 1rem/1.2 var(--font-ui);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .notificationQuickCreateCard p,
@@ -585,7 +585,7 @@
   margin: 0;
   color: var(--ink);
   font: 760 0.9rem/1.25 var(--font-ui);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .notificationTemplateGroupHeader p {
@@ -645,7 +645,7 @@
   margin: 0;
   color: var(--ink);
   font: 760 0.82rem/1.24 var(--font-ui);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .notificationTemplateItemTitle p {
@@ -704,7 +704,7 @@
   margin: 0;
   color: var(--ink);
   font: 780 0.95rem/1.22 var(--font-ui);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .notificationRowMain p {
@@ -1821,7 +1821,7 @@ textarea.notificationTemplateEditor.ant-input {
   margin: 0;
   color: var(--ink);
   font: 750 0.96rem/1.2 var(--font-ui);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .notificationTargetMain p {
@@ -1942,7 +1942,7 @@ textarea.notificationTemplateEditor.ant-input {
   margin: 0;
   color: var(--ink);
   font: 800 0.98rem/1.2 var(--font-ui);
-  letter-spacing: -0.025em;
+  letter-spacing: 0;
 }
 
 .notificationSectionTitle p,
@@ -2520,7 +2520,7 @@ textarea.notificationTemplateEditor.ant-input {
 
 .notificationPageHeader h2 {
   font-size: 1.44rem;
-  letter-spacing: -0.035em;
+  letter-spacing: 0;
 }
 
 .notificationPageHeader p {
@@ -2586,7 +2586,7 @@ textarea.notificationTemplateEditor.ant-input {
 .notificationActivityCard h3,
 .notificationWarningsCard h3 {
   font-size: 0.9rem;
-  letter-spacing: -0.015em;
+  letter-spacing: 0;
 }
 
 .notificationSectionTitle p,
@@ -2864,7 +2864,7 @@ textarea.notificationTemplateEditor.ant-input {
 }
 
 .notificationLedgerTableCard .notificationSectionHeader h3 {
-  font-size: clamp(0.82rem, 0.18vw + 0.76rem, 0.96rem);
+  font-size: 0.9rem;
 }
 
 .notificationLedgerTableCard .notificationSectionHeader p {
@@ -2926,7 +2926,7 @@ textarea.notificationTemplateEditor.ant-input {
   border-radius: 9px;
   padding: 7px 10px;
   color: color-mix(in srgb, var(--ink) 72%, var(--subtle) 28%);
-  font-size: clamp(0.58rem, 0.08vw + 0.55rem, 0.64rem);
+  font-size: 0.62rem;
   cursor: default;
   transition:
     background 140ms ease,
@@ -2957,7 +2957,7 @@ textarea.notificationTemplateEditor.ant-input {
 
 .notificationLedgerTime {
   color: color-mix(in srgb, var(--ink) 78%, var(--subtle) 22%);
-  font-size: clamp(0.58rem, 0.08vw + 0.55rem, 0.64rem);
+  font-size: 0.62rem;
 }
 
 .notificationLedgerEvent {
@@ -2965,12 +2965,12 @@ textarea.notificationTemplateEditor.ant-input {
 }
 
 .notificationLedgerEvent strong {
-  font-size: clamp(0.62rem, 0.08vw + 0.59rem, 0.7rem);
+  font-size: 0.68rem;
 }
 
 .notificationLedgerEvent small {
   color: color-mix(in srgb, var(--subtle) 86%, var(--ink) 14%);
-  font-size: clamp(0.52rem, 0.05vw + 0.5rem, 0.58rem);
+  font-size: 0.56rem;
 }
 
 .notificationLedgerSwitch {

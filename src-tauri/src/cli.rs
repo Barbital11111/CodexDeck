@@ -4,6 +4,7 @@ use std::fs;
 use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
+use std::sync::OnceLock;
 #[cfg(target_os = "windows")]
 use std::thread;
 #[cfg(target_os = "windows")]
@@ -97,6 +98,36 @@ pub(crate) fn find_configured_codex_app_path(configured_path: Option<&str>) -> O
     find_configured_codex_app_path_from_path(Some(&normalized))
 }
 
+pub(crate) fn configured_codex_app_install_root(configured_path: Option<&str>) -> Option<PathBuf> {
+    let app_path = find_configured_codex_app_path(configured_path)?;
+
+    #[cfg(target_os = "macos")]
+    {
+        if is_macos_app_bundle(&app_path) {
+            return Some(app_path);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if is_windows_store_codex_path(&app_path) {
+            return None;
+        }
+        return app_path.parent().map(Path::to_path_buf);
+    }
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        return app_path.parent().map(Path::to_path_buf);
+    }
+
+    #[cfg(not(any(unix, target_os = "windows")))]
+    {
+        let _ = app_path;
+        None
+    }
+}
+
 #[cfg(target_os = "windows")]
 pub(crate) fn is_windows_store_codex_path(path: &Path) -> bool {
     let normalized = path
@@ -113,7 +144,7 @@ pub(crate) fn is_windows_store_codex_path(_path: &Path) -> bool {
 
 #[cfg(target_os = "windows")]
 pub(crate) fn has_windows_store_codex_app() -> bool {
-    find_windows_codex_store_app_id().is_some()
+    cached_windows_codex_store_app_id().is_some()
 }
 
 #[cfg(not(target_os = "windows"))]
@@ -128,7 +159,7 @@ pub(crate) fn launch_windows_store_codex() -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 pub(crate) fn launch_windows_store_codex_with_args(arguments: &[String]) -> Result<(), String> {
-    let app_id = find_windows_codex_store_app_id()
+    let app_id = cached_windows_codex_store_app_id()
         .ok_or_else(|| "未找到微软商店版 Codex 的启动标识（AUMID）。".to_string())?;
     let baseline_pids = list_running_windows_codex_process_ids();
     let process_id =
@@ -142,10 +173,103 @@ pub(crate) fn launch_windows_store_codex_with_args(arguments: &[String]) -> Resu
     }
 }
 
+#[cfg(target_os = "windows")]
+pub(crate) fn stop_running_windows_codex_processes(
+    configured_path: Option<&str>,
+    only_configured_install: bool,
+) {
+    let configured_root = configured_path
+        .and_then(|path| configured_codex_app_install_root(Some(path)))
+        .and_then(|path| canonicalize_windows_prefix(&path));
+    if only_configured_install && configured_root.is_none() {
+        return;
+    }
+    let official_app_root = if only_configured_install {
+        None
+    } else {
+        find_codex_app_path()
+            .and_then(|path| path.parent().map(Path::to_path_buf))
+            .and_then(|path| canonicalize_windows_prefix(&path))
+    };
+
+    let mut prefixes = Vec::new();
+    for prefix in [configured_root, official_app_root].into_iter().flatten() {
+        if !prefixes.iter().any(|existing| existing == &prefix) {
+            prefixes.push(prefix);
+        }
+    }
+
+    let script = r#"
+$prefixes = @('__PREFIXES__')
+$codexHome = '__CODEX_HOME__'
+$killGlobalCodex = '__KILL_GLOBAL_CODEX__' -eq 'true'
+Get-CimInstance Win32_Process |
+  Where-Object { $_.Name -in @('Codex.exe','Codex Desktop.exe','codex.exe') -and $_.ExecutablePath } |
+  Where-Object {
+    $path = $_.ExecutablePath.Replace('/','\').ToLowerInvariant()
+    if ($killGlobalCodex -and $path -like '*\windowsapps\openai.codex_*') { return $true }
+    if ($killGlobalCodex -and $path -like '*\appdata\local\openai\codex\bin\*') { return $true }
+    foreach ($prefix in $prefixes) {
+      if ($prefix -and $path.StartsWith($prefix)) { return $true }
+    }
+    if ($killGlobalCodex -and $_.CommandLine -and $codexHome -and $_.CommandLine.Contains($codexHome)) { return $true }
+    return $false
+  } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
+$deadline = (Get-Date).AddSeconds(6)
+do {
+  Start-Sleep -Milliseconds 150
+  $stillRunning = @(
+    Get-CimInstance Win32_Process |
+      Where-Object { $_.Name -in @('Codex.exe','Codex Desktop.exe','codex.exe') -and $_.ExecutablePath } |
+      Where-Object {
+        $path = $_.ExecutablePath.Replace('/','\').ToLowerInvariant()
+        if ($killGlobalCodex -and $path -like '*\windowsapps\openai.codex_*') { return $true }
+        if ($killGlobalCodex -and $path -like '*\appdata\local\openai\codex\bin\*') { return $true }
+        foreach ($prefix in $prefixes) {
+          if ($prefix -and $path.StartsWith($prefix)) { return $true }
+        }
+        if ($killGlobalCodex -and $_.CommandLine -and $codexHome -and $_.CommandLine.Contains($codexHome)) { return $true }
+        return $false
+      }
+  )
+} while ($stillRunning.Count -gt 0 -and (Get-Date) -lt $deadline)
+"#;
+
+    let prefix_literal = prefixes
+        .iter()
+        .map(|prefix| format!("'{}'", escape_powershell_single_quoted(prefix)))
+        .collect::<Vec<_>>()
+        .join(",");
+    let codex_home = dirs::home_dir()
+        .map(|home| home.join(".codex").to_string_lossy().replace('/', "\\"))
+        .unwrap_or_default();
+    let script = script
+        .replace("'__PREFIXES__'", &prefix_literal)
+        .replace(
+            "__KILL_GLOBAL_CODEX__",
+            if only_configured_install { "false" } else { "true" },
+        )
+        .replace("__CODEX_HOME__", &escape_powershell_single_quoted(&codex_home));
+
+    let _ = new_background_command("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .status();
+}
+
 pub(crate) fn find_codex_app_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
-        return find_windows_codex_app_path();
+        static CODEX_APP_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
+        return CODEX_APP_PATH.get_or_init(find_windows_codex_app_path).clone();
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -177,6 +301,35 @@ pub(crate) fn find_codex_app_path() -> Option<PathBuf> {
 
         None
     }
+}
+
+#[cfg(target_os = "windows")]
+fn canonicalize_windows_prefix(path: &Path) -> Option<String> {
+    let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    let normalized = path
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    if normalized.trim().is_empty() {
+        None
+    } else if normalized.ends_with('\\') {
+        Some(normalized)
+    } else {
+        Some(format!("{normalized}\\"))
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn escape_powershell_single_quoted(value: &str) -> String {
+    value.replace('\'', "''")
+}
+
+#[cfg(target_os = "windows")]
+fn cached_windows_codex_store_app_id() -> Option<String> {
+    static WINDOWS_CODEX_STORE_APP_ID: OnceLock<Option<String>> = OnceLock::new();
+    WINDOWS_CODEX_STORE_APP_ID
+        .get_or_init(find_windows_codex_store_app_id)
+        .clone()
 }
 
 fn find_codex_cli_path() -> Option<PathBuf> {
@@ -264,24 +417,17 @@ fn find_configured_codex_app_path_from_path(configured_path: Option<&Path>) -> O
 fn codex_cli_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
-    if let Some(path_os) = env::var_os("PATH") {
-        for dir in env::split_paths(&path_os) {
-            push_codex_candidates_from_dir(&mut candidates, &dir);
-        }
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        for dir in [
-            PathBuf::from("/opt/homebrew/bin"),
-            PathBuf::from("/usr/local/bin"),
-            PathBuf::from("/usr/bin"),
-        ] {
-            push_codex_candidates_from_dir(&mut candidates, &dir);
-        }
-    }
-
     if let Some(home) = dirs::home_dir() {
+        #[cfg(target_os = "windows")]
+        append_windows_openai_codex_cli_candidates(
+            &mut candidates,
+            &home.join("AppData")
+                .join("Local")
+                .join("OpenAI")
+                .join("Codex")
+                .join("bin"),
+        );
+
         for dir in [
             home.join(".local").join("bin"),
             home.join(".npm-global").join("bin"),
@@ -299,6 +445,23 @@ fn codex_cli_candidates() -> Vec<PathBuf> {
                 .join("Microsoft")
                 .join("WinGet")
                 .join("Links"),
+        ] {
+            push_codex_candidates_from_dir(&mut candidates, &dir);
+        }
+    }
+
+    if let Some(path_os) = env::var_os("PATH") {
+        for dir in env::split_paths(&path_os) {
+            push_codex_candidates_from_dir(&mut candidates, &dir);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        for dir in [
+            PathBuf::from("/opt/homebrew/bin"),
+            PathBuf::from("/usr/local/bin"),
+            PathBuf::from("/usr/bin"),
         ] {
             push_codex_candidates_from_dir(&mut candidates, &dir);
         }
@@ -341,6 +504,35 @@ fn find_windows_codex_app_path() -> Option<PathBuf> {
     append_where_matches(&mut candidates, &["Codex.exe", "Codex Desktop.exe"]);
 
     first_executable_candidate(candidates)
+}
+
+#[cfg(target_os = "windows")]
+fn append_windows_openai_codex_cli_candidates(candidates: &mut Vec<PathBuf>, bin_dir: &Path) {
+    for dir in windows_openai_codex_version_dirs(bin_dir) {
+        push_codex_candidates_from_dir(candidates, &dir);
+    }
+    push_codex_candidates_from_dir(candidates, bin_dir);
+}
+
+#[cfg(target_os = "windows")]
+fn windows_openai_codex_version_dirs(bin_dir: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(bin_dir) else {
+        return Vec::new();
+    };
+
+    let mut dirs = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir() && is_executable_file(&path.join("codex.exe")))
+        .map(|path| {
+            let modified_at = fs::metadata(&path)
+                .and_then(|metadata| metadata.modified())
+                .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+            (path, modified_at)
+        })
+        .collect::<Vec<_>>();
+    dirs.sort_by(|(_, left), (_, right)| right.cmp(left));
+    dirs.into_iter().map(|(path, _)| path).collect()
 }
 
 fn append_nvm_codex_candidates(candidates: &mut Vec<PathBuf>) {
@@ -799,7 +991,7 @@ fn is_windows_codex_app_file(path: &Path) -> bool {
         return false;
     }
 
-    let normalized_path = path.to_string_lossy().to_ascii_lowercase();
+    let normalized_path = path.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
     if normalized_path.contains("\\winget\\links\\")
         || normalized_path.contains("\\shims\\")
         || normalized_path.contains("\\resources\\")

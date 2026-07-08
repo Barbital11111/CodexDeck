@@ -48,6 +48,15 @@ struct Sub2apiEndpointError {
     retry_next_base: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum ApiKeyQuotaProvider {
+    DeepSeek,
+    KimiMoonshot,
+    Zai,
+    MiniMaxCn,
+    MiniMaxGlobal,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ApiQuotaSnapshot {
@@ -60,6 +69,7 @@ pub(crate) struct ApiQuotaSnapshot {
     pub(crate) daily_window: Option<UsageWindow>,
     pub(crate) total_window: Option<UsageWindow>,
     pub(crate) subscription_expires_at: Option<i64>,
+    pub(crate) subscription_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -181,10 +191,10 @@ pub(crate) async fn fetch_api_quota_snapshot(
     let session = login_sub2api_provider(&client, &base_url, email, password).await?;
     let user = fetch_sub2api_current_user(&client, &session.base_url, &session.access_token)
         .await
-        .unwrap_or(Value::Null);
+        .map_err(|error| format!("API 平台用户接口失败: {error}"))?;
     let stats = fetch_sub2api_dashboard_stats(&client, &session.base_url, &session.access_token)
         .await
-        .unwrap_or(Value::Null);
+        .map_err(|error| format!("API 平台用量统计接口失败: {error}"))?;
     let progress =
         fetch_sub2api_subscription_progress(&client, &session.base_url, &session.access_token)
             .await
@@ -246,6 +256,42 @@ pub(crate) async fn fetch_newapi_token_quota_snapshot(
     Err(last_error.unwrap_or_else(|| "NewAPI 额度接口失败: 未收到响应".to_string()))
 }
 
+pub(crate) async fn fetch_provider_api_key_quota_snapshot(
+    base_url: &str,
+    api_key: &str,
+) -> Result<Option<ApiQuotaSnapshot>, String> {
+    let base_url = required_field(Some(base_url), "请填写 API 平台访问 URL")?;
+    let api_key = required_field(Some(api_key), "请填写 API Key")?;
+    let Some(provider) = detect_api_key_quota_provider(base_url) else {
+        return Ok(None);
+    };
+
+    let client = build_client()?;
+    match provider {
+        ApiKeyQuotaProvider::DeepSeek => fetch_deepseek_balance_snapshot(&client, api_key)
+            .await
+            .map(Some),
+        ApiKeyQuotaProvider::KimiMoonshot => {
+            fetch_moonshot_balance_snapshot(&client, base_url, api_key)
+                .await
+                .map(Some)
+        }
+        ApiKeyQuotaProvider::Zai => fetch_zai_quota_snapshot(&client, api_key).await.map(Some),
+        ApiKeyQuotaProvider::MiniMaxCn => fetch_minimax_token_plan_snapshot(&client, api_key, true)
+            .await
+            .map(Some),
+        ApiKeyQuotaProvider::MiniMaxGlobal => {
+            fetch_minimax_token_plan_snapshot(&client, api_key, false)
+                .await
+                .map(Some)
+        }
+    }
+}
+
+pub(crate) fn supports_provider_api_key_quota(base_url: &str) -> bool {
+    detect_api_key_quota_provider(base_url).is_some()
+}
+
 pub(crate) async fn test_notification_target(
     target: NotificationTargetConfig,
 ) -> Result<(), String> {
@@ -288,6 +334,209 @@ pub(crate) async fn test_aggregate_notification(
         render_usage_template(&target, &snapshots[..1])
     };
     send_notification_message(&target, "CodexDeck 聚合额度日报", &message).await
+}
+
+fn detect_api_key_quota_provider(base_url: &str) -> Option<ApiKeyQuotaProvider> {
+    let normalized = base_url.trim().to_ascii_lowercase();
+    if normalized.contains("api.deepseek.com") {
+        return Some(ApiKeyQuotaProvider::DeepSeek);
+    }
+    if normalized.contains("api.moonshot.cn")
+        || normalized.contains("api.moonshot.ai")
+        || normalized.contains("api.moonshot.com")
+        || normalized.contains("api.kimi.com")
+    {
+        return Some(ApiKeyQuotaProvider::KimiMoonshot);
+    }
+    if normalized.contains("api.z.ai") || normalized.contains("bigmodel.cn") {
+        return Some(ApiKeyQuotaProvider::Zai);
+    }
+    if normalized.contains("api.minimaxi.com") || normalized.contains("minimaxi.com") {
+        return Some(ApiKeyQuotaProvider::MiniMaxCn);
+    }
+    if normalized.contains("api.minimax.io") || normalized.contains("minimax.io") {
+        return Some(ApiKeyQuotaProvider::MiniMaxGlobal);
+    }
+    None
+}
+
+async fn fetch_moonshot_balance_snapshot(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+) -> Result<ApiQuotaSnapshot, String> {
+    let endpoint = moonshot_balance_endpoint(base_url);
+    let response = client
+        .get(&endpoint)
+        .bearer_auth(api_key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|error| {
+            format!(
+                "连接 Moonshot/Kimi 余额接口失败: {}",
+                sanitize_reqwest_error(error)
+            )
+        })?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "Moonshot/Kimi 余额接口失败 {status}: {}",
+            summarize_api_error_body(&body).unwrap_or_else(|| summarize_response_body(&body))
+        ));
+    }
+
+    let payload = parse_json_body(&body, "Moonshot/Kimi 余额接口返回格式异常")?;
+    build_moonshot_balance_snapshot(&payload)
+        .ok_or_else(|| "Moonshot/Kimi 余额接口返回缺少 available_balance".to_string())
+}
+
+fn moonshot_balance_endpoint(base_url: &str) -> String {
+    let normalized = normalize_openai_compatible_base_url(base_url);
+    let lower = normalized.to_ascii_lowercase();
+    let host = if lower.contains("moonshot.ai") {
+        "https://api.moonshot.ai"
+    } else if lower.contains("kimi.com") {
+        "https://api.kimi.com"
+    } else {
+        "https://api.moonshot.cn"
+    };
+    format!("{host}/v1/users/me/balance")
+}
+
+async fn fetch_zai_quota_snapshot(
+    client: &reqwest::Client,
+    api_key: &str,
+) -> Result<ApiQuotaSnapshot, String> {
+    let subscription = fetch_zai_subscription_metadata(client, api_key).await;
+    let response = client
+        .get("https://api.z.ai/api/monitor/usage/quota/limit")
+        .bearer_auth(api_key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|error| format!("连接 Z.AI 额度接口失败: {}", sanitize_reqwest_error(error)))?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "Z.AI 额度接口失败 {status}: {}",
+            summarize_api_error_body(&body).unwrap_or_else(|| summarize_response_body(&body))
+        ));
+    }
+
+    let payload = parse_json_body(&body, "Z.AI 额度接口返回格式异常")?;
+    build_zai_quota_snapshot(&payload, subscription.as_ref())
+        .ok_or_else(|| "Z.AI 额度接口返回缺少 limits".to_string())
+}
+
+async fn fetch_zai_subscription_metadata(
+    client: &reqwest::Client,
+    api_key: &str,
+) -> Option<ZaiSubscriptionMetadata> {
+    let response = client
+        .get("https://api.z.ai/api/biz/subscription/list")
+        .bearer_auth(api_key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let body = response.text().await.ok()?;
+    let payload = parse_json_body(&body, "Z.AI 订阅接口返回格式异常").ok()?;
+    parse_zai_subscription_metadata(&payload)
+}
+
+async fn fetch_deepseek_balance_snapshot(
+    client: &reqwest::Client,
+    api_key: &str,
+) -> Result<ApiQuotaSnapshot, String> {
+    let endpoint = "https://api.deepseek.com/user/balance";
+    let response = client
+        .get(endpoint)
+        .bearer_auth(api_key)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .map_err(|error| {
+            format!(
+                "连接 DeepSeek 余额接口失败: {}",
+                sanitize_reqwest_error(error)
+            )
+        })?;
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(format!(
+            "DeepSeek 余额接口失败 {status}: {}",
+            summarize_api_error_body(&body).unwrap_or_else(|| summarize_response_body(&body))
+        ));
+    }
+
+    let payload = parse_json_body(&body, "DeepSeek 余额接口返回格式异常")?;
+    build_deepseek_balance_snapshot(&payload)
+        .ok_or_else(|| "DeepSeek 余额接口返回缺少 balance_infos".to_string())
+}
+
+async fn fetch_minimax_token_plan_snapshot(
+    client: &reqwest::Client,
+    api_key: &str,
+    is_cn: bool,
+) -> Result<ApiQuotaSnapshot, String> {
+    let hosts: &[&str] = if is_cn {
+        &["api.minimaxi.com", "www.minimaxi.com"]
+    } else {
+        &["api.minimax.io", "www.minimax.io"]
+    };
+    let mut last_error = None;
+
+    for endpoint in minimax_token_plan_endpoints(hosts) {
+        let response = client
+            .get(&endpoint)
+            .bearer_auth(api_key)
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|error| {
+                format!(
+                    "连接 MiniMax Token Plan 接口失败: {}",
+                    sanitize_reqwest_error(error)
+                )
+            })?;
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        if !status.is_success() {
+            last_error = Some(format!(
+                "MiniMax Token Plan 接口失败 {status}: {}",
+                summarize_api_error_body(&body).unwrap_or_else(|| summarize_response_body(&body))
+            ));
+            continue;
+        }
+
+        let payload = parse_json_body(&body, "MiniMax Token Plan 接口返回格式异常")?;
+        let data = unwrap_data(&payload);
+        if let Some(snapshot) = build_minimax_token_plan_snapshot(data) {
+            return Ok(snapshot);
+        }
+
+        last_error = Some("MiniMax Token Plan 接口返回缺少额度字段".to_string());
+    }
+
+    Err(last_error.unwrap_or_else(|| "MiniMax Token Plan 接口失败: 未收到响应".to_string()))
+}
+
+fn minimax_token_plan_endpoints(hosts: &[&str]) -> Vec<String> {
+    let mut endpoints = Vec::new();
+    for host in hosts {
+        endpoints.push(format!("https://{host}/v1/token_plan/remains"));
+        endpoints.push(format!(
+            "https://{host}/v1/api/openplatform/coding_plan/remains"
+        ));
+    }
+    endpoints
 }
 
 async fn login_sub2api_provider(
@@ -1005,6 +1254,13 @@ fn json_optional_i64(value: Option<&Value>) -> Option<i64> {
     })
 }
 
+fn json_optional_str<'a>(value: Option<&'a Value>) -> Option<&'a str> {
+    value
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+}
+
 fn money_text(value: f64) -> String {
     format!("${:.2}", value.max(0.0))
 }
@@ -1077,6 +1333,7 @@ fn progress_window(progress: Option<&Value>, key: &str) -> Option<UsageWindow> {
 
     Some(UsageWindow {
         used_percent: used_percent.clamp(0.0, 100.0),
+        total_percent: None,
         window_seconds: 0,
         reset_at,
     })
@@ -1124,6 +1381,7 @@ fn build_api_quota_snapshot(
         daily_window: None,
         total_window: None,
         subscription_expires_at: None,
+        subscription_name: None,
     };
 
     let Some(subscription_item) = choose_best_subscription(progress_items) else {
@@ -1144,6 +1402,7 @@ fn build_api_quota_snapshot(
             match (monthly_used, monthly_limit) {
                 (Some(used), Some(limit)) if limit > 0.0 => Some(UsageWindow {
                     used_percent: ((used / limit) * 100.0).clamp(0.0, 100.0),
+                    total_percent: None,
                     window_seconds: 0,
                     reset_at: None,
                 }),
@@ -1169,6 +1428,7 @@ fn build_api_quota_snapshot(
         daily_window,
         total_window,
         subscription_expires_at,
+        subscription_name: None,
     }
 }
 
@@ -1221,6 +1481,7 @@ fn build_newapi_token_quota_snapshot(payload: &Value) -> Option<ApiQuotaSnapshot
         daily_window: None,
         total_window: Some(UsageWindow {
             used_percent,
+            total_percent: None,
             window_seconds: 0,
             reset_at: parse_api_time_to_unix(payload.get("expires_at"))
                 .or_else(|| parse_api_time_to_unix(payload.get("expire_time")))
@@ -1229,7 +1490,615 @@ fn build_newapi_token_quota_snapshot(payload: &Value) -> Option<ApiQuotaSnapshot
         subscription_expires_at: parse_api_time_to_unix(payload.get("expires_at"))
             .or_else(|| parse_api_time_to_unix(payload.get("expire_time")))
             .or_else(|| parse_api_time_to_unix(payload.get("expired_at"))),
+        subscription_name: None,
     })
+}
+
+fn build_deepseek_balance_snapshot(payload: &Value) -> Option<ApiQuotaSnapshot> {
+    let infos = payload.get("balance_infos").and_then(Value::as_array)?;
+    let mut balances = Vec::new();
+    for info in infos {
+        if let Some(balance) = json_optional_number(info.get("total_balance")) {
+            let currency = info
+                .get("currency")
+                .and_then(Value::as_str)
+                .unwrap_or("CNY");
+            balances.push((currency.to_string(), balance));
+        }
+    }
+    if balances.is_empty() {
+        return None;
+    }
+
+    let is_available = payload
+        .get("is_available")
+        .and_then(Value::as_bool)
+        .unwrap_or_else(|| balances.iter().any(|(_, balance)| *balance > 0.0));
+    let balance_text = if is_available {
+        format_currency_balances(&balances)
+    } else {
+        "已耗尽".to_string()
+    };
+
+    Some(ApiQuotaSnapshot {
+        mode: crate::models::ApiQuotaMode::ApiOnly,
+        today_used_text: None,
+        remaining_text: Some(balance_text.clone()),
+        total_remaining_text: Some(balance_text),
+        total_tokens_text: None,
+        today_tokens_text: None,
+        daily_window: None,
+        total_window: None,
+        subscription_expires_at: None,
+        subscription_name: None,
+    })
+}
+
+fn build_moonshot_balance_snapshot(payload: &Value) -> Option<ApiQuotaSnapshot> {
+    let data = unwrap_data_or_plain_data(payload);
+    let available = json_optional_number(data.get("available_balance"))
+        .or_else(|| json_optional_number(data.get("availableBalance")))
+        .or_else(|| json_optional_number(data.get("balance")))?;
+    let cash = json_optional_number(data.get("cash_balance"))
+        .or_else(|| json_optional_number(data.get("cashBalance")));
+    let voucher = json_optional_number(data.get("voucher_balance"))
+        .or_else(|| json_optional_number(data.get("voucherBalance")));
+    let balance_text = match (cash, voucher) {
+        (Some(cash), Some(voucher)) if cash < 0.0 => format!(
+            "{} / 现金 -{} / 赠金 {}",
+            money_text(available),
+            money_text(cash.abs()),
+            money_text(voucher)
+        ),
+        (Some(cash), Some(voucher)) => format!(
+            "{} / 现金 {} / 赠金 {}",
+            money_text(available),
+            money_text(cash),
+            money_text(voucher)
+        ),
+        _ => money_text(available),
+    };
+
+    Some(ApiQuotaSnapshot {
+        mode: crate::models::ApiQuotaMode::ApiOnly,
+        today_used_text: None,
+        remaining_text: Some(balance_text.clone()),
+        total_remaining_text: Some(balance_text),
+        total_tokens_text: None,
+        today_tokens_text: None,
+        daily_window: None,
+        total_window: None,
+        subscription_expires_at: None,
+        subscription_name: None,
+    })
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ZaiSubscriptionMetadata {
+    product_name: Option<String>,
+    next_renew_time: Option<i64>,
+}
+
+fn parse_zai_subscription_metadata(payload: &Value) -> Option<ZaiSubscriptionMetadata> {
+    let data = unwrap_data_or_plain_data(payload);
+    let item = if let Some(items) = data.as_array() {
+        items.iter().find(|item| item.is_object())?
+    } else if let Some(items) = data
+        .get("list")
+        .or_else(|| data.get("items"))
+        .or_else(|| data.get("subscriptions"))
+        .and_then(Value::as_array)
+    {
+        items.iter().find(|item| item.is_object())?
+    } else if data.is_object() {
+        data
+    } else {
+        return None;
+    };
+
+    Some(ZaiSubscriptionMetadata {
+        product_name: json_optional_str(
+            item.get("productName")
+                .or_else(|| item.get("product_name"))
+                .or_else(|| item.get("name")),
+        )
+        .map(ToString::to_string),
+        next_renew_time: parse_api_time_to_unix(
+            item.get("nextRenewTime")
+                .or_else(|| item.get("next_renew_time"))
+                .or_else(|| item.get("expiresAt"))
+                .or_else(|| item.get("expires_at")),
+        ),
+    })
+}
+
+fn build_zai_quota_snapshot(
+    payload: &Value,
+    subscription: Option<&ZaiSubscriptionMetadata>,
+) -> Option<ApiQuotaSnapshot> {
+    let data = unwrap_data_or_plain_data(payload);
+    let limits = data
+        .get("limits")
+        .or_else(|| data.get("data").and_then(|item| item.get("limits")))
+        .and_then(Value::as_array)
+        .or_else(|| data.as_array())?;
+    if limits.is_empty() {
+        return None;
+    }
+
+    let session = find_zai_limit(limits, "TOKENS_LIMIT", Some(3))
+        .or_else(|| find_zai_limit(limits, "TOKENS_LIMIT", None));
+    let weekly = find_zai_limit(limits, "TOKENS_LIMIT", Some(6));
+    let daily_window = session.and_then(zai_usage_window);
+    let total_window = weekly.and_then(zai_usage_window);
+    if daily_window.is_none() && total_window.is_none() {
+        return None;
+    }
+
+    let total_remaining_text = weekly
+        .or(session)
+        .and_then(zai_remaining_text)
+        .or_else(|| subscription.and_then(|item| item.product_name.clone()));
+
+    Some(ApiQuotaSnapshot {
+        mode: crate::models::ApiQuotaMode::PlatformSubscription,
+        today_used_text: None,
+        remaining_text: total_remaining_text.clone(),
+        total_remaining_text,
+        total_tokens_text: None,
+        today_tokens_text: None,
+        daily_window,
+        total_window,
+        subscription_expires_at: subscription.and_then(|item| item.next_renew_time),
+        subscription_name: subscription.and_then(|item| item.product_name.clone()),
+    })
+}
+
+fn unwrap_data_or_plain_data(payload: &Value) -> &Value {
+    let unwrapped = unwrap_data(payload);
+    if std::ptr::eq(unwrapped, payload) {
+        payload.get("data").unwrap_or(payload)
+    } else {
+        unwrapped
+    }
+}
+
+fn find_zai_limit<'a>(
+    limits: &'a [Value],
+    limit_type: &str,
+    unit: Option<i64>,
+) -> Option<&'a Value> {
+    let mut fallback = None;
+    for item in limits {
+        let item_type = json_optional_str(item.get("type").or_else(|| item.get("name")));
+        if !item_type.is_some_and(|value| value.eq_ignore_ascii_case(limit_type)) {
+            continue;
+        }
+        match unit {
+            Some(expected) => {
+                let item_unit = json_optional_i64(item.get("unit"));
+                if item_unit == Some(expected) {
+                    return Some(item);
+                }
+                if item_unit.is_none() && fallback.is_none() {
+                    fallback = Some(item);
+                }
+            }
+            None => return Some(item),
+        }
+    }
+    fallback
+}
+
+fn zai_usage_window(payload: &Value) -> Option<UsageWindow> {
+    let used_percent = json_optional_number(payload.get("percentage"))
+        .or_else(|| json_optional_number(payload.get("usedPercentage")))
+        .or_else(|| {
+            let current = json_optional_number(payload.get("currentValue"))
+                .or_else(|| json_optional_number(payload.get("current_value")))
+                .or_else(|| json_optional_number(payload.get("used")));
+            let limit = json_optional_number(payload.get("usage"))
+                .or_else(|| json_optional_number(payload.get("limit")))
+                .or_else(|| json_optional_number(payload.get("total")));
+            match (current, limit) {
+                (Some(current), Some(limit)) if limit > 0.0 => Some((current / limit) * 100.0),
+                _ => None,
+            }
+        })?;
+    let reset_at = parse_api_time_to_unix(
+        payload
+            .get("nextResetTime")
+            .or_else(|| payload.get("next_reset_time"))
+            .or_else(|| payload.get("resetAt"))
+            .or_else(|| payload.get("reset_at")),
+    );
+
+    Some(UsageWindow {
+        used_percent: used_percent.clamp(0.0, 100.0),
+        total_percent: Some(100.0),
+        window_seconds: 0,
+        reset_at,
+    })
+}
+
+fn zai_remaining_text(payload: &Value) -> Option<String> {
+    json_optional_number(payload.get("remaining"))
+        .or_else(|| {
+            let usage = json_optional_number(payload.get("usage"))
+                .or_else(|| json_optional_number(payload.get("limit")))
+                .or_else(|| json_optional_number(payload.get("total")));
+            let current = json_optional_number(payload.get("currentValue"))
+                .or_else(|| json_optional_number(payload.get("current_value")))
+                .or_else(|| json_optional_number(payload.get("used")));
+            match (usage, current) {
+                (Some(usage), Some(current)) => Some((usage - current).max(0.0)),
+                _ => None,
+            }
+        })
+        .map(quota_text)
+}
+
+fn format_currency_balances(balances: &[(String, f64)]) -> String {
+    balances
+        .iter()
+        .map(|(currency, amount)| format_currency_balance(currency, *amount))
+        .collect::<Vec<_>>()
+        .join(" + ")
+}
+
+fn format_currency_balance(currency: &str, amount: f64) -> String {
+    let currency = currency.trim();
+    if currency.eq_ignore_ascii_case("cny") || currency.eq_ignore_ascii_case("rmb") {
+        return format!("¥{:.2}", amount.max(0.0));
+    }
+    if currency.eq_ignore_ascii_case("usd") {
+        return money_text(amount);
+    }
+    format!("{} {}", quota_text(amount), currency)
+}
+
+fn build_minimax_token_plan_snapshot(payload: &Value) -> Option<ApiQuotaSnapshot> {
+    let plan_payload = minimax_primary_plan_payload(payload);
+    let five_hour = minimax_usage_window(
+        plan_payload,
+        &[
+            "current_interval_usage_count",
+            "currentIntervalUsageCount",
+            "interval_usage_count",
+            "intervalUsageCount",
+            "usage_count",
+            "usageCount",
+        ],
+        &[
+            "current_interval_remaining_count",
+            "currentIntervalRemainingCount",
+            "interval_remaining_count",
+            "intervalRemainingCount",
+            "remain_count",
+            "remainCount",
+            "remaining_count",
+            "remainingCount",
+        ],
+        &[
+            "current_interval_total_count",
+            "currentIntervalTotalCount",
+            "interval_total_count",
+            "intervalTotalCount",
+            "total_count",
+            "totalCount",
+            "quota_count",
+            "quotaCount",
+        ],
+        &[
+            "current_interval_remaining_percent",
+            "currentIntervalRemainingPercent",
+            "usage_percent",
+            "usagePercent",
+        ],
+        &[
+            "end_time",
+            "endTime",
+            "current_interval_end_time",
+            "currentIntervalEndTime",
+            "interval_end_time",
+            "intervalEndTime",
+            "reset_at",
+            "resetAt",
+            "reset_time",
+            "resetTime",
+        ],
+        &["remains_time", "remainsTime"],
+        None,
+    );
+    let weekly_total_percent = minimax_weekly_total_percent(plan_payload);
+    let weekly = minimax_usage_window(
+        plan_payload,
+        &[
+            "current_weekly_usage_count",
+            "currentWeeklyUsageCount",
+            "weekly_usage_count",
+            "weeklyUsageCount",
+        ],
+        &[
+            "current_weekly_remaining_count",
+            "currentWeeklyRemainingCount",
+            "weekly_remain_count",
+            "weeklyRemainCount",
+            "weekly_remaining_count",
+            "weeklyRemainingCount",
+        ],
+        &[
+            "current_weekly_total_count",
+            "currentWeeklyTotalCount",
+            "weekly_total_count",
+            "weeklyTotalCount",
+            "weekly_quota_count",
+            "weeklyQuotaCount",
+        ],
+        &[
+            "current_weekly_remaining_percent",
+            "currentWeeklyRemainingPercent",
+            "weekly_remaining_percent",
+            "weeklyRemainingPercent",
+        ],
+        &[
+            "weekly_end_time",
+            "weeklyEndTime",
+            "current_weekly_end_time",
+            "currentWeeklyEndTime",
+            "weekly_reset_at",
+            "weeklyResetAt",
+            "weekly_reset_time",
+            "weeklyResetTime",
+        ],
+        &["weekly_remains_time", "weeklyRemainsTime"],
+        weekly_total_percent,
+    );
+
+    if five_hour.is_none() && weekly.is_none() {
+        return None;
+    }
+
+    let weekly_remaining = json_optional_number_by_keys(
+        plan_payload,
+        &[
+            "current_weekly_usage_count",
+            "currentWeeklyUsageCount",
+            "current_weekly_remaining_count",
+            "currentWeeklyRemainingCount",
+            "weekly_usage_count",
+            "weeklyUsageCount",
+            "weekly_remaining_count",
+            "weeklyRemainingCount",
+            "weekly_remain_count",
+            "weeklyRemainCount",
+        ],
+    );
+    let interval_remaining = json_optional_number_by_keys(
+        plan_payload,
+        &[
+            "current_interval_usage_count",
+            "currentIntervalUsageCount",
+            "current_interval_remaining_count",
+            "currentIntervalRemainingCount",
+            "interval_usage_count",
+            "intervalUsageCount",
+            "interval_remaining_count",
+            "intervalRemainingCount",
+            "usage_count",
+            "usageCount",
+            "remain_count",
+            "remainCount",
+            "remaining_count",
+            "remainingCount",
+        ],
+    );
+    let total_tokens = json_optional_number_by_keys(
+        plan_payload,
+        &[
+            "current_weekly_total_count",
+            "currentWeeklyTotalCount",
+            "weekly_total_count",
+            "weeklyTotalCount",
+            "current_interval_total_count",
+            "currentIntervalTotalCount",
+            "total_count",
+            "totalCount",
+        ],
+    );
+    let total_tokens = total_tokens.filter(|total| *total > 0.0);
+    let remaining_tokens = weekly_remaining.or(interval_remaining);
+    let total_remaining = match (remaining_tokens, total_tokens) {
+        (Some(remaining), Some(_)) => Some(remaining.max(0.0)),
+        _ => None,
+    };
+    let used_tokens = match (total_remaining, total_tokens) {
+        (Some(remaining), Some(total)) => Some((total - remaining).max(0.0)),
+        _ => None,
+    };
+
+    Some(ApiQuotaSnapshot {
+        mode: crate::models::ApiQuotaMode::PlatformSubscription,
+        today_used_text: None,
+        remaining_text: total_remaining.map(quota_text),
+        total_remaining_text: total_remaining.map(quota_text),
+        total_tokens_text: total_tokens.map(quota_text),
+        today_tokens_text: used_tokens.map(quota_text),
+        daily_window: five_hour,
+        total_window: weekly,
+        subscription_expires_at: None,
+        subscription_name: None,
+    })
+}
+
+fn minimax_primary_plan_payload(payload: &Value) -> &Value {
+    let payload = unwrap_data(payload);
+    let model_remains = payload
+        .get("model_remains")
+        .or_else(|| payload.get("modelRemains"))
+        .and_then(Value::as_array);
+    if let Some(items) = model_remains {
+        if let Some(item) = minimax_best_model_remain(items) {
+            return item;
+        }
+    }
+
+    if let Some(first) = payload
+        .get("models")
+        .and_then(Value::as_array)
+        .and_then(|items| items.iter().find(|item| item.is_object()))
+    {
+        return first;
+    }
+    payload
+}
+
+fn minimax_best_model_remain(items: &[Value]) -> Option<&Value> {
+    items
+        .iter()
+        .filter(|item| item.is_object())
+        .find(|item| {
+            let name = minimax_model_bucket_name(item);
+            name == "general" && minimax_has_window_data(item)
+        })
+        .or_else(|| {
+            items.iter().filter(|item| item.is_object()).find(|item| {
+                let name = minimax_model_bucket_name(item);
+                name.starts_with("minimax-m")
+                    && minimax_has_window_data(item)
+                    && minimax_total_score(item) > 0.0
+            })
+        })
+        .or_else(|| {
+            items
+                .iter()
+                .filter(|item| item.is_object())
+                .find(|item| minimax_has_window_data(item) && minimax_total_score(item) > 0.0)
+        })
+        .or_else(|| items.iter().find(|item| item.is_object()))
+}
+
+fn minimax_model_bucket_name(item: &Value) -> String {
+    json_optional_str(
+        item.get("model_name")
+            .or_else(|| item.get("modelName"))
+            .or_else(|| item.get("model")),
+    )
+    .unwrap_or_default()
+    .to_ascii_lowercase()
+}
+
+fn minimax_has_window_data(payload: &Value) -> bool {
+    minimax_total_score(payload) > 0.0
+        || json_optional_number_by_keys(
+            payload,
+            &[
+                "current_interval_remaining_percent",
+                "currentIntervalRemainingPercent",
+                "current_weekly_remaining_percent",
+                "currentWeeklyRemainingPercent",
+                "usage_percent",
+                "usagePercent",
+            ],
+        )
+        .is_some()
+}
+
+fn minimax_total_score(payload: &Value) -> f64 {
+    json_optional_number_by_keys(
+        payload,
+        &[
+            "current_interval_total_count",
+            "currentIntervalTotalCount",
+            "current_weekly_total_count",
+            "currentWeeklyTotalCount",
+            "total_count",
+            "totalCount",
+        ],
+    )
+    .unwrap_or(0.0)
+}
+
+fn minimax_usage_window(
+    payload: &Value,
+    used_keys: &[&str],
+    remaining_keys: &[&str],
+    total_keys: &[&str],
+    remaining_percent_keys: &[&str],
+    reset_keys: &[&str],
+    remains_ms_keys: &[&str],
+    total_percent_override: Option<f64>,
+) -> Option<UsageWindow> {
+    let total = json_optional_number_by_keys(payload, total_keys);
+    let used_as_remaining = json_optional_number_by_keys(payload, used_keys);
+    let remaining = json_optional_number_by_keys(payload, remaining_keys);
+    let remaining_percent =
+        json_optional_number_by_keys(payload, remaining_percent_keys).map(normalize_percent_value);
+    let total_percent = total_percent_override.unwrap_or(100.0).max(0.0);
+    let used_percent = match (used_as_remaining, remaining, total, remaining_percent) {
+        (Some(remaining), _, Some(total), _) if total > 0.0 => {
+            (((total - remaining).max(0.0) / total) * total_percent).clamp(0.0, total_percent)
+        }
+        (_, Some(remaining), Some(total), _) if total > 0.0 => {
+            (((total - remaining).max(0.0) / total) * total_percent).clamp(0.0, total_percent)
+        }
+        (_, _, _, Some(percent)) => {
+            (((100.0 - percent).max(0.0) / 100.0) * total_percent).clamp(0.0, total_percent)
+        }
+        _ => return None,
+    };
+    let reset_at = json_optional_i64_by_keys(payload, remains_ms_keys)
+        .and_then(remains_millis_to_reset_at)
+        .or_else(|| {
+            json_optional_i64_by_keys(payload, reset_keys).and_then(timestamp_to_unix_seconds)
+        });
+
+    Some(UsageWindow {
+        used_percent,
+        total_percent: Some(total_percent),
+        window_seconds: 0,
+        reset_at,
+    })
+}
+
+fn minimax_weekly_total_percent(payload: &Value) -> Option<f64> {
+    json_optional_number_by_keys(payload, &["weekly_boost_permille", "weeklyBoostPermille"])
+        .map(|value| (value / 10.0).max(100.0))
+}
+
+fn normalize_percent_value(value: f64) -> f64 {
+    if value <= 1.0 {
+        (value * 100.0).clamp(0.0, 100.0)
+    } else {
+        value.clamp(0.0, 100.0)
+    }
+}
+
+fn json_optional_number_by_keys(payload: &Value, keys: &[&str]) -> Option<f64> {
+    keys.iter()
+        .find_map(|key| json_optional_number(payload.get(*key)))
+}
+
+fn json_optional_i64_by_keys(payload: &Value, keys: &[&str]) -> Option<i64> {
+    keys.iter()
+        .find_map(|key| json_optional_i64(payload.get(*key)))
+}
+
+fn timestamp_to_unix_seconds(value: i64) -> Option<i64> {
+    if value > 1_000_000_000_000 {
+        return Some(value / 1000);
+    }
+    if value > 1_000_000_000 {
+        return Some(value);
+    }
+    None
+}
+
+fn remains_millis_to_reset_at(value: i64) -> Option<i64> {
+    if value <= 0 {
+        return None;
+    }
+    Some(crate::utils::now_unix_seconds() + (value / 1000).max(1))
 }
 
 fn report_date_text() -> String {
@@ -1627,8 +2496,15 @@ mod tests {
 
     use super::body_looks_like_non_api_response;
     use super::build_api_quota_snapshot;
+    use super::build_deepseek_balance_snapshot;
+    use super::build_minimax_token_plan_snapshot;
+    use super::build_moonshot_balance_snapshot;
     use super::build_newapi_token_quota_snapshot;
+    use super::build_zai_quota_snapshot;
+    use super::detect_api_key_quota_provider;
+    use super::moonshot_balance_endpoint;
     use super::normalize_openai_compatible_base_url;
+    use super::parse_zai_subscription_metadata;
     use super::should_retry_sub2api_base_candidate;
     use super::sub2api_base_url_candidates;
 
@@ -1714,8 +2590,301 @@ mod tests {
         assert_eq!(snapshot.total_remaining_text.as_deref(), Some("750000"));
         assert_eq!(snapshot.total_tokens_text.as_deref(), Some("1000000"));
         assert_eq!(snapshot.today_tokens_text.as_deref(), Some("250000"));
-        assert_eq!(snapshot.total_window.unwrap().used_percent, 25.0);
+        let total_window = snapshot.total_window.as_ref().expect("total usage window");
+        assert_eq!(total_window.used_percent, 25.0);
+        assert!(total_window.reset_at.is_some());
+    }
+
+    #[test]
+    fn provider_quota_detection_matches_deepseek_and_minimax_hosts() {
+        assert!(detect_api_key_quota_provider("https://api.deepseek.com/v1").is_some());
+        assert!(detect_api_key_quota_provider("https://api.minimaxi.com/v1").is_some());
+        assert!(detect_api_key_quota_provider("https://api.minimax.io/v1").is_some());
+        assert!(detect_api_key_quota_provider("https://api.moonshot.cn/v1").is_some());
+        assert!(detect_api_key_quota_provider("https://api.z.ai/api/coding/paas/v4").is_some());
+        assert!(detect_api_key_quota_provider("https://open.bigmodel.cn/api/paas/v4").is_some());
+        assert!(detect_api_key_quota_provider("https://api.xiaomimimo.com/v1").is_none());
+        assert!(detect_api_key_quota_provider("https://newapi.example.com/v1").is_none());
+    }
+
+    #[test]
+    fn deepseek_balance_maps_official_payload() {
+        let snapshot = build_deepseek_balance_snapshot(&json!({
+            "is_available": true,
+            "balance_infos": [{
+                "currency": "CNY",
+                "total_balance": "18.25",
+                "granted_balance": "8.25",
+                "topped_up_balance": "10.00"
+            }]
+        }))
+        .expect("deepseek balance snapshot");
+
+        assert_eq!(snapshot.mode, crate::models::ApiQuotaMode::ApiOnly);
+        assert_eq!(snapshot.remaining_text.as_deref(), Some("¥18.25"));
+        assert_eq!(snapshot.total_remaining_text.as_deref(), Some("¥18.25"));
+    }
+
+    #[test]
+    fn moonshot_balance_maps_official_payload() {
+        assert_eq!(
+            moonshot_balance_endpoint("https://api.moonshot.cn/v1"),
+            "https://api.moonshot.cn/v1/users/me/balance"
+        );
+        assert_eq!(
+            moonshot_balance_endpoint("https://api.moonshot.ai/v1"),
+            "https://api.moonshot.ai/v1/users/me/balance"
+        );
+
+        let snapshot = build_moonshot_balance_snapshot(&json!({
+            "data": {
+                "available_balance": 12.34,
+                "voucher_balance": 2.34,
+                "cash_balance": 10.0
+            }
+        }))
+        .expect("moonshot balance snapshot");
+
+        assert_eq!(snapshot.mode, crate::models::ApiQuotaMode::ApiOnly);
+        assert_eq!(
+            snapshot.remaining_text.as_deref(),
+            Some("$12.34 / 现金 $10.00 / 赠金 $2.34")
+        );
+    }
+
+    #[test]
+    fn zai_quota_maps_subscription_and_windows() {
+        let subscription = parse_zai_subscription_metadata(&json!({
+            "data": [{
+                "productName": "GLM Coding Max",
+                "nextRenewTime": 4102444800000_i64
+            }]
+        }))
+        .expect("zai subscription");
+        let snapshot = build_zai_quota_snapshot(
+            &json!({
+                "data": {
+                    "limits": [
+                        {
+                            "type": "TOKENS_LIMIT",
+                            "unit": 3,
+                            "usage": 100,
+                            "currentValue": 24,
+                            "percentage": 24,
+                            "nextResetTime": 4102444800000_i64
+                        },
+                        {
+                            "type": "TOKENS_LIMIT",
+                            "unit": 6,
+                            "usage": 100,
+                            "currentValue": 40,
+                            "percentage": 40,
+                            "nextResetTime": 4102531200000_i64
+                        }
+                    ]
+                }
+            }),
+            Some(&subscription),
+        )
+        .expect("zai quota snapshot");
+
+        assert_eq!(
+            snapshot.mode,
+            crate::models::ApiQuotaMode::PlatformSubscription
+        );
+        assert_eq!(
+            snapshot.subscription_name.as_deref(),
+            Some("GLM Coding Max")
+        );
+        assert_eq!(snapshot.total_remaining_text.as_deref(), Some("60"));
+        assert_eq!(snapshot.daily_window.unwrap().used_percent, 24.0);
+        assert_eq!(snapshot.total_window.unwrap().used_percent, 40.0);
         assert!(snapshot.subscription_expires_at.is_some());
+    }
+
+    #[test]
+    fn minimax_token_plan_maps_model_remains_windows() {
+        let snapshot = build_minimax_token_plan_snapshot(&json!({
+            "base_resp": { "status_code": 0, "status_msg": "success" },
+            "model_remains": [{
+                "model": "MiniMax-M2",
+                "current_interval_total_count": 1000000,
+                "current_interval_usage_count": 250000,
+                "end_time": 4102444800000_i64,
+                "current_weekly_total_count": 5000000,
+                "current_weekly_usage_count": 3000000,
+                "weekly_end_time": 4102531200000_i64
+            }]
+        }))
+        .expect("minimax token plan snapshot");
+
+        assert_eq!(
+            snapshot.mode,
+            crate::models::ApiQuotaMode::PlatformSubscription
+        );
+        assert_eq!(snapshot.remaining_text.as_deref(), Some("3000000"));
+        assert_eq!(snapshot.total_tokens_text.as_deref(), Some("5000000"));
+        assert_eq!(snapshot.today_tokens_text.as_deref(), Some("2000000"));
+        let daily = snapshot.daily_window.as_ref().expect("daily usage window");
+        let weekly = snapshot.total_window.as_ref().expect("weekly usage window");
+        assert_eq!(daily.used_percent, 75.0);
+        assert_eq!(weekly.used_percent, 40.0);
+        assert!(weekly.reset_at.is_some());
+    }
+
+    #[test]
+    fn minimax_token_plan_treats_usage_count_as_remaining_tokens() {
+        let snapshot = build_minimax_token_plan_snapshot(&json!({
+            "model_remains": [{
+                "model": "MiniMax-M2",
+                "current_interval_total_count": 1000,
+                "current_interval_usage_count": 250,
+                "current_weekly_total_count": 5000,
+                "current_weekly_usage_count": 3000
+            }]
+        }))
+        .expect("minimax token plan snapshot");
+
+        assert_eq!(snapshot.remaining_text.as_deref(), Some("3000"));
+        assert_eq!(snapshot.total_tokens_text.as_deref(), Some("5000"));
+        assert_eq!(snapshot.today_tokens_text.as_deref(), Some("2000"));
+        assert_eq!(snapshot.daily_window.unwrap().used_percent, 75.0);
+        assert_eq!(snapshot.total_window.unwrap().used_percent, 40.0);
+    }
+
+    #[test]
+    fn minimax_token_plan_matches_official_remaining_percent_and_weekly_boost() {
+        let snapshot = build_minimax_token_plan_snapshot(&json!({
+            "model_remains": [{
+                "model_name": "general",
+                "current_interval_total_count": 0,
+                "current_interval_usage_count": 0,
+                "current_interval_remaining_percent": 97,
+                "remains_time": 16_800_000_i64,
+                "current_weekly_total_count": 0,
+                "current_weekly_usage_count": 0,
+                "current_weekly_remaining_percent": 80,
+                "weekly_remains_time": 344_400_000_i64,
+                "weekly_boost_permille": 1500
+            }]
+        }))
+        .expect("minimax official quota snapshot");
+
+        let daily = snapshot.daily_window.unwrap();
+        let weekly = snapshot.total_window.unwrap();
+        assert_eq!(daily.used_percent, 3.0);
+        assert_eq!(daily.total_percent, Some(100.0));
+        assert!(daily.reset_at.is_some());
+        assert_eq!(weekly.used_percent, 30.0);
+        assert_eq!(weekly.total_percent, Some(150.0));
+        assert!(weekly.reset_at.is_some());
+    }
+
+    #[test]
+    fn minimax_token_plan_falls_back_to_m_series_model_bucket() {
+        let snapshot = build_minimax_token_plan_snapshot(&json!({
+            "model_remains": [
+                {
+                    "model_name": "video",
+                    "current_interval_total_count": 0,
+                    "current_interval_usage_count": 0
+                },
+                {
+                    "model_name": "MiniMax-M*",
+                    "current_interval_total_count": 100,
+                    "current_interval_usage_count": 60,
+                    "current_weekly_total_count": 1000,
+                    "current_weekly_usage_count": 900
+                }
+            ]
+        }))
+        .expect("minimax m-series quota snapshot");
+
+        assert_eq!(snapshot.daily_window.unwrap().used_percent, 40.0);
+        assert_eq!(snapshot.total_window.unwrap().used_percent, 10.0);
+        assert_eq!(snapshot.remaining_text.as_deref(), Some("900"));
+    }
+
+    #[test]
+    fn minimax_token_plan_prefers_general_bucket_over_m_series() {
+        let snapshot = build_minimax_token_plan_snapshot(&json!({
+            "model_remains": [
+                {
+                    "model_name": "MiniMax-M*",
+                    "current_interval_total_count": 100,
+                    "current_interval_usage_count": 60,
+                    "current_weekly_total_count": 1000,
+                    "current_weekly_usage_count": 900
+                },
+                {
+                    "model_name": "general",
+                    "current_interval_total_count": 0,
+                    "current_interval_usage_count": 0,
+                    "current_interval_remaining_percent": 97,
+                    "current_weekly_total_count": 0,
+                    "current_weekly_usage_count": 0,
+                    "current_weekly_remaining_percent": 80,
+                    "weekly_boost_permille": 1500
+                }
+            ]
+        }))
+        .expect("minimax general quota snapshot");
+
+        assert_eq!(snapshot.daily_window.unwrap().used_percent, 3.0);
+        let weekly = snapshot.total_window.unwrap();
+        assert_eq!(weekly.used_percent, 30.0);
+        assert_eq!(weekly.total_percent, Some(150.0));
+        assert_eq!(snapshot.remaining_text, None);
+    }
+
+    #[test]
+    fn minimax_token_plan_prefers_general_bucket_over_video() {
+        let snapshot = build_minimax_token_plan_snapshot(&json!({
+            "base_resp": { "status_code": 0, "status_msg": "success" },
+            "model_remains": [
+                {
+                    "model_name": "general",
+                    "current_interval_total_count": 0,
+                    "current_interval_usage_count": 0,
+                    "current_interval_remaining_percent": 53,
+                    "current_weekly_total_count": 0,
+                    "current_weekly_usage_count": 0,
+                    "current_weekly_remaining_percent": 81
+                },
+                {
+                    "model_name": "video",
+                    "current_interval_total_count": 3,
+                    "current_interval_usage_count": 3,
+                    "current_interval_remaining_percent": 100,
+                    "current_weekly_total_count": 21,
+                    "current_weekly_usage_count": 21,
+                    "current_weekly_remaining_percent": 100
+                }
+            ]
+        }))
+        .expect("minimax general quota snapshot");
+
+        assert_eq!(snapshot.daily_window.unwrap().used_percent, 47.0);
+        assert_eq!(snapshot.total_window.unwrap().used_percent, 19.0);
+        assert_eq!(snapshot.remaining_text, None);
+        assert_eq!(snapshot.total_tokens_text, None);
+    }
+
+    #[test]
+    fn minimax_token_plan_accepts_percent_only_camel_case_payload() {
+        let snapshot = build_minimax_token_plan_snapshot(&json!({
+            "modelRemains": [{
+                "modelName": "general",
+                "currentIntervalRemainingPercent": 0.65,
+                "currentWeeklyRemainingPercent": 80,
+                "remainsTime": 3600000,
+                "weeklyRemainsTime": 7200000
+            }]
+        }))
+        .expect("minimax percent-only quota snapshot");
+
+        assert_eq!(snapshot.daily_window.unwrap().used_percent, 35.0);
+        assert_eq!(snapshot.total_window.unwrap().used_percent, 20.0);
     }
 
     #[test]
@@ -1745,6 +2914,7 @@ mod tests {
         let provider = NotificationProviderConfig {
             id: "provider-1".to_string(),
             name: "Alex".to_string(),
+            account_key: None,
             kind: Default::default(),
             enabled: true,
             cost_multiplier: 1.0,
@@ -1800,10 +2970,45 @@ mod tests {
     }
 
     #[test]
+    fn quota_snapshot_preserves_zero_platform_balance() {
+        let provider = NotificationProviderConfig {
+            id: "provider-1".to_string(),
+            name: "Alex".to_string(),
+            account_key: None,
+            kind: Default::default(),
+            enabled: true,
+            cost_multiplier: 1.0,
+            base_url: "https://gateway.example.invalid/api/v1".to_string(),
+            email: "alex@example.com".to_string(),
+            password: Some("secret".to_string()),
+            created_at: 0,
+            updated_at: 0,
+            last_test_at: None,
+            last_test_error: None,
+        };
+        let user = json!({ "balance": 0 });
+        let stats = json!({
+            "today_actual_cost": 0,
+            "today_tokens": 0,
+            "total_tokens": 0
+        });
+
+        let snapshot = build_api_quota_snapshot(&provider, &user, &stats, &[]);
+
+        assert_eq!(snapshot.mode, crate::models::ApiQuotaMode::PlatformBasic);
+        assert_eq!(snapshot.today_used_text.as_deref(), Some("$0.00"));
+        assert_eq!(snapshot.remaining_text.as_deref(), Some("$0.00"));
+        assert_eq!(snapshot.total_remaining_text.as_deref(), Some("$0.00"));
+        assert_eq!(snapshot.today_tokens_text.as_deref(), Some("0"));
+        assert_eq!(snapshot.total_tokens_text.as_deref(), Some("0"));
+    }
+
+    #[test]
     fn quota_snapshot_accepts_sub2api_progress_field_names() {
         let provider = NotificationProviderConfig {
             id: "provider-1".to_string(),
             name: "Alex".to_string(),
+            account_key: None,
             kind: Default::default(),
             enabled: true,
             cost_multiplier: 1.0,

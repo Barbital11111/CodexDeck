@@ -92,7 +92,7 @@
   margin: 0;
   color: var(--ink);
   font: 600 0.95rem/1.45 var(--font-ui);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .addAccountWorkspace {
@@ -155,7 +155,7 @@
 
 .addAccountTabContent strong {
   font: 650 0.92rem/1.2 var(--font-ui);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .addAccountTabContent span {
@@ -190,7 +190,7 @@
 .addAccountPanelCopy h3 {
   margin: 0;
   font: 700 1.2rem/1.12 var(--font-ui);
-  letter-spacing: -0.03em;
+  letter-spacing: 0;
 }
 
 .addAccountPanelCopy p {
@@ -292,7 +292,7 @@
 .addOauthStatus strong,
 .addUploadQueueHeader strong {
   font: 700 1rem/1.2 var(--font-ui);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .addOauthStatus p,
@@ -346,6 +346,82 @@
   grid-column: 1 / -1;
 }
 
+.apiProviderPresetPanel {
+  display: grid;
+  gap: 11px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, var(--surface-tint) 22%);
+  border-radius: 18px;
+  background:
+    linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--meta-bg) 58%, var(--surface-tint) 42%),
+      color-mix(in srgb, var(--meta-bg) 28%, transparent)
+    );
+  box-shadow: inset 0 1px var(--surface-highlight-soft);
+}
+
+.apiProviderPresetHeader {
+  display: grid;
+  gap: 5px;
+}
+
+.apiProviderPresetGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.apiProviderPresetButton {
+  min-height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  border: 1px solid color-mix(in srgb, var(--line) 62%, transparent);
+  border-radius: 11px;
+  padding: 7px 12px;
+  background: color-mix(in srgb, var(--card) 82%, var(--meta-bg) 18%);
+  color: color-mix(in srgb, var(--ink) 82%, var(--subtle) 18%);
+  box-shadow: inset 0 1px rgba(255, 255, 255, 0.36);
+  font: 700 0.79rem/1.15 var(--font-ui);
+  cursor: pointer;
+  transition:
+    background 160ms ease,
+    border-color 160ms ease,
+    color 160ms ease,
+    transform 160ms ease;
+}
+
+.apiProviderPresetButton:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: color-mix(in srgb, var(--brand-cool) 42%, var(--line) 58%);
+  background: color-mix(in srgb, var(--brand-cool) 10%, var(--card) 90%);
+}
+
+.apiProviderPresetButton:disabled {
+  cursor: not-allowed;
+  opacity: 0.64;
+}
+
+.apiProviderPresetButton.isActive {
+  border-color: color-mix(in srgb, var(--brand-cool) 72%, var(--line) 28%);
+  background: color-mix(in srgb, var(--brand-cool) 13%, var(--card) 87%);
+  color: color-mix(in srgb, var(--ink) 82%, var(--brand-cool) 18%);
+  box-shadow:
+    0 0 0 2px color-mix(in srgb, var(--brand-cool) 16%, transparent),
+    inset 0 1px rgba(255, 255, 255, 0.42);
+}
+
+.apiProviderCapabilityRow {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: var(--subtle);
+  font: 600 0.76rem/1.45 var(--font-ui);
+}
+
 .addApiQuotaPanel {
   display: grid;
   gap: 12px;
@@ -377,7 +453,7 @@
 .addApiQuotaToggle strong {
   color: var(--ink);
   font: 720 0.92rem/1.2 var(--font-ui);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .addApiQuotaToggle small {
@@ -430,8 +506,23 @@
   border-top: 1px solid color-mix(in srgb, var(--line) 70%, transparent);
 }
 
-.addApiQuotaSelect {
+.addApiQuotaSelect,
+.addProviderSelect {
   width: 100%;
+}
+
+.addProviderSelect.ant-select .ant-select-selector {
+  min-height: 44px;
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--meta-bg) 54%, var(--surface-tint) 46%);
+  box-shadow: inset 0 1px var(--surface-highlight-soft);
+}
+
+.addProviderSelect.ant-select .ant-select-selection-item,
+.addProviderSelect.ant-select .ant-select-selection-placeholder {
+  display: flex;
+  align-items: center;
+  font: 600 0.8rem/1.45 var(--font-ui);
 }
 
 .addApiQuotaNote {
@@ -481,7 +572,7 @@
 
 .addApiErrorBox strong {
   font: 700 0.94rem/1.2 var(--font-ui);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .addApiErrorBox p {
@@ -499,6 +590,143 @@
 
 .addAccountSecondaryAction {
   min-width: 148px;
+}
+
+.apiModelCatalogPanel,
+.accountApiDrawerModelPanel {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, var(--surface-tint) 22%);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--meta-bg) 54%, transparent);
+}
+
+.apiModelCatalogHeader,
+.apiModelCatalogActions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.apiModelCatalogActions {
+  justify-content: flex-start;
+}
+
+.apiModelCatalogTable {
+  display: grid;
+  gap: 8px;
+}
+
+.sortableModelCatalogRow {
+  min-width: 0;
+}
+
+.sortableModelCatalogRow.isDragging {
+  z-index: 3;
+}
+
+.apiModelCatalogDragHandle.ant-btn {
+  width: 28px;
+  min-width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: color-mix(in srgb, var(--subtle) 78%, var(--ink) 22%);
+  cursor: grab;
+}
+
+.apiModelCatalogDragHandle.ant-btn:active {
+  cursor: grabbing;
+}
+
+.apiModelCatalogColumnHeader {
+  display: grid;
+  grid-template-columns:
+    34px 34px minmax(110px, 1fr) minmax(110px, 1fr) minmax(120px, 1fr)
+    minmax(78px, 0.6fr) auto;
+  gap: 8px;
+  align-items: center;
+  padding: 0 2px;
+  color: var(--subtle);
+  font: 700 0.68rem/1.25 var(--font-ui);
+  text-transform: uppercase;
+}
+
+.apiModelCatalogColumnHeader.isSorting {
+  grid-template-columns:
+    28px 34px 34px minmax(110px, 1fr) minmax(110px, 1fr) minmax(120px, 1fr)
+    minmax(78px, 0.6fr) auto;
+}
+
+.apiModelCatalogRow {
+  display: grid;
+  grid-template-columns:
+    34px 34px minmax(110px, 1fr) minmax(110px, 1fr) minmax(120px, 1fr)
+    minmax(78px, 0.6fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.apiModelCatalogRow.isSorting {
+  grid-template-columns:
+    28px 34px 34px minmax(110px, 1fr) minmax(110px, 1fr) minmax(120px, 1fr)
+    minmax(78px, 0.6fr) auto;
+}
+
+.apiModelCatalogCheck {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.apiModelCatalogRow .ant-input,
+.apiModelCatalogRow .addOauthInput {
+  min-width: 0;
+}
+
+.apiModelCatalogRow .addOauthInput:disabled {
+  color: color-mix(in srgb, var(--subtle) 82%, var(--ink) 18%);
+  background: color-mix(in srgb, var(--meta-bg) 70%, transparent);
+  cursor: not-allowed;
+}
+
+.apiModelCatalogEmpty {
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface-hover-bg) 54%, transparent);
+  color: var(--subtle);
+  font: 600 0.78rem/1.45 var(--font-ui);
+}
+
+@media (max-width: 720px) {
+  .apiModelCatalogColumnHeader {
+    display: none;
+  }
+
+  .apiModelCatalogRow {
+    grid-template-columns: 28px 28px minmax(0, 1fr);
+  }
+
+  .apiModelCatalogRow.isSorting {
+    grid-template-columns: 28px 28px 28px minmax(0, 1fr);
+  }
+
+  .apiModelCatalogRow > button:not(.apiModelCatalogDragHandle),
+  .apiModelCatalogRow > .ant-btn:not(.apiModelCatalogDragHandle) {
+    grid-column: 3;
+    justify-self: start;
+  }
+
+  .apiModelCatalogRow.isSorting > button:not(.apiModelCatalogDragHandle),
+  .apiModelCatalogRow.isSorting > .ant-btn:not(.apiModelCatalogDragHandle) {
+    grid-column: 4;
+  }
 }
 
 .addUploadQueue {
@@ -628,7 +856,7 @@
 .settingsHeader h2 {
   margin: 0;
   font: 650 1.08rem/1.2 var(--font-ui);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .settingsGroup {
@@ -658,12 +886,6 @@
   min-height: 50px;
 }
 
-.settingRowContextWindow {
-  min-height: 0;
-  padding-top: 14px;
-  padding-bottom: 14px;
-}
-
 .settingRowNested {
   background: color-mix(in srgb, var(--body-bg) 14%, var(--surface-tint) 86%);
 }
@@ -676,7 +898,7 @@
 .settingMeta strong {
   display: block;
   font: 600 0.84rem/1.2 var(--font-ui);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .settingMetaInline {
@@ -736,80 +958,12 @@
   justify-items: start;
 }
 
-.settingFieldGroupContext {
-  justify-items: end;
-  width: min(388px, 100%);
-  gap: 10px;
-}
-
 .settingPathValue {
   width: 100%;
   color: var(--subtle);
   font: 500 0.74rem/1.35 var(--font-mono);
   text-align: right;
   overflow-wrap: anywhere;
-}
-
-.settingContextEditor {
-  width: 100%;
-  display: grid;
-  gap: 10px;
-  justify-items: end;
-}
-
-.settingFieldGroupContext .settingContextEditor {
-  justify-items: end;
-}
-
-.settingContextInputWrap {
-  width: 100%;
-  min-width: 0;
-  flex: 1 1 180px;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 8px;
-  min-height: 38px;
-  padding: 0 12px;
-  border: 1px solid color-mix(in srgb, var(--line) 82%, var(--surface-tint) 18%);
-  border-radius: 12px;
-  background: color-mix(in srgb, var(--meta-bg) 58%, transparent);
-  box-shadow:
-    0 1px 2px rgba(18, 36, 62, 0.04),
-    inset 0 1px var(--surface-highlight-soft);
-}
-
-.settingContextInput {
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  color: var(--ink);
-  font: 600 0.82rem/1 var(--font-mono);
-}
-
-.settingContextInput:focus {
-  outline: none;
-}
-
-.settingContextSuffix {
-  color: var(--subtle);
-  font: 700 0.74rem/1 var(--font-mono);
-  letter-spacing: 0.04em;
-}
-
-.settingContextHint {
-  color: var(--subtle);
-  font: 500 0.73rem/1.5 var(--font-ui);
-  text-align: right;
-}
-
-.settingContextActions {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 10px;
 }
 
 .settingPathClearButton {
@@ -1054,13 +1208,14 @@
   color: var(--subtle);
 }
 
-button {
+button:not(.ant-switch) {
   position: relative;
   isolation: isolate;
   overflow: hidden;
   border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 10px 14px;
+  min-height: var(--ui-control-md, 34px);
+  border-radius: var(--ui-radius-sm, 8px);
+  padding: 0 12px;
   color: var(--ink);
   cursor: pointer;
   transition:
@@ -1069,61 +1224,76 @@ button {
     border-color 160ms ease,
     box-shadow 160ms ease;
   background: var(--button-bg);
-  box-shadow: var(--button-shadow);
-  font: 600 0.84rem/1 var(--font-ui);
-  letter-spacing: -0.01em;
+  box-shadow: var(--ui-surface-shadow, var(--button-shadow));
+  font: 650 var(--ui-font-sm, 0.78rem)/1 var(--font-ui);
+  letter-spacing: 0;
 }
 
-button::before {
+button:not(.ant-switch)::before {
   content: none;
 }
 
-button:hover {
+button:not(.ant-switch):hover {
   transform: translateY(-1px);
   border-color: color-mix(in srgb, var(--line) 70%, var(--ink) 30%);
   box-shadow: var(--button-hover-shadow);
 }
 
-button:disabled {
+button:not(.ant-switch):disabled {
   cursor: not-allowed;
   opacity: 0.58;
   transform: none;
   box-shadow: var(--button-disabled-shadow);
 }
 
-button:focus-visible {
+button:not(.ant-switch):focus-visible {
   outline: none;
   box-shadow:
     0 0 0 3px color-mix(in srgb, var(--brand-cool) 18%, transparent),
     0 4px 10px rgba(18, 36, 62, 0.08);
 }
 
-button.primary {
+button:not(.ant-switch).primary {
   border-color: color-mix(in srgb, var(--brand-hot) 36%, var(--line) 64%);
   background: var(--button-primary-bg);
 }
 
-button.ghost {
+button:not(.ant-switch).ghost {
   border-color: color-mix(in srgb, var(--brand-cool) 24%, var(--line) 76%);
   background: var(--button-ghost-bg);
 }
 
-button.danger {
+button:not(.ant-switch).danger {
   border-color: color-mix(in srgb, var(--danger) 28%, var(--line) 72%);
   background: var(--button-danger-bg);
+}
+
+.ant-switch {
+  flex: 0 0 auto;
+  box-shadow: none;
+  transform: none;
+}
+
+.ant-switch:hover,
+.ant-switch:focus-visible {
+  transform: none;
+}
+
+.ant-switch .ant-switch-inner {
+  font-size: 0;
 }
 
 .settingsPage .ant-btn,
 .notificationCenter .ant-btn,
 .importBar .ant-btn {
-  min-height: 32px;
-  border-radius: var(--cs-radius-sm, 8px);
+  min-height: var(--ui-control-md, 34px);
+  border-radius: var(--ui-radius-sm, 8px);
   display: inline-flex;
   align-items: center;
   justify-content: center;
   box-shadow: none;
-  font: 650 0.78rem/1 var(--font-ui);
-  letter-spacing: -0.01em;
+  font: 650 var(--ui-font-sm, 0.78rem)/1 var(--font-ui);
+  letter-spacing: 0;
   transform: none;
 }
 
@@ -1224,7 +1394,7 @@ button.danger {
 .metaPill strong {
   word-break: break-word;
   font: 650 0.94rem/1 var(--font-ui);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .metaPill strong.metaPillMono {
@@ -1298,6 +1468,152 @@ button.danger {
   font: 500 0.76rem/1.45 var(--font-ui);
 }
 
+/* UI baseline cleanup: add-account dialog should read like a compact tool form. */
+.addAuthDialog {
+  width: min(940px, calc(100vw - 48px));
+  padding: var(--ui-gap-lg, 16px);
+  border-radius: var(--ui-radius-xl, 14px);
+  background: var(--cs-paper, #fff);
+}
+
+.addAuthDialog .settingsHeader {
+  padding: 0 2px var(--ui-gap-md, 12px);
+}
+
+.addAuthDialog .settingsHeader h2 {
+  font: 750 var(--ui-font-xl, 1.14rem) / var(--ui-line-tight, 1.2) var(--font-ui);
+  letter-spacing: 0;
+}
+
+.addAccountDialogSubtitle {
+  margin-top: var(--ui-gap-xs, 4px);
+  font: 500 var(--ui-font-sm, 0.78rem) / var(--ui-line-normal, 1.45) var(--font-ui);
+}
+
+.addAccountWorkspace {
+  margin-top: 0;
+  gap: var(--ui-gap-md, 12px);
+}
+
+.addAccountTabs {
+  gap: var(--ui-gap-sm, 8px);
+}
+
+.addAccountTab {
+  min-height: 76px;
+  border-radius: var(--ui-radius-lg, 12px);
+  padding: var(--ui-gap-md, 12px);
+  gap: var(--ui-gap-md, 12px);
+  box-shadow: none;
+}
+
+.addAccountTabIcon,
+.addAccountPanelIcon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--ui-radius-md, 10px);
+}
+
+.addAccountTabContent strong {
+  font: 700 var(--ui-font-md, 0.86rem) / var(--ui-line-tight, 1.2) var(--font-ui);
+  letter-spacing: 0;
+}
+
+.addAccountTabContent span {
+  font: 500 var(--ui-font-xs, 0.72rem) / var(--ui-line-normal, 1.45) var(--font-ui);
+}
+
+.addAccountPanel {
+  padding: var(--ui-gap-lg, 16px);
+  border-radius: var(--ui-radius-xl, 14px);
+  background: var(--cs-paper, #fff);
+  box-shadow: none;
+  gap: var(--ui-gap-lg, 16px);
+}
+
+.addAccountPanelBody,
+.addOauthSection,
+.addCurrentSection,
+.addUploadSection,
+.addApiSection {
+  gap: var(--ui-gap-md, 12px);
+}
+
+.apiProviderPresetPanel,
+.addApiQuotaPanel,
+.apiModelCatalogPanel,
+.accountApiDrawerModelPanel {
+  gap: var(--ui-gap-md, 12px);
+  padding: var(--ui-gap-md, 12px);
+  border-radius: var(--ui-radius-lg, 12px);
+  background: color-mix(in srgb, var(--cs-parchment, #f5f7fa) 66%, var(--cs-paper, #fff) 34%);
+  box-shadow: none;
+}
+
+.apiProviderPresetGrid {
+  gap: var(--ui-gap-sm, 8px);
+}
+
+.apiProviderPresetButton {
+  min-height: var(--ui-control-md, 34px);
+  border-radius: var(--ui-radius-sm, 8px);
+  padding: 0 12px;
+  box-shadow: none;
+  font: 700 var(--ui-font-sm, 0.78rem) / 1 var(--font-ui);
+}
+
+.apiProviderCapabilityRow,
+.addFieldHint,
+.addApiQuotaToggle small,
+.addApiQuotaNote p {
+  font: 500 var(--ui-font-xs, 0.72rem) / var(--ui-line-normal, 1.45) var(--font-ui);
+}
+
+.addOauthFieldLabel {
+  font: 700 var(--ui-font-xs, 0.72rem) / 1.15 var(--font-ui);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.addOauthInput,
+.addOauthTextarea,
+.addProviderSelect.ant-select .ant-select-selector {
+  min-height: var(--ui-control-lg, 40px);
+  border-radius: var(--ui-radius-md, 10px);
+  font: 500 var(--ui-font-sm, 0.78rem) / var(--ui-line-normal, 1.45) var(--font-mono);
+  box-shadow: none;
+}
+
+.addApiFieldGrid {
+  gap: var(--ui-gap-md, 12px);
+}
+
+.apiModelCatalogColumnHeader {
+  grid-template-columns: 28px 28px minmax(130px, 1.2fr) minmax(120px, 1fr) minmax(130px, 1fr) minmax(72px, 0.5fr) auto;
+  gap: var(--ui-gap-sm, 8px);
+  font: 700 var(--ui-font-xs, 0.72rem) / 1.2 var(--font-ui);
+  text-transform: none;
+}
+
+.apiModelCatalogColumnHeader.isSorting {
+  grid-template-columns: 28px 28px 28px minmax(130px, 1.2fr) minmax(120px, 1fr) minmax(130px, 1fr) minmax(72px, 0.5fr) auto;
+}
+
+.apiModelCatalogRow {
+  grid-template-columns: 28px 28px minmax(130px, 1.2fr) minmax(120px, 1fr) minmax(130px, 1fr) minmax(72px, 0.5fr) auto;
+  gap: var(--ui-gap-sm, 8px);
+}
+
+.apiModelCatalogRow.isSorting {
+  grid-template-columns: 28px 28px 28px minmax(130px, 1.2fr) minmax(120px, 1fr) minmax(130px, 1fr) minmax(72px, 0.5fr) auto;
+}
+
+.addAccountPrimaryAction,
+.addAccountSecondaryAction {
+  min-height: var(--ui-control-lg, 40px);
+  border-radius: var(--ui-radius-sm, 8px);
+}
+
 .importBar {
   margin: 0;
   border: 1px solid color-mix(in srgb, var(--line) 90%, var(--surface-tint) 10%);
@@ -1320,7 +1636,7 @@ button.danger {
   border-radius: 12px;
   padding: 10px 14px;
   font: 600 0.84rem/1 var(--font-ui);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .privacyToggleButton.isActive {
@@ -1332,18 +1648,64 @@ button.danger {
     0 0 0 1px color-mix(in srgb, var(--accent-cool) 18%, transparent);
 }
 
-.hybridLaunchPanel {
+.accountsHero {
+  container-type: inline-size;
+}
+
+.launchModePanel {
   margin: 0;
-  border: 1px solid color-mix(in srgb, var(--line) 88%, var(--brand-cool) 12%);
-  border-radius: 13px;
-  background: color-mix(in srgb, var(--card) 86%, var(--surface-tint) 14%);
-  padding: 8px;
   display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(420px, auto);
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 12px;
+  width: 100%;
+}
+
+.metaStrip {
+  gap: var(--ui-gap-sm, 8px);
+}
+
+.metaPill {
+  min-height: var(--ui-control-lg, 40px);
+  border-radius: var(--ui-radius-md, 10px);
+  padding: 0 12px;
+  box-shadow: none;
+}
+
+.metaPill span {
+  font: 650 var(--ui-font-xs, 0.72rem)/1 var(--font-ui);
+}
+
+.metaPill strong {
+  font: 750 var(--ui-font-md, 0.86rem)/1 var(--font-ui);
+}
+
+.importBar {
+  gap: var(--ui-gap-sm, 8px);
+  padding: var(--ui-gap-sm, 8px);
+  border-radius: var(--ui-radius-lg, 12px);
+}
+
+.launchModeCard {
+  border: 1px solid color-mix(in srgb, var(--line) 88%, var(--brand-cool) 12%);
+  border-radius: var(--ui-radius-lg, 12px);
+  background: color-mix(in srgb, var(--card) 92%, var(--surface-tint) 8%);
+  padding: var(--ui-gap-sm, 8px);
+  display: grid;
+  grid-template-columns: minmax(72px, 0.18fr) minmax(0, 1.82fr);
+  gap: var(--ui-gap-md, 12px);
   align-items: center;
   width: 100%;
-  box-shadow: inset 0 1px var(--surface-highlight-faint);
+  min-width: 0;
+  box-shadow: none;
+}
+
+.launchModeCard-router {
+  border-color: color-mix(in srgb, var(--line) 82%, var(--brand-warm) 18%);
+  background: color-mix(in srgb, var(--card) 88%, var(--brand-warm) 12%);
+}
+
+.launchModeCard:only-child {
+  grid-column: 1 / -1;
 }
 
 .hybridLaunchCopy {
@@ -1359,23 +1721,61 @@ button.danger {
 }
 
 .hybridLaunchCopy .ant-typography-secondary {
-  font-size: 0.76rem;
+  font-size: var(--ui-font-xs, 0.72rem);
 }
 
 .hybridLaunchControls {
   justify-self: end;
-  width: min(100%, 540px);
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(168px, 1fr) minmax(220px, 1.35fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.hybridLaunchControls-router {
+  grid-template-columns: minmax(300px, 1fr) minmax(250px, auto);
 }
 
 .hybridLaunchSelect-account {
-  width: 190px;
+  width: 100%;
+  min-width: 0;
 }
 
 .hybridLaunchSelect-relay {
-  width: 250px;
+  width: 100%;
+  min-width: 0;
+}
+
+.hybridLaunchSelect-routerRelay {
+  width: 100%;
+  min-width: 0;
 }
 
 .hybridLaunchButton {
-  min-width: 96px;
+  flex: 0 0 auto;
+  min-width: 92px;
+  min-height: var(--ui-control-md, 34px);
   white-space: nowrap;
+}
+
+.routerModeSwitchWrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  min-width: 250px;
+}
+
+@media (max-width: 1180px) {
+  .launchModePanel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@container (max-width: 1120px) {
+  .launchModePanel {
+    grid-template-columns: minmax(0, 1fr);
+  }
 }

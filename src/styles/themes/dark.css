@@ -1,4 +1,4 @@
-:root[data-theme="dark"] {
+:root[data-ui-skin="modern"][data-theme="dark"] {
   --ink: #f6efe3;
   --subtle: #aeb5c8;
   --bg-0: #070d17;
@@ -166,7 +166,7 @@
   --notification-warn: #f2b24d;
 }
 
-:root[data-theme="dark"] {
+:root[data-ui-skin="classic"][data-theme="dark"] {
   --ink: #f3ebdd;
   --subtle: #b9a991;
   --bg-0: #15120e;

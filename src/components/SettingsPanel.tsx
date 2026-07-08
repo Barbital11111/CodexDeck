@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Button } from "antd";
+import { Button, Modal } from "antd";
 import { getVersion } from "@tauri-apps/api/app";
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -17,29 +17,9 @@ import type {
   AppSettings,
   InstalledEditorApp,
   ThemeMode,
+  UiSkinMode,
   UpdateSettingsOptions,
 } from "../types/app";
-
-function parseContextWindowDraftValue(
-  input: string,
-  min: number,
-  max: number,
-): { valid: boolean; value: number | null } {
-  const trimmed = input.trim();
-  if (!trimmed) {
-    return { valid: true, value: null };
-  }
-
-  const parsed = Number.parseInt(trimmed, 10);
-  if (Number.isNaN(parsed)) {
-    return { valid: false, value: null };
-  }
-
-  return {
-    valid: true,
-    value: Math.min(max, Math.max(min, parsed)),
-  };
-}
 
 function GitHubIcon() {
   return (
@@ -55,12 +35,15 @@ function GitHubIcon() {
 type SettingsPanelProps = {
   themeMode: ThemeMode;
   onToggleTheme: () => void;
+  uiSkinMode: UiSkinMode;
+  onSetUiSkin: (mode: UiSkinMode) => void;
   checkingUpdate: boolean;
   onCheckUpdate: () => void;
   onOpenExternalUrl: (url: string) => void;
   settings: AppSettings;
   installedEditorApps: InstalledEditorApp[];
   hasOpencodeDesktopApp: boolean;
+  onReloadSettings: () => void | Promise<void>;
   onUpdateSettings: (
     patch: Partial<AppSettings>,
     options?: UpdateSettingsOptions,
@@ -69,22 +52,65 @@ type SettingsPanelProps = {
 
 type SettingPendingKey = keyof AppSettings;
 
+type MultiModelModeResult = {
+  enabled: boolean;
+  status: string;
+  workspace: string;
+  restorePoint?: string | null;
+  message: string;
+};
+
+function isMultiModelModeActive(settings: AppSettings) {
+  return (
+    settings.codexMultiModelModeEnabled &&
+    !["unsupported", "failed", "reset"].includes(settings.codexMultiModelStatus ?? "")
+  );
+}
+
+function multiModelStatusLabel(status?: string | null) {
+  switch (status) {
+    case "restore-point-ready":
+      return "已创建恢复点";
+    case "controlled-copy-ready":
+      return "已准备";
+    case "enabled":
+      return "已启用";
+    case "updated":
+      return "已更新";
+    case "fallback-previous":
+      return "使用旧副本";
+    case "source-check-unavailable":
+      return "版本检查失败";
+    case "unsupported":
+      return "版本不适配";
+    case "reset":
+      return "已重置";
+    case "failed":
+      return "启用失败";
+    default:
+      return "未启用";
+  }
+}
+
 export function SettingsPanel({
   themeMode,
   onToggleTheme,
+  uiSkinMode,
+  onSetUiSkin,
   checkingUpdate,
   onCheckUpdate,
   onOpenExternalUrl,
   settings,
   installedEditorApps,
   hasOpencodeDesktopApp,
+  onReloadSettings,
   onUpdateSettings,
 }: SettingsPanelProps) {
   const { copy, locale, localeOptions, setLocale } = useI18n();
   const [appVersion, setAppVersion] = useState<string | null>(null);
   const [pickingCodexLaunchPathKind, setPickingCodexLaunchPathKind] = useState<"file" | "directory" | null>(null);
-  const [contextWindowInput, setContextWindowInput] = useState("");
   const [pendingSettings, setPendingSettings] = useState<Partial<Record<SettingPendingKey, boolean>>>({});
+  const [multiModelPending, setMultiModelPending] = useState(false);
   const languageLabel = copy.topBar.languagePicker;
   const languageOptions = localeOptions.map((item) => ({
     id: item.code,
@@ -93,18 +119,6 @@ export function SettingsPanel({
   const autoRefreshOptions = [30, 60, 120, 300];
   const apiQuotaRefreshOptions = [600, 900, 1800, 3600];
   const quotaThresholdOptions = [10, 15, 20, 30, 40];
-  const contextWindowInputMin = 272;
-  const contextWindowInputMax = 1000;
-  const contextWindowPresets: Array<{ label: string; value: number | null }> = [
-    { label: copy.settings.contextWindow.defaultOption, value: null },
-    { label: copy.settings.contextWindow.option400k, value: 400 },
-  ];
-  const contextWindowHint = copy.settings.contextWindow.hint;
-  const contextWindowDraft = parseContextWindowDraftValue(
-    contextWindowInput,
-    contextWindowInputMin,
-    contextWindowInputMax,
-  );
   const isSettingPending = (...keys: SettingPendingKey[]) =>
     keys.some((key) => Boolean(pendingSettings[key]));
   const updateSetting = (
@@ -138,10 +152,7 @@ export function SettingsPanel({
         });
       });
   };
-  const contextWindowPending = isSettingPending("codexContextWindowK");
-  const contextWindowApplyDisabled =
-    contextWindowPending ||
-    !contextWindowDraft.valid;
+  const multiModelActive = isMultiModelModeActive(settings);
   const versionValue = appVersion ? `v${appVersion}` : "...";
   const optionButtonType = (active: boolean): "primary" | "default" => (active ? "primary" : "default");
 
@@ -160,10 +171,6 @@ export function SettingsPanel({
       cancelled = true;
     };
   }, []);
-
-  useEffect(() => {
-    setContextWindowInput(settings.codexContextWindowK ? String(settings.codexContextWindowK) : "");
-  }, [settings.codexContextWindowK]);
 
   const pickCodexLaunchPath = async (kind: "file" | "directory") => {
     if (isSettingPending("codexLaunchPath") || pickingCodexLaunchPathKind) {
@@ -185,23 +192,58 @@ export function SettingsPanel({
     }
   };
 
-  const applyContextWindowDraft = () => {
-    if (!contextWindowDraft.valid) {
-      setContextWindowInput(settings.codexContextWindowK ? String(settings.codexContextWindowK) : "");
+  const refreshSettingsAfterMultiModelAction = async () => {
+    await Promise.resolve(onReloadSettings());
+  };
+
+  const enableMultiModelMode = () => {
+    if (multiModelPending || multiModelActive) {
       return;
     }
 
-    const nextValue = contextWindowDraft.value;
-    setContextWindowInput(nextValue === null ? "" : String(nextValue));
-    if (settings.codexContextWindowK === nextValue) {
+    Modal.confirm({
+      title: "当前 Codex 是否可以正常启动并使用？",
+      content: null,
+      okText: "是",
+      cancelText: "否",
+      centered: true,
+      onOk: async () => {
+        setMultiModelPending(true);
+        try {
+          await invoke<MultiModelModeResult>("enable_codex_multi_model_mode");
+          await refreshSettingsAfterMultiModelAction();
+        } catch (error) {
+          await refreshSettingsAfterMultiModelAction();
+          Modal.error({
+            title: "多模型模式开启失败",
+            content: String(error),
+            centered: true,
+          });
+        } finally {
+          setMultiModelPending(false);
+        }
+      },
+    });
+  };
+
+  const resetMultiModelMode = async () => {
+    if (multiModelPending) {
       return;
     }
-
-    void updateSetting(
-      "codexContextWindowK",
-      { codexContextWindowK: nextValue },
-      { silent: true, keepInteractive: true },
-    );
+    setMultiModelPending(true);
+    try {
+      await invoke<MultiModelModeResult>("reset_codex_multi_model_mode");
+      await refreshSettingsAfterMultiModelAction();
+    } catch (error) {
+      await refreshSettingsAfterMultiModelAction();
+      Modal.error({
+        title: "多模型模式重置失败",
+        content: String(error),
+        centered: true,
+      });
+    } finally {
+      setMultiModelPending(false);
+    }
   };
 
   return (
@@ -227,6 +269,28 @@ export function SettingsPanel({
               <strong>{copy.settings.theme.label}</strong>
             </div>
             <ThemeSwitch themeMode={themeMode} onToggle={onToggleTheme} />
+          </div>
+
+          <div className="settingRow">
+            <div className="settingMeta">
+              <strong>界面皮肤</strong>
+            </div>
+            <div className="modeGroup" role="radiogroup" aria-label="界面皮肤">
+              <Button
+                type={optionButtonType(uiSkinMode === "classic")}
+                onClick={() => onSetUiSkin("classic")}
+                aria-pressed={uiSkinMode === "classic"}
+              >
+                经典
+              </Button>
+              <Button
+                type={optionButtonType(uiSkinMode === "modern")}
+                onClick={() => onSetUiSkin("modern")}
+                aria-pressed={uiSkinMode === "modern"}
+              >
+                新版
+              </Button>
+            </div>
           </div>
 
           <div className="settingRow">
@@ -287,16 +351,61 @@ export function SettingsPanel({
           />
 
           <SwitchField
-            checked={settings.apiEnhancedLaunchEnabled}
+            checked={settings.codexModelInstructionsFixEnabled}
             onChange={(checked) =>
-              void updateSetting("apiEnhancedLaunchEnabled", { apiEnhancedLaunchEnabled: checked })
+              void updateSetting("codexModelInstructionsFixEnabled", {
+                codexModelInstructionsFixEnabled: checked,
+              })
             }
-            label={copy.settings.apiEnhancedLaunch.label}
-            checkedText={copy.settings.apiEnhancedLaunch.checkedText}
-            uncheckedText={copy.settings.apiEnhancedLaunch.uncheckedText}
-            disabled={isSettingPending("apiEnhancedLaunchEnabled")}
-            loading={isSettingPending("apiEnhancedLaunchEnabled")}
+            label="降智修复"
+            checkedText="已开启"
+            uncheckedText="已关闭"
+            disabled={isSettingPending("codexModelInstructionsFixEnabled")}
+            loading={isSettingPending("codexModelInstructionsFixEnabled")}
           />
+
+          <SwitchField
+            checked={settings.codexDisableGpuAcceleration}
+            onChange={(checked) =>
+              void updateSetting("codexDisableGpuAcceleration", {
+                codexDisableGpuAcceleration: checked,
+              })
+            }
+            label="禁用 Codex GPU 加速"
+            checkedText="已禁用"
+            uncheckedText="使用默认"
+            disabled={isSettingPending("codexDisableGpuAcceleration")}
+            loading={isSettingPending("codexDisableGpuAcceleration")}
+          />
+
+          <div className="settingRow">
+            <div className="settingMeta">
+              <strong>多模型模式</strong>
+              <span className="settingValueMuted">
+                {multiModelStatusLabel(settings.codexMultiModelStatus)}
+              </span>
+            </div>
+            <div className="settingActionGroup">
+              {settings.codexMultiModelRestorePoint && !multiModelActive ? (
+                <Button
+                  danger
+                  disabled={multiModelPending}
+                  loading={multiModelPending}
+                  onClick={() => void resetMultiModelMode()}
+                >
+                  重置到可用状态
+                </Button>
+              ) : null}
+              <Button
+                type={multiModelActive ? "primary" : "default"}
+                disabled={multiModelPending}
+                loading={multiModelPending}
+                onClick={multiModelActive ? () => void resetMultiModelMode() : enableMultiModelMode}
+              >
+                {multiModelActive ? "关闭" : "开启"}
+              </Button>
+            </div>
+          </div>
 
           <SwitchField
             checked={settings.usageAutoRefreshEnabled}
@@ -453,60 +562,6 @@ export function SettingsPanel({
               </div>
             </>
           ) : null}
-
-          <div className="settingRow settingRowContextWindow">
-            <div className="settingMeta">
-              <strong>{copy.settings.contextWindow.label}</strong>
-            </div>
-            <div className="settingFieldGroup settingFieldGroupContext">
-              <div
-                className="modeGroup"
-                role="radiogroup"
-                aria-label={copy.settings.contextWindow.groupAriaLabel}
-              >
-                {contextWindowPresets.map((option) => (
-                  <Button
-                    key={option.label}
-                    type={optionButtonType(contextWindowDraft.valid && contextWindowDraft.value === option.value)}
-                    disabled={contextWindowPending}
-                    loading={false}
-                    onClick={() =>
-                      setContextWindowInput(option.value === null ? "" : String(option.value))}
-                    aria-pressed={contextWindowDraft.valid && contextWindowDraft.value === option.value}
-                  >
-                    {option.label}
-                  </Button>
-                ))}
-              </div>
-              <div className="settingContextEditor">
-                <label className="settingContextInputWrap">
-                  <input
-                    type="number"
-                    min={contextWindowInputMin}
-                    max={contextWindowInputMax}
-                    step={1}
-                    inputMode="numeric"
-                    className="settingContextInput"
-                    placeholder={copy.settings.contextWindow.inputPlaceholder}
-                    value={contextWindowInput}
-                    disabled={contextWindowPending}
-                    onChange={(event) => setContextWindowInput(event.target.value)}
-                  />
-                  <span className="settingContextSuffix">K</span>
-                </label>
-                <div className="settingContextActions">
-                  <span className="settingContextHint">{contextWindowHint}</span>
-                  <Button
-                    disabled={contextWindowApplyDisabled}
-                    loading={contextWindowPending}
-                    onClick={applyContextWindowDraft}
-                  >
-                    {copy.settings.contextWindow.apply}
-                  </Button>
-                </div>
-              </div>
-            </div>
-          </div>
 
           <div className="settingRow">
             <div className="settingMeta">

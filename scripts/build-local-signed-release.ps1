@@ -141,17 +141,17 @@ function Invoke-TauriSigner {
 
   $tauriCli = Join-Path $repoRoot "node_modules/@tauri-apps/cli/tauri.js"
   $signaturePath = "$Path.sig"
-  $effectivePassword = ""
-  if ($null -ne $Password) {
-    $effectivePassword = $Password
-  }
-  $signArgs = @($tauriCli, "signer", "sign", "--password=$effectivePassword")
+  $signArgs = @($tauriCli, "signer", "sign")
   $signArgs += $Path
 
   $previousPrivateKey = [Environment]::GetEnvironmentVariable("TAURI_SIGNING_PRIVATE_KEY", "Process")
+  $previousPassword = [Environment]::GetEnvironmentVariable("TAURI_SIGNING_PRIVATE_KEY_PASSWORD", "Process")
 
   try {
     $env:TAURI_SIGNING_PRIVATE_KEY = $PrivateKey
+    if ($null -ne $Password) {
+      $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $Password
+    }
 
     & node @signArgs | Out-Host
     if ($LASTEXITCODE -ne 0) {
@@ -164,6 +164,13 @@ function Invoke-TauriSigner {
     }
     else {
       $env:TAURI_SIGNING_PRIVATE_KEY = $previousPrivateKey
+    }
+
+    if ($null -eq $previousPassword) {
+      Remove-Item Env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD -ErrorAction SilentlyContinue
+    }
+    else {
+      $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $previousPassword
     }
   }
 

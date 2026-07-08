@@ -1,0 +1,2033 @@
+/* Final UI calibration layer. Keep this file focused on visual consistency. */
+
+:root[data-ui-skin="modern"] {
+  --ui-page-pad-x: clamp(18px, 1.45vw, 28px);
+  --ui-page-pad-y: clamp(14px, 1.1vw, 22px);
+  --ui-section-radius: 14px;
+  --ui-inner-radius: 10px;
+  --ui-row-height: 44px;
+}
+
+:root[data-ui-skin="modern"] .settingsPage,
+:root[data-ui-skin="modern"] .notificationCenter,
+:root[data-ui-skin="modern"] .accountsPage {
+  font-size: var(--ui-font-sm, 0.78rem);
+  line-height: var(--ui-line-normal, 1.45);
+}
+
+:root[data-ui-skin="modern"] .settingsPage *,
+:root[data-ui-skin="modern"] .notificationCenter *,
+:root[data-ui-skin="modern"] .accountsPage * {
+  letter-spacing: 0;
+}
+
+:root[data-ui-skin="modern"] .settingsPage .ant-btn,
+:root[data-ui-skin="modern"] .notificationCenter .ant-btn,
+:root[data-ui-skin="modern"] .accountsPage .ant-btn,
+:root[data-ui-skin="modern"] .addAuthDialog .ant-btn {
+  min-height: var(--ui-control-md, 34px);
+  border-radius: var(--ui-radius-sm, 8px);
+  padding-inline: 12px;
+  font: 650 var(--ui-font-sm, 0.78rem)/1 var(--font-ui);
+  box-shadow: none;
+}
+
+:root[data-ui-skin="modern"] .settingsPage .ant-input,
+:root[data-ui-skin="modern"] .settingsPage .ant-input-affix-wrapper,
+:root[data-ui-skin="modern"] .notificationCenter .ant-input,
+:root[data-ui-skin="modern"] .notificationCenter .ant-input-affix-wrapper,
+:root[data-ui-skin="modern"] .addAuthDialog .ant-input,
+:root[data-ui-skin="modern"] .addAuthDialog .ant-input-affix-wrapper,
+:root[data-ui-skin="modern"] .addAuthDialog textarea,
+:root[data-ui-skin="modern"] .addAuthDialog select {
+  min-height: var(--ui-control-lg, 40px);
+  border-radius: var(--ui-radius-md, 10px);
+  font-size: var(--ui-font-sm, 0.78rem);
+}
+
+:root[data-ui-skin="modern"] .settingsHeader,
+:root[data-ui-skin="modern"] .notificationPageHeader {
+  min-height: 42px;
+  align-items: center;
+}
+
+:root[data-ui-skin="modern"] .settingsHeader h2,
+:root[data-ui-skin="modern"] .notificationPageHeader h2 {
+  margin: 0;
+  color: var(--ink);
+  font: 750 var(--ui-font-xl, 1.14rem)/var(--ui-line-tight, 1.2) var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .settingsHeader p,
+:root[data-ui-skin="modern"] .notificationPageHeader p {
+  margin: 4px 0 0;
+  color: var(--subtle);
+  font: 500 var(--ui-font-sm, 0.78rem)/var(--ui-line-normal, 1.45) var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .settingsGroup,
+:root[data-ui-skin="modern"] .notificationFlowCard,
+:root[data-ui-skin="modern"] .notificationRouteGuideCard,
+:root[data-ui-skin="modern"] .notificationQuickActionsPanel,
+:root[data-ui-skin="modern"] .notificationStatusCard,
+:root[data-ui-skin="modern"] .notificationActivityCard,
+:root[data-ui-skin="modern"] .notificationWarningsCard,
+:root[data-ui-skin="modern"] .notificationLedgerConfig,
+:root[data-ui-skin="modern"] .notificationActivityTable,
+:root[data-ui-skin="modern"] .notificationResourcePanel,
+:root[data-ui-skin="modern"] .notificationTableCard,
+:root[data-ui-skin="modern"] .notificationTemplateCard,
+:root[data-ui-skin="modern"] .notificationDrawer,
+:root[data-ui-skin="modern"] .empty-panel,
+:root[data-ui-skin="modern"] .notificationEmptyPanel,
+:root[data-ui-skin="modern"] .accountUngroupedWorkspace,
+:root[data-ui-skin="modern"] .accountGroupCard {
+  border-radius: var(--ui-section-radius);
+  box-shadow: var(--ui-surface-shadow, 0 4px 12px rgba(5, 5, 5, 0.04));
+}
+
+:root[data-ui-skin="modern"] .settingsShell {
+  gap: var(--ui-gap-md, 12px);
+}
+
+:root[data-ui-skin="modern"] .settingsGroup {
+  overflow: hidden;
+  background: color-mix(in srgb, var(--card) 88%, var(--meta-bg) 12%);
+}
+
+:root[data-ui-skin="modern"] .settingRow {
+  grid-template-columns: minmax(220px, 1fr) minmax(220px, auto);
+  min-height: 52px;
+  gap: var(--ui-gap-md, 12px);
+  padding: 8px 14px;
+}
+
+:root[data-ui-skin="modern"] .settingRowCompact {
+  min-height: 46px;
+}
+
+:root[data-ui-skin="modern"] .settingMeta strong,
+:root[data-ui-skin="modern"] .accountUngroupedHeading h3,
+:root[data-ui-skin="modern"] .notificationSectionTitle h3,
+:root[data-ui-skin="modern"] .notificationStatusCard h3,
+:root[data-ui-skin="modern"] .notificationActivityCard h3,
+:root[data-ui-skin="modern"] .notificationWarningsCard h3,
+:root[data-ui-skin="modern"] .notificationResourcePanelHeader h3,
+:root[data-ui-skin="modern"] .notificationQuickCreateCard h3,
+:root[data-ui-skin="modern"] .notificationResourceSummaryCard h3 {
+  font: 700 var(--ui-font-md, 0.86rem)/var(--ui-line-tight, 1.2) var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .settingMeta span,
+:root[data-ui-skin="modern"] .settingValueMuted,
+:root[data-ui-skin="modern"] .accountUngroupedHeading p,
+:root[data-ui-skin="modern"] .notificationSectionTitle p,
+:root[data-ui-skin="modern"] .notificationStatusCard p,
+:root[data-ui-skin="modern"] .notificationWarningsCard p,
+:root[data-ui-skin="modern"] .notificationResourcePanelHeader p,
+:root[data-ui-skin="modern"] .notificationQuickCreateCard p,
+:root[data-ui-skin="modern"] .notificationResourceSummaryCard p {
+  font: 500 var(--ui-font-xs, 0.72rem)/var(--ui-line-normal, 1.45) var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .modeGroup {
+  gap: 4px;
+}
+
+:root[data-ui-skin="modern"] .modeGroup > button,
+:root[data-ui-skin="modern"] .modeGroup > .ant-btn {
+  min-width: 72px;
+  min-height: var(--ui-control-md, 34px);
+  border-radius: var(--ui-radius-sm, 8px);
+  padding: 0 12px;
+  font: 650 var(--ui-font-sm, 0.78rem)/1 var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .editorPicker,
+:root[data-ui-skin="modern"] .languagePicker {
+  min-width: 160px;
+}
+
+:root[data-ui-skin="modern"] .editorPickerTrigger {
+  min-height: var(--ui-control-lg, 40px);
+  border-radius: var(--ui-radius-md, 10px);
+}
+
+:root[data-ui-skin="modern"] .accountsPage {
+  gap: var(--ui-gap-lg, 16px);
+  padding: var(--ui-page-pad-y) var(--ui-page-pad-x) 92px;
+}
+
+:root[data-ui-skin="modern"] .accountsHero {
+  gap: var(--ui-gap-md, 12px);
+  align-items: stretch;
+}
+
+:root[data-ui-skin="modern"] .metaStrip {
+  gap: var(--ui-gap-sm, 8px);
+  align-items: stretch;
+}
+
+:root[data-ui-skin="modern"] .metaPill {
+  min-height: var(--ui-control-lg, 40px);
+  border-radius: var(--ui-radius-md, 10px);
+  padding: 0 12px;
+  align-items: center;
+  box-shadow: none;
+}
+
+:root[data-ui-skin="modern"] .metaPill span {
+  font: 650 var(--ui-font-xs, 0.72rem)/1 var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .metaPill strong,
+:root[data-ui-skin="modern"] .metaPill strong.metaPillMono {
+  font: 750 var(--ui-font-md, 0.86rem)/1 var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .importBar {
+  gap: var(--ui-gap-sm, 8px);
+  padding: var(--ui-gap-sm, 8px);
+  border-radius: var(--ui-radius-lg, 12px);
+}
+
+:root[data-ui-skin="modern"] .importBar .ant-btn {
+  min-height: var(--ui-control-lg, 40px);
+}
+
+:root[data-ui-skin="modern"] .launchModePanel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: var(--ui-gap-sm, 8px);
+}
+
+:root[data-ui-skin="modern"] .launchModeCard {
+  min-width: 0;
+  min-height: 54px;
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: var(--ui-gap-md, 12px);
+  align-items: center;
+  border-radius: var(--ui-radius-lg, 12px);
+  padding: var(--ui-gap-sm, 8px);
+  box-shadow: none;
+}
+
+:root[data-ui-skin="modern"] .hybridLaunchCopy {
+  gap: 3px;
+}
+
+:root[data-ui-skin="modern"] .hybridLaunchCopy .ant-typography {
+  margin: 0;
+  line-height: var(--ui-line-tight, 1.2);
+}
+
+:root[data-ui-skin="modern"] .hybridLaunchCopy .ant-typography-secondary {
+  font-size: var(--ui-font-xs, 0.72rem);
+}
+
+:root[data-ui-skin="modern"] .hybridLaunchControls {
+  display: grid;
+  grid-template-columns: minmax(170px, 0.9fr) minmax(260px, 1.35fr) minmax(98px, auto);
+  gap: var(--ui-gap-sm, 8px);
+  align-items: center;
+  min-width: 0;
+  width: 100%;
+}
+
+:root[data-ui-skin="modern"] .hybridLaunchControls-router {
+  grid-template-columns: minmax(300px, 1fr) minmax(250px, auto);
+}
+
+:root[data-ui-skin="modern"] .hybridLaunchButton {
+  min-width: 98px;
+  min-height: var(--ui-control-md, 34px);
+}
+
+:root[data-ui-skin="modern"] .routerModeSwitchWrap {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--ui-gap-sm, 8px);
+  min-width: 250px;
+}
+
+:root[data-ui-skin="modern"] .routerModeSwitchWrap .ant-switch {
+  flex: 0 0 auto;
+}
+
+:root[data-ui-skin="modern"] .routerModelDrawer .ant-drawer-content {
+  background: var(--cs-paper, #fff);
+}
+
+:root[data-ui-skin="modern"] .routerModelDrawer .ant-drawer-header {
+  min-height: 58px;
+  padding: 16px 18px;
+  border-bottom: 1px solid var(--cs-border-soft, rgba(5, 5, 5, 0.06));
+}
+
+:root[data-ui-skin="modern"] .routerModelDrawer .ant-drawer-title {
+  color: var(--cs-ink, #1f1f1f);
+  font: 700 1rem/1.25 var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .routerModelDrawer .ant-drawer-body {
+  padding: 16px 18px;
+  background: var(--cs-paper, #fff);
+  overflow-x: hidden;
+}
+
+:root[data-ui-skin="modern"] .routerModelDrawer .ant-drawer-footer {
+  padding: 12px 18px;
+  border-top: 1px solid var(--cs-border-soft, rgba(5, 5, 5, 0.06));
+}
+
+:root[data-ui-skin="modern"] .routerModelDrawerBody {
+  display: grid;
+  gap: var(--ui-gap-md, 12px);
+  min-width: 0;
+}
+
+:root[data-ui-skin="modern"] .routerModelDrawerActions,
+:root[data-ui-skin="modern"] .routerModelDrawerFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-gap-sm, 8px);
+}
+
+:root[data-ui-skin="modern"] .routerModelDrawerFooter {
+  justify-content: flex-end;
+}
+
+:root[data-ui-skin="modern"] .routerModelDrawerActionButtons {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ui-gap-sm, 8px);
+}
+
+:root[data-ui-skin="modern"] .routerModelRouteList {
+  display: grid;
+  gap: var(--ui-gap-sm, 8px);
+}
+
+:root[data-ui-skin="modern"] .routerModelRouteItem {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 22px minmax(120px, 0.9fr) minmax(160px, 1.2fr);
+  gap: var(--ui-gap-md, 12px);
+  align-items: center;
+  min-height: 64px;
+  border: 1px solid color-mix(in srgb, var(--line) 84%, var(--surface-tint) 16%);
+  border-radius: var(--ui-radius-lg, 12px);
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--card) 90%, var(--meta-bg) 10%);
+}
+
+:root[data-ui-skin="modern"] .routerModelRouteMain,
+:root[data-ui-skin="modern"] .routerModelRouteMeta {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+}
+
+:root[data-ui-skin="modern"] .routerModelRouteMain strong {
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: 750 var(--ui-font-md, 0.86rem)/1.2 var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .routerModelRouteMain span,
+:root[data-ui-skin="modern"] .routerModelRouteMeta span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--subtle);
+  font: 600 var(--ui-font-xs, 0.72rem)/1.25 var(--font-mono);
+}
+
+:root[data-ui-skin="modern"] .routerModelRouteEmpty {
+  min-height: 88px;
+  display: grid;
+  place-items: center;
+  border: 1px dashed color-mix(in srgb, var(--line) 84%, var(--surface-tint) 16%);
+  border-radius: var(--ui-radius-lg, 12px);
+  color: var(--subtle);
+  font: 600 var(--ui-font-sm, 0.78rem)/1.4 var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .cards {
+  --account-card-width: clamp(312px, 25vw, 340px);
+  gap: var(--ui-gap-lg, 16px);
+}
+
+:root[data-ui-skin="modern"] .accountCard {
+  min-height: 430px;
+  gap: var(--ui-gap-md, 12px);
+  padding: var(--ui-gap-lg, 16px);
+  border-radius: var(--ui-section-radius);
+  box-shadow: var(--ui-card-shadow, 0 4px 12px rgba(5, 5, 5, 0.05));
+}
+
+:root[data-ui-skin="modern"] .cardIdentity h3 {
+  font: 750 var(--ui-font-lg, 1rem)/var(--ui-line-tight, 1.2) var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .cardBadge,
+:root[data-ui-skin="modern"] .accountTagChip {
+  font: 700 var(--ui-font-xs, 0.72rem)/1 var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .usageGrid,
+:root[data-ui-skin="modern"] .relayInfoPanel,
+:root[data-ui-skin="modern"] .apiQuotaPanel,
+:root[data-ui-skin="modern"] .accountMetaPanel {
+  border-radius: var(--ui-radius-lg, 12px);
+  box-shadow: none;
+}
+
+:root[data-ui-skin="modern"] .usageGrid {
+  min-height: 140px;
+  gap: var(--ui-gap-md, 12px);
+  padding: var(--ui-gap-md, 12px);
+}
+
+:root[data-ui-skin="modern"] .usageDialChart {
+  width: 66px;
+  height: 66px;
+}
+
+:root[data-ui-skin="modern"] .apiQuotaUsagePanel .usageDialChart {
+  width: 74px;
+  height: 74px;
+}
+
+:root[data-ui-skin="modern"] .usageDialLabel,
+:root[data-ui-skin="modern"] .usageDialCenter strong,
+:root[data-ui-skin="modern"] .usageDialReset strong,
+:root[data-ui-skin="modern"] .relayInfoRow strong,
+:root[data-ui-skin="modern"] .accountMetaValue,
+:root[data-ui-skin="modern"] .apiQuotaMetric strong,
+:root[data-ui-skin="modern"] .apiQuotaPanel-single strong {
+  font-size: var(--ui-font-sm, 0.78rem);
+}
+
+:root[data-ui-skin="modern"] .usageDialCenter span,
+:root[data-ui-skin="modern"] .usageDialReset span,
+:root[data-ui-skin="modern"] .relayInfoRow span,
+:root[data-ui-skin="modern"] .accountMetaLabel,
+:root[data-ui-skin="modern"] .apiQuotaMetric span,
+:root[data-ui-skin="modern"] .apiQuotaPanel-single span {
+  font-size: var(--ui-font-xs, 0.72rem);
+  text-transform: none;
+}
+
+:root[data-ui-skin="modern"] .cardFooterActions .cardFooterAction.ant-btn {
+  min-height: var(--ui-control-md, 34px);
+  height: var(--ui-control-md, 34px);
+  border-radius: var(--ui-radius-sm, 8px);
+}
+
+:root[data-ui-skin="modern"] .addAccountModal .ant-modal-content {
+  padding: 18px;
+  border-radius: var(--ui-section-radius);
+  background: var(--cs-paper, #fff);
+}
+
+:root[data-ui-skin="modern"] .addAccountModal .ant-modal-header {
+  margin-bottom: var(--ui-gap-md, 12px);
+}
+
+:root[data-ui-skin="modern"] .addAccountModal .ant-modal-title {
+  line-height: 1.2;
+}
+
+:root[data-ui-skin="modern"] .addAccountModalTitle {
+  display: grid;
+  gap: 4px;
+}
+
+:root[data-ui-skin="modern"] .addAccountModalTitle .ant-typography {
+  margin: 0;
+}
+
+:root[data-ui-skin="modern"] .addAccountModalTabs .ant-tabs-nav {
+  margin-bottom: var(--ui-gap-md, 12px);
+}
+
+:root[data-ui-skin="modern"] .addAccountModalTabs .ant-tabs-tab {
+  min-height: 42px;
+  padding: 8px 12px;
+}
+
+:root[data-ui-skin="modern"] .addAccountModalTabBody {
+  display: none;
+}
+
+:root[data-ui-skin="modern"] .addAccountModalFlow {
+  display: grid;
+  gap: var(--ui-gap-md, 12px);
+}
+
+:root[data-ui-skin="modern"] .addAccountModalCard.ant-card {
+  border-radius: var(--ui-section-radius);
+  box-shadow: none;
+}
+
+:root[data-ui-skin="modern"] .addAccountModalCard .ant-card-head {
+  min-height: 44px;
+  padding: 0 var(--ui-gap-md, 12px);
+}
+
+:root[data-ui-skin="modern"] .addAccountModalCard .ant-card-body {
+  padding: var(--ui-gap-md, 12px);
+}
+
+:root[data-ui-skin="modern"] .addAccountModalSubCard.ant-card {
+  border-radius: var(--ui-radius-lg, 12px);
+  background: color-mix(in srgb, var(--cs-parchment, #f5f7fa) 68%, var(--cs-paper, #fff) 32%);
+}
+
+:root[data-ui-skin="modern"] .addAccountModalStack {
+  width: 100%;
+}
+
+:root[data-ui-skin="modern"] .addAccountModalField {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+:root[data-ui-skin="modern"] .addAccountModalFormGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ui-gap-md, 12px);
+}
+
+:root[data-ui-skin="modern"] .addAccountModalFieldFull {
+  grid-column: 1 / -1;
+}
+
+:root[data-ui-skin="modern"] .addAccountProviderGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--ui-gap-sm, 8px);
+}
+
+:root[data-ui-skin="modern"] .addAccountProviderPreset.ant-btn {
+  width: 100%;
+  height: 46px;
+  padding: 6px 10px;
+}
+
+:root[data-ui-skin="modern"] .addAccountProviderPresetLabel {
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: 3px;
+  line-height: 1.2;
+}
+
+:root[data-ui-skin="modern"] .addAccountProviderPresetLabel > span,
+:root[data-ui-skin="modern"] .addAccountProviderPresetLabel > small {
+  display: block;
+}
+
+:root[data-ui-skin="modern"] .addAccountProviderPresetLabel > span,
+:root[data-ui-skin="modern"] .addAccountProviderPresetLabel > small {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-skin="modern"] .addAccountProviderPresetLabel > small {
+  font: 650 var(--ui-font-xs, 0.72rem) / 1.18 var(--font-ui);
+  opacity: 0.78;
+}
+
+:root[data-ui-skin="modern"] .addAccountModalToolbar,
+:root[data-ui-skin="modern"] .addAccountModalActions,
+:root[data-ui-skin="modern"] .addAccountModalSwitchRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-gap-md, 12px);
+  flex-wrap: wrap;
+}
+
+:root[data-ui-skin="modern"] .addAccountModalSwitchRow > div {
+  min-width: 0;
+  flex: 1 1 260px;
+}
+
+:root[data-ui-skin="modern"] .addAccountModalSwitchRow .ant-typography {
+  margin: 0;
+}
+
+:root[data-ui-skin="modern"] .addAccountModelTable {
+  display: grid;
+  gap: var(--ui-gap-sm, 8px);
+  min-width: 0;
+}
+
+:root[data-ui-skin="modern"] .addAccountModelHeader,
+:root[data-ui-skin="modern"] .addAccountModelRow {
+  display: grid;
+  grid-template-columns: 34px 48px minmax(150px, 1.2fr) minmax(130px, 1fr) minmax(140px, 1fr) minmax(82px, 0.5fr) 38px;
+  gap: var(--ui-gap-sm, 8px);
+  align-items: center;
+}
+
+:root[data-ui-skin="modern"] .addAccountModelHeader.isSorting,
+:root[data-ui-skin="modern"] .addAccountModelRow.isSorting {
+  grid-template-columns: 28px 34px 48px minmax(150px, 1.2fr) minmax(130px, 1fr) minmax(140px, 1fr) minmax(82px, 0.5fr) 38px;
+}
+
+:root[data-ui-skin="modern"] .addAccountModelHeader {
+  color: var(--subtle);
+  font: 700 var(--ui-font-xs, 0.72rem) / 1.2 var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .addAccountModelRow .ant-input {
+  min-width: 0;
+}
+
+:root[data-ui-skin="modern"] .addAccountModalFileList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--ui-gap-sm, 8px);
+}
+
+:root[data-ui-skin="modern"] .addAuthDialog {
+  width: min(980px, calc(100vw - 48px));
+  padding: var(--ui-gap-lg, 16px);
+  border-radius: var(--ui-section-radius);
+}
+
+:root[data-ui-skin="modern"] .addAuthDialog .settingsHeader {
+  padding: 0 2px var(--ui-gap-md, 12px);
+}
+
+:root[data-ui-skin="modern"] .addAccountWorkspace,
+:root[data-ui-skin="modern"] .addAccountPanel,
+:root[data-ui-skin="modern"] .addAccountPanelBody,
+:root[data-ui-skin="modern"] .addOauthSection,
+:root[data-ui-skin="modern"] .addCurrentSection,
+:root[data-ui-skin="modern"] .addUploadSection,
+:root[data-ui-skin="modern"] .addApiSection {
+  gap: var(--ui-gap-md, 12px);
+}
+
+:root[data-ui-skin="modern"] .addAccountTab,
+:root[data-ui-skin="modern"] button.addAccountTab {
+  min-height: 82px;
+  border-radius: var(--ui-radius-lg, 12px);
+  padding: var(--ui-gap-md, 12px);
+  align-items: center;
+  gap: var(--ui-gap-md, 12px);
+}
+
+:root[data-ui-skin="modern"] .addAccountTabIcon,
+:root[data-ui-skin="modern"] .addAccountPanelIcon {
+  width: 36px;
+  height: 36px;
+  border-radius: var(--ui-radius-md, 10px);
+}
+
+:root[data-ui-skin="modern"] .addAccountPanel,
+:root[data-ui-skin="modern"] .apiProviderPresetPanel,
+:root[data-ui-skin="modern"] .addApiQuotaPanel,
+:root[data-ui-skin="modern"] .apiModelCatalogPanel,
+:root[data-ui-skin="modern"] .accountApiDrawerModelPanel {
+  border-radius: var(--ui-section-radius);
+  box-shadow: none;
+}
+
+:root[data-ui-skin="modern"] .apiProviderPresetGrid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--ui-gap-sm, 8px);
+}
+
+:root[data-ui-skin="modern"] .apiProviderPresetButton {
+  min-width: 0;
+  height: 44px;
+  min-height: 44px;
+  border-radius: var(--ui-radius-md, 10px);
+  padding: 6px 10px;
+  justify-content: center;
+  text-align: center;
+  white-space: normal;
+  font: 700 var(--ui-font-sm, 0.78rem)/1.28 var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .apiProviderPresetLabel {
+  min-width: 0;
+  display: grid;
+  justify-items: center;
+  gap: 2px;
+}
+
+:root[data-ui-skin="modern"] .apiProviderPresetTitle,
+:root[data-ui-skin="modern"] .apiProviderPresetSubtitle {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+:root[data-ui-skin="modern"] .apiProviderPresetTitle {
+  line-height: 1.28;
+  white-space: nowrap;
+}
+
+:root[data-ui-skin="modern"] .apiProviderPresetSubtitle {
+  color: color-mix(in srgb, var(--subtle) 82%, var(--ink) 18%);
+  font: 650 var(--ui-font-xs, 0.72rem)/1.18 var(--font-ui);
+  white-space: nowrap;
+}
+
+:root[data-ui-skin="modern"] .apiProviderPresetButton.isActive {
+  border-color: color-mix(in srgb, var(--brand-cool) 46%, var(--line) 54%);
+  background: color-mix(in srgb, var(--brand-cool) 12%, var(--card) 88%);
+  color: var(--ink);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand-cool) 12%, transparent);
+}
+
+:root[data-ui-skin="modern"] .apiProviderPresetButton.isActive .apiProviderPresetSubtitle {
+  color: color-mix(in srgb, var(--brand-cool) 74%, var(--ink) 26%);
+}
+
+:root[data-ui-skin="modern"] .apiModelCatalogColumnHeader,
+:root[data-ui-skin="modern"] .apiModelCatalogRow {
+  grid-template-columns: 28px 28px minmax(150px, 1.2fr) minmax(130px, 1fr) minmax(130px, 1fr) minmax(76px, 0.48fr) auto;
+  gap: var(--ui-gap-sm, 8px);
+}
+
+:root[data-ui-skin="modern"] .apiModelCatalogColumnHeader.isSorting,
+:root[data-ui-skin="modern"] .apiModelCatalogRow.isSorting {
+  grid-template-columns: 28px 28px 28px minmax(150px, 1.2fr) minmax(130px, 1fr) minmax(130px, 1fr) minmax(76px, 0.48fr) auto;
+}
+
+:root[data-ui-skin="modern"] .apiModelCatalogRow {
+  min-height: 44px;
+  border-radius: var(--ui-radius-md, 10px);
+}
+
+:root[data-ui-skin="modern"] .accountApiDrawer .apiModelCatalogRow,
+:root[data-ui-skin="modern"] .accountApiDrawer .apiModelCatalogRow.isSorting {
+  grid-template-columns: 24px 24px minmax(0, 1fr) auto;
+}
+
+:root[data-ui-skin="modern"] .accountApiDrawer .apiModelCatalogRow.isSorting {
+  padding-left: 42px;
+}
+
+:root[data-ui-skin="modern"] .notificationCenter {
+  gap: var(--ui-gap-lg, 16px);
+  padding: var(--ui-page-pad-y) var(--ui-page-pad-x) 34px;
+}
+
+:root[data-ui-skin="modern"] .notificationWorkspace,
+:root[data-ui-skin="modern"] .notificationOverviewGrid,
+:root[data-ui-skin="modern"] .notificationHomeGrid,
+:root[data-ui-skin="modern"] .notificationLedgerWorkspace,
+:root[data-ui-skin="modern"] .notificationLedgerBottomGrid {
+  gap: var(--ui-gap-lg, 16px);
+}
+
+:root[data-ui-skin="modern"] .notificationWorkspace {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 320px);
+}
+
+:root[data-ui-skin="modern"] .notificationFlowCard,
+:root[data-ui-skin="modern"] .notificationRouteGuideCard,
+:root[data-ui-skin="modern"] .notificationQuickActionsPanel,
+:root[data-ui-skin="modern"] .notificationStatusCard,
+:root[data-ui-skin="modern"] .notificationActivityCard,
+:root[data-ui-skin="modern"] .notificationWarningsCard,
+:root[data-ui-skin="modern"] .notificationLedgerConfig,
+:root[data-ui-skin="modern"] .notificationActivityTable,
+:root[data-ui-skin="modern"] .notificationResourcePanel,
+:root[data-ui-skin="modern"] .notificationTableCard {
+  padding: var(--ui-gap-lg, 16px);
+}
+
+:root[data-ui-skin="modern"] .notificationTabs {
+  gap: var(--ui-gap-sm, 8px);
+}
+
+:root[data-ui-skin="modern"] .notificationTab {
+  min-height: var(--ui-control-lg, 40px);
+  border-radius: var(--ui-radius-md, 10px);
+  padding: 0 12px;
+  font: 700 var(--ui-font-sm, 0.78rem)/1 var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .notificationMetric,
+:root[data-ui-skin="modern"] .notificationResourceChips button,
+:root[data-ui-skin="modern"] .notificationRouteStatsCard > div,
+:root[data-ui-skin="modern"] .notificationQuickAction,
+:root[data-ui-skin="modern"] .notificationActivityItem,
+:root[data-ui-skin="modern"] .notificationActivityRow,
+:root[data-ui-skin="modern"] .notificationLedgerRow,
+:root[data-ui-skin="modern"] .notificationTargetCard {
+  border-radius: var(--ui-radius-md, 10px);
+}
+
+:root[data-ui-skin="modern"] .notificationQuickAction {
+  min-height: 58px;
+  grid-template-columns: 34px minmax(0, 1fr);
+}
+
+:root[data-ui-skin="modern"] .notificationStatusCard {
+  min-height: 88px;
+}
+
+:root[data-ui-skin="modern"] .notificationActivityItem,
+:root[data-ui-skin="modern"] .notificationActivityRow,
+:root[data-ui-skin="modern"] .notificationLedgerHeader,
+:root[data-ui-skin="modern"] .notificationLedgerRow {
+  min-height: var(--ui-row-height);
+}
+
+:root[data-ui-skin="modern"] .notificationStatusPill,
+:root[data-ui-skin="modern"] .notificationStatusPill.ant-tag {
+  min-height: 22px;
+  border-radius: var(--ui-radius-sm, 8px);
+  padding: 0 8px;
+  font: 700 var(--ui-font-xs, 0.72rem)/1 var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .notificationFormCard,
+:root[data-ui-skin="modern"] .notificationRouteAssignmentBox,
+:root[data-ui-skin="modern"] .notificationTemplateVariablePanel,
+:root[data-ui-skin="modern"] .notificationSavedPreview,
+:root[data-ui-skin="modern"] .notificationTestState,
+:root[data-ui-skin="modern"] .notificationChannelNextStep {
+  border-radius: var(--ui-radius-lg, 12px);
+}
+
+@media (max-width: 1180px) {
+  :root[data-ui-skin="modern"] .launchModePanel,
+:root[data-ui-skin="modern"] .notificationWorkspace {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root[data-ui-skin="modern"] .launchModeCard {
+    grid-template-columns: 92px minmax(0, 1fr);
+  }
+
+  :root[data-ui-skin="modern"] .hybridLaunchControls,
+:root[data-ui-skin="modern"] .hybridLaunchControls-router {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root[data-ui-skin="modern"] .routerModeSwitchWrap {
+    justify-content: flex-start;
+    min-width: 0;
+  }
+}
+
+@media (max-width: 900px) {
+  :root[data-ui-skin="modern"] .accountsPage,
+:root[data-ui-skin="modern"] .notificationCenter {
+    padding: 12px 12px 92px;
+  }
+
+  :root[data-ui-skin="modern"] .settingRow {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: stretch;
+  }
+
+  :root[data-ui-skin="modern"] .settingFieldGroup,
+:root[data-ui-skin="modern"] .editorPicker,
+:root[data-ui-skin="modern"] .languagePicker {
+    width: 100%;
+    max-width: none;
+    min-width: 0;
+    justify-items: stretch;
+  }
+
+  :root[data-ui-skin="modern"] .modeGroup {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  :root[data-ui-skin="modern"] .modeGroup > button,
+:root[data-ui-skin="modern"] .modeGroup > .ant-btn {
+    flex: 1 1 96px;
+    min-width: 0;
+  }
+
+  :root[data-ui-skin="modern"] .metaStrip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  :root[data-ui-skin="modern"] .apiProviderPresetGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  :root[data-ui-skin="modern"] .addAccountProviderGrid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  :root[data-ui-skin="modern"] .addAccountModelHeader {
+    display: none;
+  }
+
+  :root[data-ui-skin="modern"] .addAccountModelRow {
+    grid-template-columns: 34px 48px minmax(0, 1fr) 38px;
+  }
+
+  :root[data-ui-skin="modern"] .addAccountModelRow.isSorting {
+    grid-template-columns: 28px 34px 48px minmax(0, 1fr) 38px;
+  }
+
+  :root[data-ui-skin="modern"] .addAccountModelRow > .ant-input:nth-of-type(n + 2) {
+    grid-column: 3 / 5;
+  }
+
+  :root[data-ui-skin="modern"] .addAccountModelRow.isSorting > .ant-input:nth-of-type(1) {
+    grid-column: 4 / 6;
+  }
+
+  :root[data-ui-skin="modern"] .addAccountModelRow.isSorting > .ant-input:nth-of-type(n + 2) {
+    grid-column: 4 / 6;
+  }
+
+  :root[data-ui-skin="modern"] .addAccountModelRow.isSorting > .ant-btn:last-child {
+    grid-column: 5;
+    justify-self: end;
+  }
+
+  :root[data-ui-skin="modern"] .hybridLaunchControls,
+:root[data-ui-skin="modern"] .hybridLaunchControls-router {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root[data-ui-skin="modern"] .hybridLaunchButton,
+:root[data-ui-skin="modern"] .hybridLaunchSelect-account,
+:root[data-ui-skin="modern"] .hybridLaunchSelect-relay,
+:root[data-ui-skin="modern"] .hybridLaunchSelect-routerRelay,
+:root[data-ui-skin="modern"] .routerModeSwitchWrap {
+    width: 100%;
+  }
+
+  :root[data-ui-skin="modern"] .routerModeSwitchWrap {
+    justify-content: space-between;
+  }
+
+  :root[data-ui-skin="modern"] .routerModelRouteItem {
+    grid-template-columns: 22px minmax(0, 1fr);
+  }
+
+  :root[data-ui-skin="modern"] .routerModelRouteMeta {
+    grid-column: 2;
+  }
+}
+
+@media (max-width: 620px) {
+  :root[data-ui-skin="modern"] .addAuthDialog {
+    width: min(100%, calc(100vw - 24px));
+    padding: var(--ui-gap-md, 12px);
+  }
+
+  :root[data-ui-skin="modern"] .metaStrip,
+:root[data-ui-skin="modern"] .cards {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root[data-ui-skin="modern"] .apiProviderPresetGrid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  :root[data-ui-skin="modern"] .addAccountModal .ant-modal-content {
+    padding: var(--ui-gap-md, 12px);
+  }
+
+  :root[data-ui-skin="modern"] .addAccountModalFormGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root[data-ui-skin="modern"] .addAccountProviderGrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  :root[data-ui-skin="modern"] .addAccountProviderPreset.ant-btn {
+    height: 48px;
+  }
+
+  :root[data-ui-skin="modern"] .addAccountModalToolbar,
+:root[data-ui-skin="modern"] .addAccountModalActions,
+:root[data-ui-skin="modern"] .addAccountModalSwitchRow {
+    align-items: stretch;
+  }
+
+  :root[data-ui-skin="modern"] .addAccountModalToolbar > .ant-space,
+:root[data-ui-skin="modern"] .addAccountModalActions > .ant-btn,
+:root[data-ui-skin="modern"] .addAccountModalToolbar .ant-btn {
+    width: 100%;
+  }
+
+  :root[data-ui-skin="modern"] .addAccountTab,
+:root[data-ui-skin="modern"] button.addAccountTab {
+    min-height: 82px;
+    padding: var(--ui-gap-md, 12px);
+    align-items: center;
+  }
+
+  :root[data-ui-skin="modern"] .apiModelCatalogColumnHeader {
+    display: none;
+  }
+
+  :root[data-ui-skin="modern"] .apiModelCatalogRow {
+    grid-template-columns: 28px 28px minmax(0, 1fr) auto;
+  }
+
+  :root[data-ui-skin="modern"] .apiModelCatalogRow.isSorting {
+    grid-template-columns: 28px 28px 28px minmax(0, 1fr) auto;
+  }
+
+  :root[data-ui-skin="modern"] .accountApiDrawer .apiModelCatalogRow,
+  :root[data-ui-skin="modern"] .accountApiDrawer .apiModelCatalogRow.isSorting {
+    grid-template-columns: 24px 24px minmax(0, 1fr) auto;
+  }
+}
+
+/* Live v2 shell and workflow */
+:root[data-ui-skin="modern"] .panel {
+  grid-template-columns: 228px minmax(0, 1fr);
+  background: var(--body-bg);
+}
+
+:root[data-ui-skin="modern"] .appMainPane {
+  grid-template-rows: auto minmax(0, 1fr);
+  background: var(--body-bg);
+  border-left: 1px solid var(--line-soft);
+}
+
+:root[data-ui-skin="modern"] .appHeader {
+  min-height: 72px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-gap-lg);
+  padding: var(--ui-page-pad-y) var(--ui-page-pad-x);
+  border-bottom: 1px solid var(--line-soft);
+  background: color-mix(in srgb, var(--body-bg) 92%, var(--surface) 8%);
+}
+
+:root[data-ui-skin="modern"] .appHeaderTitle {
+  min-width: 0;
+}
+
+:root[data-ui-skin="modern"] .appHeaderTitle .ant-typography {
+  margin: 0;
+}
+
+:root[data-ui-skin="modern"] .appHeaderTitle h1.ant-typography {
+  color: var(--ink);
+  font: 760 var(--ui-font-2xl) / var(--ui-line-tight) var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .appHeaderTitle .ant-typography-secondary {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--subtle);
+  font: 600 var(--ui-font-sm) / var(--ui-line-normal) var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .appHeaderActions {
+  flex: 0 0 auto;
+}
+
+:root[data-ui-skin="modern"] .appHeaderActions .ant-btn,
+:root[data-ui-skin="modern"] .launchCockpit .ant-btn,
+:root[data-ui-skin="modern"] .providersView .ant-btn,
+:root[data-ui-skin="modern"] .addAccountModal .ant-btn {
+  min-height: var(--ui-control-md);
+  border-radius: var(--ui-radius-sm);
+  box-shadow: none;
+}
+
+:root[data-ui-skin="modern"] .appHeaderActions .ant-btn-primary,
+:root[data-ui-skin="modern"] .launchCockpit .ant-btn-primary,
+:root[data-ui-skin="modern"] .cardLaunchButton.ant-btn,
+:root[data-ui-skin="modern"] .providersView .ant-btn-primary,
+:root[data-ui-skin="modern"] .addAccountModal .ant-btn-primary {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: var(--on-brand);
+}
+
+:root[data-ui-skin="modern"] .appHeaderActions .ant-btn-primary:not(:disabled):hover,
+:root[data-ui-skin="modern"] .launchCockpit .ant-btn-primary:not(:disabled):hover,
+:root[data-ui-skin="modern"] .cardLaunchButton.ant-btn:not(:disabled):hover,
+:root[data-ui-skin="modern"] .providersView .ant-btn-primary:not(:disabled):hover,
+:root[data-ui-skin="modern"] .addAccountModal .ant-btn-primary:not(:disabled):hover {
+  border-color: var(--brand-hover);
+  background: var(--brand-hover);
+  color: var(--on-brand);
+}
+
+:root[data-ui-skin="modern"] .accountsPage,
+:root[data-ui-skin="modern"] .providersView {
+  width: min(100%, calc(var(--ui-content-max) + var(--ui-page-pad-x) * 2));
+  margin: 0 auto;
+  padding: var(--ui-page-pad-y) var(--ui-page-pad-x) 34px;
+  gap: var(--ui-gap-xl);
+  background: transparent;
+}
+
+:root[data-ui-skin="modern"] .accountsHero {
+  display: contents;
+}
+
+:root[data-ui-skin="modern"] .bottomDock {
+  background: var(--surface);
+  border-right: 1px solid var(--line-soft);
+}
+
+:root[data-ui-skin="modern"] .dockLogoMark {
+  filter: none;
+}
+
+:root[data-ui-skin="modern"] button.bottomDockButton {
+  position: relative;
+  min-height: 40px;
+  border-radius: var(--ui-radius-md);
+}
+
+:root[data-ui-skin="modern"] button.bottomDockButton.isActive {
+  color: var(--ink);
+  border-color: transparent;
+  background: var(--brand-soft);
+  box-shadow: none;
+}
+
+:root[data-ui-skin="modern"] button.bottomDockButton.isActive::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 9px;
+  bottom: 9px;
+  width: 3px;
+  border-radius: var(--ui-radius-pill);
+  background: var(--brand);
+}
+
+:root[data-ui-skin="modern"] button.bottomDockButton::after {
+  display: none;
+}
+
+:root[data-ui-skin="modern"] .launchCockpit {
+  display: grid;
+  gap: var(--ui-gap-lg);
+  padding: var(--ui-gap-lg);
+}
+
+:root[data-ui-skin="modern"] .launchCockpitHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--ui-gap-lg);
+  padding-bottom: var(--ui-gap-md);
+  border-bottom: 1px solid var(--line-soft);
+}
+
+:root[data-ui-skin="modern"] .launchCockpitHead .ant-typography {
+  margin: 0;
+}
+
+:root[data-ui-skin="modern"] .launchCockpitHead h2.ant-typography {
+  color: var(--ink);
+  font: 760 var(--ui-font-xl) / var(--ui-line-tight) var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .launchCockpitBody {
+  min-width: 0;
+}
+
+:root[data-ui-skin="modern"] .launchCockpitGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--ui-gap-md);
+  align-items: end;
+}
+
+:root[data-ui-skin="modern"] .launchCockpitSummary {
+  min-width: 0;
+  display: grid;
+  gap: 4px;
+  padding: var(--ui-gap-md);
+}
+
+:root[data-ui-skin="modern"] .launchCockpitSummary .ant-typography {
+  margin: 0;
+}
+
+:root[data-ui-skin="modern"] .launchCockpitField {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+}
+
+:root[data-ui-skin="modern"] .launchCockpitField > span {
+  color: var(--subtle);
+  font: 700 var(--ui-font-xs) / 1.1 var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .launchCockpitField .ant-select {
+  min-width: 0;
+  width: 100%;
+}
+
+:root[data-ui-skin="modern"] .launchCockpitPrimary.ant-btn {
+  min-height: var(--ui-control-lg);
+  min-width: 164px;
+}
+
+:root[data-ui-skin="modern"] .launchCockpitRouter {
+  display: grid;
+  gap: var(--ui-gap-md);
+}
+
+:root[data-ui-skin="modern"] .launchCockpitSwitchRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-gap-md);
+  padding: var(--ui-gap-md);
+}
+
+:root[data-ui-skin="modern"] .launchCockpitSwitchRow > div {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+
+:root[data-ui-skin="modern"] .launchCockpitSwitchRow .ant-typography {
+  margin: 0;
+}
+
+:root[data-ui-skin="modern"] .launchCockpitGridRouter {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+:root[data-ui-skin="modern"] .launchCockpitStatus {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: var(--ui-gap-sm);
+  border-top: 1px solid var(--line-soft);
+}
+
+:root[data-ui-skin="modern"] .launchCockpitStatusDot {
+  width: 8px;
+  height: 8px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: var(--current);
+  box-shadow: 0 0 0 4px var(--current-bg);
+}
+
+:root[data-ui-skin="modern"] .launchCockpitStatus .ant-typography {
+  min-width: 0;
+  color: var(--ink-soft);
+  font: 650 var(--ui-font-sm) / var(--ui-line-normal) var(--font-ui);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-skin="modern"] .metaStrip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--ui-gap-md);
+}
+
+:root[data-ui-skin="modern"] .metaPill {
+  min-height: 72px;
+  display: grid;
+  align-content: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: var(--ui-radius-lg);
+  background: var(--surface);
+  box-shadow: var(--surface-shadow);
+}
+
+:root[data-ui-skin="modern"] .metaExportButton {
+  min-height: 72px;
+  border-radius: var(--ui-radius-lg);
+  background: var(--surface);
+}
+
+:root[data-ui-skin="modern"] .cards,
+:root[data-ui-skin="modern"] .accountGroupNestedCards {
+  --account-card-width: minmax(320px, 1fr);
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--ui-gap-lg);
+}
+
+:root[data-ui-skin="modern"] .accountCardSlot,
+:root[data-ui-skin="modern"] .accountGroupNestedSlot,
+:root[data-ui-skin="modern"] .accountGroupMemberCard {
+  width: 100%;
+  min-height: 0;
+}
+
+:root[data-ui-skin="modern"] .accountCard {
+  min-height: 0;
+  display: grid;
+  gap: var(--ui-gap-md);
+  padding: var(--ui-gap-lg);
+  border: 1px solid var(--line);
+  border-radius: var(--ui-radius-xl);
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+  overflow: hidden;
+}
+
+:root[data-ui-skin="modern"] .accountCard::before {
+  content: none;
+}
+
+:root[data-ui-skin="modern"] .accountCard.isCurrent {
+  border-left: 4px solid var(--current);
+}
+
+:root[data-ui-skin="modern"] .cardHeader {
+  min-width: 0;
+}
+
+:root[data-ui-skin="modern"] .cardIdentity {
+  min-width: 0;
+  display: grid;
+  gap: var(--ui-gap-sm);
+}
+
+:root[data-ui-skin="modern"] .cardIdentity h3 {
+  margin: 0;
+  color: var(--ink);
+  font: 760 var(--ui-font-lg) / var(--ui-line-tight) var(--font-ui);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-skin="modern"] .cardBadges {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+:root[data-ui-skin="modern"] .cardBadge,
+:root[data-ui-skin="modern"] .planBadgeButton {
+  min-height: 22px;
+  border-radius: var(--ui-radius-pill);
+  padding: 0 8px;
+  font: 750 var(--ui-font-xs) / 1 var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .currentBadge {
+  border-color: color-mix(in srgb, var(--current) 32%, var(--line) 68%);
+  background: var(--current-bg);
+  color: var(--current);
+}
+
+:root[data-ui-skin="modern"] .quotaStack {
+  display: grid;
+  gap: var(--ui-gap-sm);
+  min-height: 0;
+  padding: var(--ui-gap-md);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--ui-radius-lg);
+  background: var(--surface-2);
+}
+
+:root[data-ui-skin="modern"] .apiQuotaUsagePanel,
+:root[data-ui-skin="modern"] .accountCard .apiQuotaUsagePanel {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+  padding-block: 8px;
+}
+
+:root[data-ui-skin="modern"] .quotaMeter {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+:root[data-ui-skin="modern"] .quotaMeterLabelRow,
+:root[data-ui-skin="modern"] .quotaMeterValueRow {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--ui-gap-sm);
+}
+
+:root[data-ui-skin="modern"] .quotaMeterLabelRow span,
+:root[data-ui-skin="modern"] .quotaMeterLabelRow small,
+:root[data-ui-skin="modern"] .quotaMeterValueRow em,
+:root[data-ui-skin="modern"] .quotaMeter-stat span,
+:root[data-ui-skin="modern"] .quotaMeter-stat small {
+  color: var(--subtle);
+  font: 650 var(--ui-font-xs) / var(--ui-line-normal) var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .quotaMeterValueRow strong,
+:root[data-ui-skin="modern"] .quotaMeter-stat strong {
+  color: var(--quota-color, var(--ink));
+  font: 780 var(--ui-font-xl) / 1 var(--font-mono);
+}
+
+:root[data-ui-skin="modern"] .quotaMeterValueRow em {
+  max-width: 58%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-style: normal;
+}
+
+:root[data-ui-skin="modern"] .quotaMeterTrack {
+  height: 6px;
+  overflow: hidden;
+  border-radius: var(--ui-radius-pill);
+  background: var(--quota-track);
+}
+
+:root[data-ui-skin="modern"] .quotaMeterTrack span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--quota-color, var(--quota-good));
+}
+
+:root[data-ui-skin="modern"] .apiQuotaUsagePanel .quotaMeter {
+  gap: 4px;
+}
+
+:root[data-ui-skin="modern"] .apiQuotaUsagePanel .quotaMeterLabelRow span,
+:root[data-ui-skin="modern"] .apiQuotaUsagePanel .quotaMeterLabelRow small,
+:root[data-ui-skin="modern"] .apiQuotaUsagePanel .quotaMeterValueRow em {
+  font-size: var(--ui-font-xs);
+  line-height: 1.15;
+}
+
+:root[data-ui-skin="modern"] .apiQuotaUsagePanel .quotaMeterValueRow strong {
+  font-size: var(--ui-font-sm);
+}
+
+:root[data-ui-skin="modern"] .apiQuotaUsagePanel .quotaMeterTrack {
+  height: 5px;
+}
+
+:root[data-ui-skin="modern"] .quotaMeter-good {
+  --quota-color: var(--quota-good);
+}
+
+:root[data-ui-skin="modern"] .quotaMeter-warn {
+  --quota-color: var(--quota-warn);
+}
+
+:root[data-ui-skin="modern"] .quotaMeter-critical {
+  --quota-color: var(--quota-critical);
+}
+
+:root[data-ui-skin="modern"] .quotaMeter-neutral {
+  --quota-color: var(--subtle);
+}
+
+:root[data-ui-skin="modern"] .quotaMeter-stat {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: baseline;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--line-soft);
+}
+
+:root[data-ui-skin="modern"] .quotaMeter-stat small {
+  grid-column: 1 / -1;
+}
+
+:root[data-ui-skin="modern"] .accountMetaPanel {
+  min-height: 0;
+  display: grid;
+  gap: var(--ui-gap-sm);
+  padding: var(--ui-gap-md);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--ui-radius-lg);
+  background: var(--surface);
+  box-shadow: none;
+}
+
+:root[data-ui-skin="modern"] .accountMetaRow {
+  display: grid;
+  gap: 4px;
+}
+
+:root[data-ui-skin="modern"] .accountMetaLabel {
+  color: var(--subtle);
+  font: 700 var(--ui-font-xs) / 1.2 var(--font-ui);
+  text-transform: none;
+}
+
+:root[data-ui-skin="modern"] .accountMetaValue {
+  min-width: 0;
+  color: var(--ink);
+  font: 650 var(--ui-font-sm) / var(--ui-line-normal) var(--font-ui);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-skin="modern"] .accountTagSummary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ui-gap-sm);
+}
+
+:root[data-ui-skin="modern"] .cardFooterActions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--ui-control-lg);
+  gap: var(--ui-gap-sm);
+}
+
+:root[data-ui-skin="modern"] .cardLaunchButton.ant-btn {
+  min-height: var(--ui-control-lg);
+  border-radius: var(--ui-radius-md);
+}
+
+:root[data-ui-skin="modern"] .cardMoreButton.ant-btn {
+  width: var(--ui-control-lg);
+  min-width: var(--ui-control-lg);
+  height: var(--ui-control-lg);
+  padding: 0;
+  border-radius: var(--ui-radius-md);
+}
+
+:root[data-ui-skin="modern"] .providersView {
+  display: grid;
+}
+
+:root[data-ui-skin="modern"] .providersIntroCard.ant-card,
+:root[data-ui-skin="modern"] .providerCard.ant-card {
+  border-color: var(--line);
+  border-radius: var(--ui-radius-xl);
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+:root[data-ui-skin="modern"] .providersGrid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: var(--ui-gap-md);
+}
+
+:root[data-ui-skin="modern"] .providerCardHead {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--ui-gap-sm);
+}
+
+:root[data-ui-skin="modern"] .providerCardIcon {
+  width: 34px;
+  height: 34px;
+  display: grid;
+  place-items: center;
+  border-radius: var(--ui-radius-md);
+  background: var(--brand-soft);
+  color: var(--brand);
+}
+
+:root[data-ui-skin="modern"] .providerCardTitle {
+  min-width: 0;
+}
+
+:root[data-ui-skin="modern"] .providerCardTitle .ant-typography {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-skin="modern"] .providerCardMeta {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 12px;
+  margin-top: var(--ui-gap-md);
+}
+
+:root[data-ui-skin="modern"] .providerCardMeta span {
+  color: var(--subtle);
+  font: 650 var(--ui-font-xs) / var(--ui-line-normal) var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .providerCardMeta strong {
+  min-width: 0;
+  color: var(--ink);
+  font: 650 var(--ui-font-sm) / var(--ui-line-normal) var(--font-ui);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-skin="modern"] .providerCardActions {
+  margin-top: var(--ui-gap-md);
+}
+
+:root[data-ui-skin="modern"] .addAccountModal .ant-modal-content {
+  border: 1px solid var(--line);
+  border-radius: var(--ui-radius-xl);
+  background: var(--surface);
+  box-shadow: var(--card-shadow);
+}
+
+:root[data-ui-skin="modern"] .addAccountModalCard.ant-card {
+  border-color: var(--line);
+  border-radius: var(--ui-radius-lg);
+  background: var(--surface);
+}
+
+:root[data-ui-skin="modern"] .addAccountProviderPreset.ant-btn {
+  min-height: 48px;
+  border-color: var(--line);
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+:root[data-ui-skin="modern"] .addAccountProviderPreset.ant-btn-primary {
+  border-color: color-mix(in srgb, var(--brand) 42%, var(--line) 58%);
+  background: var(--brand-soft);
+  color: var(--ink);
+}
+
+:root[data-ui-skin="modern"] .addAccountProviderPreset.ant-btn-primary:hover {
+  border-color: var(--brand);
+  background: var(--brand-soft);
+  color: var(--ink);
+}
+
+@media (max-width: 900px) {
+  :root[data-ui-skin="modern"] .panel {
+    grid-template-columns: 72px minmax(0, 1fr);
+  }
+
+  :root[data-ui-skin="modern"] .dockBrand strong,
+:root[data-ui-skin="modern"] .dockSectionLabel,
+:root[data-ui-skin="modern"] .bottomDockLabel {
+    display: none;
+  }
+
+  :root[data-ui-skin="modern"] .dockBrand {
+    justify-content: center;
+  }
+
+  :root[data-ui-skin="modern"] button.bottomDockButton {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+  }
+
+  :root[data-ui-skin="modern"] .appHeader {
+    min-height: 66px;
+    padding: 12px;
+  }
+
+  :root[data-ui-skin="modern"] .launchCockpitHead,
+:root[data-ui-skin="modern"] .launchCockpitGrid,
+:root[data-ui-skin="modern"] .launchCockpitGridRouter {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root[data-ui-skin="modern"] .launchCockpitHead {
+    display: grid;
+  }
+
+  :root[data-ui-skin="modern"] .launchCockpitPrimary.ant-btn {
+    width: 100%;
+  }
+
+  :root[data-ui-skin="modern"] .metaStrip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 620px) {
+  :root[data-ui-skin="modern"] .panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  :root[data-ui-skin="modern"] .bottomDock {
+    display: none;
+  }
+
+  :root[data-ui-skin="modern"] .appHeader {
+    align-items: flex-start;
+  }
+
+  :root[data-ui-skin="modern"] .appHeaderTitle h1.ant-typography {
+    font-size: var(--ui-font-xl);
+  }
+
+  :root[data-ui-skin="modern"] .accountsPage,
+:root[data-ui-skin="modern"] .providersView {
+    padding: 12px 12px 24px;
+  }
+
+  :root[data-ui-skin="modern"] .metaStrip,
+:root[data-ui-skin="modern"] .cards,
+:root[data-ui-skin="modern"] .accountGroupNestedCards,
+:root[data-ui-skin="modern"] .providersGrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* v2 consolidation overrides */
+:root[data-ui-skin="modern"] .metaPill {
+  min-width: 0;
+  padding: 0 14px;
+}
+
+:root[data-ui-skin="modern"] .metaPill strong,
+:root[data-ui-skin="modern"] .metaPill strong.metaPillMono {
+  min-width: 0;
+  color: var(--ink);
+  font: 760 var(--ui-font-xl) / 1.1 var(--font-ui);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-skin="modern"] .quotaMeter-sm {
+  gap: 4px;
+}
+
+:root[data-ui-skin="modern"] .quotaMeter-sm .quotaMeterLabelRow span,
+:root[data-ui-skin="modern"] .quotaMeter-sm .quotaMeterLabelRow small,
+:root[data-ui-skin="modern"] .quotaMeter-sm .quotaMeterValueRow em {
+  font-size: var(--ui-font-xs);
+}
+
+:root[data-ui-skin="modern"] .quotaMeter-sm .quotaMeterValueRow strong,
+:root[data-ui-skin="modern"] .quotaMeter-sm.quotaMeter-stat strong {
+  font-size: var(--ui-font-md);
+}
+
+:root[data-ui-skin="modern"] .quotaMeter-sm .quotaMeterTrack {
+  height: 5px;
+}
+
+:root[data-ui-skin="modern"] .accountGroupCompactEntry {
+  border-color: var(--line-soft);
+  border-radius: var(--ui-radius-lg);
+  background: var(--surface-2);
+}
+
+:root[data-ui-skin="modern"] .accountGroupCurrentBadge {
+  flex: 0 0 auto;
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid color-mix(in srgb, var(--current) 32%, var(--line) 68%);
+  border-radius: var(--ui-radius-pill);
+  padding: 0 8px;
+  background: var(--current-bg);
+  color: var(--current);
+  font: 750 var(--ui-font-xs) / 1 var(--font-ui);
+  font-style: normal;
+}
+
+:root[data-ui-skin="modern"] .accountGroupCardRemoveButton.ant-btn {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 4;
+  width: 30px;
+  min-width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--ui-radius-sm);
+  background: var(--surface);
+  color: var(--subtle);
+  box-shadow: var(--surface-shadow);
+}
+
+:root[data-ui-skin="modern"] .accountGroupCardRemoveButton.ant-btn:not(:disabled):hover,
+:root[data-ui-skin="modern"] .accountGroupCardRemoveButton.ant-btn:not(:disabled):focus-visible {
+  border-color: color-mix(in srgb, var(--danger) 36%, var(--line) 64%);
+  background: color-mix(in srgb, var(--danger) 9%, var(--surface) 91%);
+  color: var(--danger);
+}
+
+:root[data-ui-skin="modern"] .accountTagSummary {
+  justify-content: flex-start;
+}
+
+:root[data-ui-skin="modern"] .addAccountModalPresetQuotaState {
+  width: fit-content;
+  min-height: var(--ui-control-md);
+  display: inline-flex;
+  align-items: center;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--ui-radius-pill);
+  padding: 0 10px;
+  background: var(--surface-2);
+  color: var(--subtle);
+  font: 700 var(--ui-font-xs) / 1 var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .accountsPage .ant-switch,
+:root[data-ui-skin="modern"] .settingsPage .ant-switch,
+:root[data-ui-skin="modern"] .notificationCenter .ant-switch,
+:root[data-ui-skin="modern"] .addAccountModal .ant-switch,
+:root[data-ui-skin="modern"] .accountApiDrawer .ant-switch {
+  min-width: 44px;
+  height: 22px;
+  border: 0;
+  outline: 0;
+  box-shadow: none;
+}
+
+:root[data-ui-skin="modern"] .accountsPage .ant-switch .ant-switch-handle,
+:root[data-ui-skin="modern"] .settingsPage .ant-switch .ant-switch-handle,
+:root[data-ui-skin="modern"] .notificationCenter .ant-switch .ant-switch-handle,
+:root[data-ui-skin="modern"] .addAccountModal .ant-switch .ant-switch-handle,
+:root[data-ui-skin="modern"] .accountApiDrawer .ant-switch .ant-switch-handle {
+  width: 18px;
+  height: 18px;
+}
+
+:root[data-ui-skin="modern"] .accountsPage .ant-switch.ant-switch-checked,
+:root[data-ui-skin="modern"] .settingsPage .ant-switch.ant-switch-checked,
+:root[data-ui-skin="modern"] .notificationCenter .ant-switch.ant-switch-checked,
+:root[data-ui-skin="modern"] .addAccountModal .ant-switch.ant-switch-checked,
+:root[data-ui-skin="modern"] .accountApiDrawer .ant-switch.ant-switch-checked {
+  background: var(--brand);
+}
+
+:root[data-ui-skin="modern"] .launchCockpitStatus .ant-typography {
+  flex: 1 1 auto;
+}
+
+html.addAccountDialogRootLocked[data-ui-skin="modern"] .viewStage > *,
+html.addAccountDialogRootLocked[data-ui-skin="modern"] .accountsPage {
+  overflow: hidden !important;
+}
+
+:root[data-ui-skin="modern"] .accountGroupToggle.ghost {
+  overflow: hidden;
+}
+
+/* Account card contract: equal cards, model-only meta, visible frequent actions. */
+:root[data-ui-skin="modern"] .cards,
+:root[data-ui-skin="modern"] .accountGroupNestedCards {
+  align-items: stretch;
+  grid-auto-rows: 1fr;
+}
+
+:root[data-ui-skin="modern"] .accountCardSlot,
+:root[data-ui-skin="modern"] .accountGroupNestedSlot,
+:root[data-ui-skin="modern"] .accountGroupMemberCard,
+:root[data-ui-skin="modern"] .accountCardSlot-router {
+  display: flex;
+  min-height: 100%;
+}
+
+:root[data-ui-skin="modern"] .accountCard {
+  width: 100%;
+  min-height: 430px;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+:root[data-ui-skin="modern"] .accountGroupNestedSlot > .accountCard {
+  width: 100%;
+  height: 100%;
+}
+
+:root[data-ui-skin="modern"] .accountCard .quotaStack,
+:root[data-ui-skin="modern"] .accountCard .relayInfoPanel {
+  flex: 0 0 194px;
+  min-height: 194px;
+  overflow: hidden;
+  align-content: start;
+}
+
+:root[data-ui-skin="modern"] .accountCard .quotaStack {
+  align-content: center;
+}
+
+:root[data-ui-skin="modern"] .accountCard .accountMetaPanel {
+  flex: 1 1 auto;
+  min-height: 92px;
+  align-content: start;
+}
+
+:root[data-ui-skin="modern"] .accountCard .cardFooter {
+  margin-top: auto;
+}
+
+:root[data-ui-skin="modern"] .routerLaunchCard {
+  min-height: 430px;
+}
+
+:root[data-ui-skin="modern"] .routerLaunchCard.isEmpty {
+  opacity: 0.92;
+}
+
+:root[data-ui-skin="modern"] .routerLaunchPanelBody {
+  min-height: 194px;
+  padding: var(--ui-gap-md);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--ui-radius-lg);
+  background: var(--surface-2);
+  display: grid;
+  gap: var(--ui-gap-sm);
+}
+
+:root[data-ui-skin="modern"] .routerLaunchField {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+:root[data-ui-skin="modern"] .routerLaunchField > span {
+  color: var(--subtle);
+  font: 720 var(--ui-font-xs) / var(--ui-line-tight) var(--font-ui);
+}
+
+:root[data-ui-skin="modern"] .routerLaunchSelect.ant-select {
+  min-width: 0;
+  height: var(--ui-control-lg);
+}
+
+:root[data-ui-skin="modern"] .routerLaunchSelect.ant-select .ant-select-selector {
+  min-height: var(--ui-control-lg);
+  border-radius: var(--ui-radius-md);
+}
+
+:root[data-ui-skin="modern"] .routerLaunchOptionLabel {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+:root[data-ui-skin="modern"] .routerLaunchOptionLabel strong,
+:root[data-ui-skin="modern"] .routerLaunchOptionLabel span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-skin="modern"] .routerLaunchOptionLabel span {
+  color: var(--subtle);
+  font: 650 var(--ui-font-xs) / var(--ui-line-tight) var(--font-mono);
+}
+
+:root[data-ui-skin="modern"] .routerLaunchStats {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--ui-gap-sm);
+}
+
+:root[data-ui-skin="modern"] .routerLaunchStats .apiQuotaMetric {
+  padding: 9px 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--ui-radius-md);
+  background: var(--surface);
+}
+
+:root[data-ui-skin="modern"] .routerLaunchMetaPanel {
+  min-height: 92px;
+}
+
+:root[data-ui-skin="modern"] .accountModelValue {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 0;
+}
+
+:root[data-ui-skin="modern"] .accountModelValue > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root[data-ui-skin="modern"] .accountModelValue .subscriptionBadge {
+  flex: 0 0 auto;
+  max-width: 92px;
+  display: none;
+}
+
+:root[data-ui-skin="modern"] .accountTagSummary {
+  min-height: 24px;
+  overflow: hidden;
+}
+
+:root[data-ui-skin="modern"] .accountTagList {
+  max-height: 48px;
+  overflow: hidden;
+}
+
+:root[data-ui-skin="modern"] .cardFooterActions {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 38px));
+  align-items: center;
+  justify-content: end;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+:root[data-ui-skin="modern"] .cardLaunchButton.ant-btn {
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  min-height: 38px;
+  padding: 0;
+  border-radius: var(--ui-radius-md);
+}
+
+:root[data-ui-skin="modern"] .cardFooterActions .cardFooterAction.ant-btn,
+:root[data-ui-skin="modern"] .cardMoreButton.ant-btn {
+  width: 38px;
+  min-width: 38px;
+  height: 38px;
+  min-height: 38px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--ui-radius-md);
+  background: var(--surface-2);
+  color: var(--subtle);
+  box-shadow: none;
+}
+
+:root[data-ui-skin="modern"] .cardFooterActions .cardFooterAction.ant-btn:not(:disabled):hover,
+:root[data-ui-skin="modern"] .cardFooterActions .cardFooterAction.ant-btn:not(:disabled):focus-visible,
+:root[data-ui-skin="modern"] .cardMoreButton.ant-btn:not(:disabled):hover,
+:root[data-ui-skin="modern"] .cardMoreButton.ant-btn:not(:disabled):focus-visible {
+  border-color: color-mix(in srgb, var(--brand) 34%, var(--line) 66%);
+  background: color-mix(in srgb, var(--brand) 9%, var(--surface) 91%);
+  color: var(--brand);
+}

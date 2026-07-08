@@ -4,17 +4,19 @@ import { formatTokenCount } from "../utils/usage";
 
 type MetaStripProps = {
   accountCount: number;
+  currentActiveLabel?: string | null;
   tokenUsage: CodexTokenUsageSnapshot | null;
   tokenUsageError: string | null;
-  exportingAccounts: boolean;
-  onExportAccounts: () => void;
+  exportingAccounts?: boolean;
+  onExportAccounts?: () => void;
 };
 
 export function MetaStrip({
   accountCount,
+  currentActiveLabel,
   tokenUsage,
   tokenUsageError,
-  exportingAccounts,
+  exportingAccounts = false,
   onExportAccounts,
 }: MetaStripProps) {
   const { copy, locale } = useI18n();
@@ -52,6 +54,12 @@ export function MetaStrip({
         <span>{copy.metaStrip.accountCount}</span>
         <strong>{accountCount}</strong>
       </article>
+      {currentActiveLabel !== undefined ? (
+        <article className="metaPill">
+          <span>{copy.metaStrip.currentActive}</span>
+          <strong title={currentActiveLabel ?? undefined}>{currentActiveLabel ?? "--"}</strong>
+        </article>
+      ) : null}
       {tokenMetrics.map((metric) => (
         <article
           key={metric.label}
@@ -64,14 +72,16 @@ export function MetaStrip({
           </strong>
         </article>
       ))}
-      <button
-        className="ghost metaExportButton"
-        onClick={onExportAccounts}
-        disabled={exportingAccounts || accountCount === 0}
-        aria-label={copy.metaStrip.exportAll}
-      >
-        {copy.metaStrip.exportAll}
-      </button>
+      {onExportAccounts ? (
+        <button
+          className="ghost metaExportButton"
+          onClick={onExportAccounts}
+          disabled={exportingAccounts || accountCount === 0}
+          aria-label={copy.metaStrip.exportAll}
+        >
+          {copy.metaStrip.exportAll}
+        </button>
+      ) : null}
     </section>
   );
 }

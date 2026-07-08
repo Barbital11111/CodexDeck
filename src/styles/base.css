@@ -3,7 +3,7 @@
 }
 
 html {
-  font-size: clamp(15px, 0.42vw + 11.4px, 19px);
+  font-size: 16px;
 }
 
 .browserPreviewHost {
@@ -193,7 +193,7 @@ button.windowTitleControlClose:focus-visible {
 .topbar h1 {
   margin: 0;
   font: 650 1.02rem/1.2 var(--font-ui);
-  letter-spacing: -0.02em;
+  letter-spacing: 0;
 }
 
 .commandSearch {
@@ -342,7 +342,7 @@ button.windowTitleControlClose:focus-visible {
   border-radius: 12px;
   padding: 10px 14px;
   font: 600 0.84rem/1 var(--font-ui);
-  letter-spacing: -0.01em;
+  letter-spacing: 0;
 }
 
 .iconButton {
@@ -445,7 +445,7 @@ button.windowTitleControlClose:focus-visible {
   align-items: center;
 }
 
-.hybridLaunchPanel {
+.launchModePanel {
   grid-column: 1 / -1;
 }
 

@@ -2,10 +2,11 @@ mod account_service;
 mod app_paths;
 mod auth;
 mod cli;
-mod codex_enhanced;
+mod codex_multimodel;
 mod editor_apps;
 mod hybrid_relay_proxy;
 mod i18n;
+mod model_router;
 mod models;
 mod notification_service;
 mod opencode;
@@ -22,6 +23,7 @@ mod utils;
 use std::io::Read;
 use std::io::Write;
 use std::net::TcpListener;
+use std::path::PathBuf;
 #[cfg(any(target_os = "macos", all(unix, not(target_os = "macos"))))]
 use std::process::Command;
 use std::thread;
@@ -49,6 +51,7 @@ use models::NotificationProviderConfig;
 use models::NotificationTargetConfig;
 use models::OauthCallbackFinishedEvent;
 use models::PreparedOauthLogin;
+use models::RelayModelCatalogEntry;
 use models::SwitchAccountResult;
 use models::UpdateApiAccountInput;
 use models::UpdateApiAccountKeyInput;
@@ -59,6 +62,21 @@ use utils::new_background_command;
 
 const OAUTH_CALLBACK_FINISHED_EVENT: &str = "oauth-callback-finished";
 const AUTH_KEEPALIVE_INTERVAL_SECS: u64 = 300;
+const AUTH_KEEPALIVE_INITIAL_DELAY_SECS: u64 = 60;
+
+async fn resolve_relay_provider_base_url(
+    _state: &AppState,
+    relay_account: &models::StoredAccount,
+) -> Result<String, String> {
+    relay_account
+        .api_base_url
+        .clone()
+        .ok_or_else(|| "API 条目资料不完整".to_string())
+}
+struct CodexLaunchOutcome {
+    launched_app_path: Option<String>,
+    used_fallback_cli: bool,
+}
 
 fn escape_html(input: &str) -> String {
     input
@@ -440,6 +458,14 @@ async fn list_accounts(
 }
 
 #[tauri::command]
+async fn run_startup_maintenance(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<Vec<AccountSummary>, String> {
+    run_startup_maintenance_internal(&app, state.inner()).await
+}
+
+#[tauri::command]
 async fn import_current_auth_account(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -460,6 +486,32 @@ async fn create_api_account(
     let summary = account_service::create_api_account_internal(&app, state.inner(), input).await?;
     let _ = tray::refresh_macos_tray_snapshot(&app);
     Ok(summary)
+}
+
+#[tauri::command]
+async fn probe_api_models(
+    base_url: String,
+    api_key: String,
+) -> Result<Vec<RelayModelCatalogEntry>, String> {
+    account_service::probe_api_models_internal(&base_url, &api_key).await
+}
+
+#[tauri::command]
+async fn probe_api_account_models(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    account_key: String,
+    base_url: Option<String>,
+    api_key: Option<String>,
+) -> Result<Vec<RelayModelCatalogEntry>, String> {
+    account_service::probe_api_account_models_internal(
+        &app,
+        state.inner(),
+        &account_key,
+        base_url,
+        api_key,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -660,6 +712,46 @@ async fn update_app_settings(
         settings_service::update_app_settings_internal(&app, state.inner(), patch).await?;
     let _ = tray::refresh_macos_tray_snapshot(&app);
     Ok(settings)
+}
+
+#[tauri::command]
+async fn enable_codex_multi_model_mode(
+    app: AppHandle,
+) -> Result<codex_multimodel::MultiModelModeResult, String> {
+    match codex_multimodel::enable_multi_model_mode(&app) {
+        Ok(result) => {
+            log::info!(
+                "多模型模式已启用: status={}, workspace={}",
+                result.status,
+                result.workspace
+            );
+            Ok(result)
+        }
+        Err(error) => {
+            log::error!("多模型模式启用失败: {error}");
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+async fn reset_codex_multi_model_mode(
+    app: AppHandle,
+) -> Result<codex_multimodel::MultiModelModeResult, String> {
+    match codex_multimodel::reset_multi_model_mode(&app) {
+        Ok(result) => {
+            log::info!(
+                "多模型模式已重置: status={}, workspace={}",
+                result.status,
+                result.workspace
+            );
+            Ok(result)
+        }
+        Err(error) => {
+            log::error!("多模型模式重置失败: {error}");
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]
@@ -890,6 +982,154 @@ mod tests {
     }
 }
 
+fn model_router_backup_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    Ok(app_paths::app_data_dir(app)?.join("model-router-profile-backup"))
+}
+
+fn model_router_backup_state(
+    settings: &AppSettings,
+) -> profile_files::ActiveCodexProfileBackupState {
+    profile_files::ActiveCodexProfileBackupState {
+        active_account_id: settings.active_account_id.clone(),
+        active_hybrid_profile: settings.active_hybrid_profile.clone(),
+        codex_auth_existed: false,
+        codex_config_existed: false,
+    }
+}
+
+fn select_model_router_relay_account_id(
+    store: &models::AccountsStore,
+    requested_id: Option<String>,
+) -> Result<String, String> {
+    if let Some(requested_id) = requested_id.filter(|value| !value.trim().is_empty()) {
+        let account = store
+            .accounts
+            .iter()
+            .find(|account| account.id == requested_id)
+            .ok_or_else(|| "找不到要用于路由模式的 API 条目。".to_string())?;
+        if !matches!(account.source_kind, models::AccountSourceKind::Relay) {
+            return Err("路由模式只能选择 API 条目。".to_string());
+        }
+        return Ok(requested_id);
+    }
+
+    store
+        .settings
+        .model_router_account_id
+        .as_ref()
+        .and_then(|account_id| {
+            store
+                .accounts
+                .iter()
+                .find(|account| {
+                    account.id == *account_id
+                        && matches!(account.source_kind, models::AccountSourceKind::Relay)
+                })
+                .map(|account| account.id.clone())
+        })
+        .or_else(|| {
+            store
+                .settings
+                .active_account_id
+                .as_ref()
+                .and_then(|account_id| {
+                    store
+                        .accounts
+                        .iter()
+                        .find(|account| {
+                            account.id == *account_id
+                                && matches!(account.source_kind, models::AccountSourceKind::Relay)
+                        })
+                        .map(|account| account.id.clone())
+                })
+        })
+        .or_else(|| {
+            store
+                .accounts
+                .iter()
+                .find(|account| matches!(account.source_kind, models::AccountSourceKind::Relay))
+                .map(|account| account.id.clone())
+        })
+        .ok_or_else(|| "路由模式需要至少一个 API 条目。".to_string())
+}
+
+async fn disable_model_router_mode_for_store(
+    app: &AppHandle,
+    state: &AppState,
+    store: &mut models::AccountsStore,
+    next_router_account_id: Option<String>,
+) -> Result<(), String> {
+    let preserved_router_account_id =
+        next_router_account_id.or_else(|| store.settings.model_router_account_id.clone());
+    model_router::stop_model_router(state).await;
+    if store.settings.model_router_enabled {
+        let backup_state =
+            profile_files::restore_active_codex_profile_backup(&model_router_backup_dir(app)?)?;
+        store.settings.active_account_id = backup_state.active_account_id;
+        store.settings.active_hybrid_profile = backup_state.active_hybrid_profile;
+    }
+    store.settings.model_router_enabled = false;
+    store.settings.model_router_account_id = preserved_router_account_id;
+    Ok(())
+}
+
+async fn apply_relay_model_router_profile_for_store(
+    app: &AppHandle,
+    state: &AppState,
+    store: &mut models::AccountsStore,
+    relay_account_id: Option<String>,
+    create_backup_if_needed: bool,
+) -> Result<String, String> {
+    let account_id = select_model_router_relay_account_id(store, relay_account_id)?;
+    let relay_index = store
+        .accounts
+        .iter()
+        .position(|account| account.id == account_id)
+        .ok_or_else(|| "找不到要用于路由模式的 API 条目。".to_string())?;
+    if !matches!(
+        store.accounts[relay_index].source_kind,
+        models::AccountSourceKind::Relay
+    ) {
+        return Err("路由模式只能选择 API 条目。".to_string());
+    }
+
+    if create_backup_if_needed && !store.settings.model_router_enabled {
+        profile_files::create_active_codex_profile_backup(
+            &model_router_backup_dir(app)?,
+            &model_router_backup_state(&store.settings),
+        )?;
+    }
+
+    let (router_base_url, router_entries) =
+        model_router::ensure_model_router_for_store(state, store).await?;
+    let store_path = store::account_store_path_for_app(app)?;
+    {
+        let stored_relay = &mut store.accounts[relay_index];
+        profile_files::sync_account_profile_in_store_path(&store_path, stored_relay)?;
+    }
+    let mut router_account = store.accounts[relay_index].clone();
+    if let Some(first_model) = router_entries
+        .iter()
+        .find(|entry| entry.enabled && !entry.model.trim().is_empty())
+        .map(|entry| entry.model.clone())
+    {
+        router_account.model_name = Some(first_model);
+    }
+    profile_files::apply_relay_account_profile_with_provider_base_url(
+        &router_account,
+        &router_base_url,
+        &router_entries,
+    )?;
+    profile_files::apply_model_instructions_fix_setting(
+        store.settings.codex_model_instructions_fix_enabled,
+    )?;
+    store.settings.model_router_enabled = true;
+    store.settings.model_router_account_id = Some(account_id.clone());
+    store.settings.active_account_id = Some(account_id.clone());
+    store.settings.active_hybrid_profile = None;
+    Ok(account_id)
+}
+
 #[tauri::command]
 async fn switch_account_and_launch(
     app: AppHandle,
@@ -897,6 +1137,7 @@ async fn switch_account_and_launch(
     id: String,
     workspace_path: Option<String>,
     launch_codex: Option<bool>,
+    use_model_router: Option<bool>,
     restart_editors_on_switch: Option<bool>,
     restart_editor_targets: Option<Vec<EditorAppId>>,
 ) -> Result<SwitchAccountResult, String> {
@@ -926,24 +1167,68 @@ async fn switch_account_and_launch(
     let effective_restart_targets =
         restart_editor_targets.unwrap_or_else(|| store.settings.restart_editor_targets.clone());
     let configured_codex_launch_path = store.settings.codex_launch_path.clone();
-    let should_use_api_enhanced_launch =
-        matches!(account.source_kind, models::AccountSourceKind::Relay)
-            && store.settings.api_enhanced_launch_enabled;
+    let disable_gpu_acceleration = store.settings.codex_disable_gpu_acceleration;
     // 向后兼容：旧前端未传参数时仍按“切换并启动”处理。
     let should_launch_codex = launch_codex.unwrap_or(true);
+    let should_use_model_router = use_model_router.unwrap_or(false)
+        && matches!(account.source_kind, models::AccountSourceKind::Relay);
     {
         let _guard = state.store_lock.lock().await;
         let mut latest_store = store::load_store(&app)?;
+        let router_context = if should_use_model_router {
+            if !latest_store.settings.model_router_enabled {
+                profile_files::create_active_codex_profile_backup(
+                    &model_router_backup_dir(&app)?,
+                    &model_router_backup_state(&latest_store.settings),
+                )?;
+            }
+            Some(model_router::ensure_model_router_for_store(state.inner(), &latest_store).await?)
+        } else {
+            disable_model_router_mode_for_store(&app, state.inner(), &mut latest_store, None)
+                .await?;
+            None
+        };
         let stored_account = latest_store
             .accounts
             .iter_mut()
             .find(|stored| stored.id == id)
             .ok_or_else(|| "找不到要切换的账号".to_string())?;
         profile_files::sync_account_profile_in_store_path(
-            &store::account_store_path_from_data_dir(&app_paths::app_data_dir(&app)?),
+            &store::account_store_path_for_app(&app)?,
             stored_account,
         )?;
-        profile_files::apply_account_profile(stored_account)?;
+        if let Some((router_base_url, router_entries)) = router_context.as_ref() {
+            let mut router_account = stored_account.clone();
+            if let Some(first_model) = router_entries
+                .iter()
+                .find(|entry| entry.enabled && !entry.model.trim().is_empty())
+                .map(|entry| entry.model.clone())
+            {
+                router_account.model_name = Some(first_model);
+            }
+            profile_files::apply_relay_account_profile_with_provider_base_url(
+                &router_account,
+                router_base_url,
+                router_entries,
+            )?;
+        } else {
+            let account_snapshot = stored_account.clone();
+            match account_snapshot.source_kind {
+                models::AccountSourceKind::Relay => {
+                    let provider_base_url =
+                        resolve_relay_provider_base_url(state.inner(), &account_snapshot).await?;
+                    let model_catalog_entries = account_snapshot.enabled_model_catalog();
+                    profile_files::apply_relay_account_profile_with_provider_base_url(
+                        &account_snapshot,
+                        &provider_base_url,
+                        &model_catalog_entries,
+                    )?;
+                }
+                models::AccountSourceKind::Chatgpt => {
+                    profile_files::apply_account_profile(stored_account)?;
+                }
+            }
+        }
         let thread_provider_backup_dir = app_paths::codex_state_provider_backup_dir()?;
         let synced_thread_count = match stored_account.source_kind {
             models::AccountSourceKind::Relay => {
@@ -963,11 +1248,17 @@ async fn switch_account_and_launch(
         if synced_thread_count > 0 {
             log::info!("已同步 {synced_thread_count} 条 Codex 线程 provider");
         }
-        settings_service::apply_active_codex_context_window_setting(
-            latest_store.settings.codex_context_window_k,
+        profile_files::apply_model_instructions_fix_setting(
+            latest_store
+                .settings
+                .codex_model_instructions_fix_enabled,
         )?;
         latest_store.settings.active_account_id = Some(stored_account.id.clone());
         latest_store.settings.active_hybrid_profile = None;
+        latest_store.settings.model_router_enabled = should_use_model_router;
+        if should_use_model_router {
+            latest_store.settings.model_router_account_id = Some(stored_account.id.clone());
+        }
         account = stored_account.clone();
         store::save_store(&app, &latest_store)?;
     }
@@ -1024,33 +1315,29 @@ async fn switch_account_and_launch(
         });
     }
 
-    // 切换时强制结束旧实例，避免触发“是否退出”确认弹窗。
-    force_stop_running_codex();
+    let stopped_codex_before_prepare =
+        stop_running_codex_before_multi_model_prepare(&app, configured_codex_launch_path.as_deref());
+    let configured_codex_launch_path =
+        prepare_codex_launch_path_for_current_settings(&app, configured_codex_launch_path)?;
+    let multi_model_launch = is_codex_multi_model_mode_enabled(&app);
 
-    if should_use_api_enhanced_launch {
-        let result = codex_enhanced::launch_codex_with_enhancements(
-            configured_codex_launch_path.as_deref(),
-            workspace_path.as_deref(),
-        )
-        .await?;
-        return Ok(SwitchAccountResult {
-            account_id: account.account_id,
-            launched_app_path: result.launched_app_path,
-            used_fallback_cli: result.used_fallback_cli,
-            opencode_synced,
-            opencode_sync_error,
-            opencode_desktop_restarted,
-            opencode_desktop_restart_error,
-            restarted_editor_apps,
-            editor_restart_error,
-        });
+    // 切换时强制结束旧实例，避免触发“是否退出”确认弹窗。
+    if !stopped_codex_before_prepare {
+        force_stop_running_codex(configured_codex_launch_path.as_deref(), multi_model_launch);
     }
 
     let mut app_launch_error = None;
-    if let Some(path) = cli::find_configured_codex_app_path(configured_codex_launch_path.as_deref())
-        .or_else(cli::find_codex_app_path)
+    let configured_app_path =
+        cli::find_configured_codex_app_path(configured_codex_launch_path.as_deref());
+    if let Some(path) = configured_app_path
+        .clone()
+        .or_else(|| (!multi_model_launch).then(cli::find_codex_app_path).flatten())
     {
-        match launch_codex_app(&path, workspace_path.as_deref()) {
+        match launch_codex_app(
+            &path,
+            workspace_path.as_deref(),
+            disable_gpu_acceleration,
+        ) {
             Ok(()) => {
                 return Ok(SwitchAccountResult {
                     account_id: account.account_id,
@@ -1071,8 +1358,15 @@ async fn switch_account_and_launch(
         }
     }
 
+    if multi_model_launch {
+        return Err(app_launch_error.unwrap_or_else(|| {
+            "多模型模式只允许启动受控 Codex 副本，但当前受控启动路径不可用。请在设置中重置后重新开启多模型模式。".to_string()
+        }));
+    }
+
     #[cfg(target_os = "windows")]
     if cli::has_windows_store_codex_app() {
+        app_paths::apply_codex_home_process_env()?;
         match cli::launch_windows_store_codex() {
             Ok(()) => {
                 return Ok(SwitchAccountResult {
@@ -1099,20 +1393,11 @@ async fn switch_account_and_launch(
         }
     }
 
-    let mut cmd = cli::new_codex_command(configured_codex_launch_path.as_deref())?;
-    cmd.arg("app");
-    if let Some(workspace) = workspace_path.as_deref() {
-        cmd.arg(workspace);
-    }
-    cmd.spawn().map_err(|e| {
-        if let Some(app_launch_error) = app_launch_error.as_ref() {
-            format!(
-                "通过 Codex 应用路径启动失败: {app_launch_error}；且通过 codex app 启动失败: {e}"
-            )
-        } else {
-            format!("未检测到本地 Codex 应用，且通过 codex app 启动失败: {e}")
-        }
-    })?;
+    launch_codex_cli_app(
+        configured_codex_launch_path.as_deref(),
+        workspace_path.as_deref(),
+        app_launch_error.as_deref(),
+    )?;
 
     Ok(SwitchAccountResult {
         account_id: account.account_id,
@@ -1128,6 +1413,92 @@ async fn switch_account_and_launch(
 }
 
 #[tauri::command]
+async fn set_model_router_mode(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    enabled: bool,
+    relay_account_id: Option<String>,
+) -> Result<AppSettings, String> {
+    let settings = {
+        let _guard = state.store_lock.lock().await;
+        let mut latest_store = store::load_store(&app)?;
+
+        if enabled {
+            apply_relay_model_router_profile_for_store(
+                &app,
+                state.inner(),
+                &mut latest_store,
+                relay_account_id,
+                true,
+            )
+            .await?;
+        } else {
+            disable_model_router_mode_for_store(
+                &app,
+                state.inner(),
+                &mut latest_store,
+                relay_account_id,
+            )
+            .await?;
+        }
+
+        let settings = latest_store.settings.clone();
+        store::save_store(&app, &latest_store)?;
+        settings
+    };
+    let _ = tray::refresh_macos_tray_snapshot(&app);
+    Ok(settings)
+}
+
+fn prepare_codex_launch_path_for_current_settings(
+    app: &AppHandle,
+    configured_codex_launch_path: Option<String>,
+) -> Result<Option<String>, String> {
+    let store = store::load_store(app)?;
+    if !store.settings.codex_multi_model_mode_enabled {
+        return Ok(configured_codex_launch_path);
+    }
+
+    let Some(managed_launch_path) = codex_multimodel::prepare_managed_codex_launch_path(app)? else {
+        return Ok(configured_codex_launch_path);
+    };
+
+    let mut latest_store = store::load_store(app)?;
+    profile_files::apply_model_instructions_fix_setting(
+        latest_store
+            .settings
+            .codex_model_instructions_fix_enabled,
+    )?;
+    latest_store.settings.codex_launch_path = Some(managed_launch_path.clone());
+    store::save_store(app, &latest_store)?;
+    Ok(Some(managed_launch_path))
+}
+
+fn is_codex_multi_model_mode_enabled(app: &AppHandle) -> bool {
+    store::load_store(app)
+        .ok()
+        .is_some_and(|store| store.settings.codex_multi_model_mode_enabled)
+}
+
+fn stop_running_codex_before_multi_model_prepare(
+    app: &AppHandle,
+    configured_codex_launch_path: Option<&str>,
+) -> bool {
+    if !is_codex_multi_model_mode_enabled(app) {
+        return false;
+    }
+    let stop_path = store::load_store(app)
+        .ok()
+        .and_then(|store| store.settings.codex_multi_model_controlled_exe_path)
+        .or_else(|| configured_codex_launch_path.map(ToString::to_string));
+    let Some(stop_path) = stop_path else {
+        return false;
+    };
+    force_stop_running_codex(Some(&stop_path), true);
+    true
+}
+
+#[tauri::command]
 async fn switch_hybrid_account_and_launch(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -1135,6 +1506,7 @@ async fn switch_hybrid_account_and_launch(
     relay_account_id: String,
     workspace_path: Option<String>,
     launch_codex: Option<bool>,
+    use_model_router: Option<bool>,
     restart_editors_on_switch: Option<bool>,
     restart_editor_targets: Option<Vec<EditorAppId>>,
 ) -> Result<SwitchAccountResult, String> {
@@ -1156,13 +1528,9 @@ async fn switch_hybrid_account_and_launch(
         return Err("混合模式需要选择一个 ChatGPT 官方账号。".to_string());
     }
     if auth::auth_tokens_need_refresh(&chatgpt_account.auth_json) {
-        let _ = refresh_chatgpt_account_before_switch(
-            &app,
-            state.inner(),
-            &chatgpt_account_id,
-            false,
-        )
-        .await?;
+        let _ =
+            refresh_chatgpt_account_before_switch(&app, state.inner(), &chatgpt_account_id, false)
+                .await?;
     }
 
     let should_restart_editors =
@@ -1170,12 +1538,27 @@ async fn switch_hybrid_account_and_launch(
     let effective_restart_targets =
         restart_editor_targets.unwrap_or_else(|| store.settings.restart_editor_targets.clone());
     let configured_codex_launch_path = store.settings.codex_launch_path.clone();
+    let disable_gpu_acceleration = store.settings.codex_disable_gpu_acceleration;
     let should_launch_codex = launch_codex.unwrap_or(true);
+    let should_use_model_router = use_model_router.unwrap_or(false);
     let relay_account;
     {
         let _guard = state.store_lock.lock().await;
         let mut latest_store = store::load_store(&app)?;
-        let store_path = store::account_store_path_from_data_dir(&app_paths::app_data_dir(&app)?);
+        let router_context = if should_use_model_router {
+            if !latest_store.settings.model_router_enabled {
+                profile_files::create_active_codex_profile_backup(
+                    &model_router_backup_dir(&app)?,
+                    &model_router_backup_state(&latest_store.settings),
+                )?;
+            }
+            Some(model_router::ensure_model_router_for_store(state.inner(), &latest_store).await?)
+        } else {
+            disable_model_router_mode_for_store(&app, state.inner(), &mut latest_store, None)
+                .await?;
+            None
+        };
+        let store_path = store::account_store_path_for_app(&app)?;
         let chatgpt_index = latest_store
             .accounts
             .iter()
@@ -1205,14 +1588,24 @@ async fn switch_hybrid_account_and_launch(
         }
         let stored_chatgpt = latest_store.accounts[chatgpt_index].clone();
         let stored_relay = latest_store.accounts[relay_index].clone();
-        let hybrid_proxy_base_url =
-            hybrid_relay_proxy::ensure_hybrid_relay_proxy_for_account(state.inner(), &stored_relay)
-                .await?;
-        profile_files::apply_hybrid_account_profile_with_provider_base_url(
-            &stored_chatgpt,
-            &stored_relay,
-            &hybrid_proxy_base_url,
-        )?;
+        if let Some((router_base_url, router_entries)) = router_context.as_ref() {
+            let mut router_relay = stored_relay.clone();
+            if let Some(first_model) = router_entries
+                .iter()
+                .find(|entry| entry.enabled && !entry.model.trim().is_empty())
+                .map(|entry| entry.model.clone())
+            {
+                router_relay.model_name = Some(first_model);
+            }
+            profile_files::apply_hybrid_account_profile_with_provider_base_url_and_catalog_entries(
+                &stored_chatgpt,
+                &router_relay,
+                router_base_url,
+                router_entries,
+            )?;
+        } else {
+            profile_files::apply_hybrid_account_profile(&stored_chatgpt, &stored_relay)?;
+        }
 
         let thread_provider_backup_dir = app_paths::codex_state_provider_backup_dir()?;
         let provider_id = profile_files::relay_provider_id_for_account(&stored_relay)
@@ -1224,14 +1617,20 @@ async fn switch_hybrid_account_and_launch(
         if synced_thread_count > 0 {
             log::info!("混合模式已同步 {synced_thread_count} 条 Codex 线程 provider");
         }
-        settings_service::apply_active_codex_context_window_setting(
-            latest_store.settings.codex_context_window_k,
+        profile_files::apply_model_instructions_fix_setting(
+            latest_store
+                .settings
+                .codex_model_instructions_fix_enabled,
         )?;
         latest_store.settings.active_account_id = Some(stored_relay.id.clone());
         latest_store.settings.active_hybrid_profile = Some(models::ActiveHybridProfile {
             chatgpt_account_id: stored_chatgpt.id.clone(),
             relay_account_id: stored_relay.id.clone(),
         });
+        latest_store.settings.model_router_enabled = should_use_model_router;
+        if should_use_model_router {
+            latest_store.settings.model_router_account_id = Some(stored_relay.id.clone());
+        }
         relay_account = stored_relay;
         store::save_store(&app, &latest_store)?;
     }
@@ -1257,13 +1656,28 @@ async fn switch_hybrid_account_and_launch(
         });
     }
 
-    force_stop_running_codex();
+    let stopped_codex_before_prepare =
+        stop_running_codex_before_multi_model_prepare(&app, configured_codex_launch_path.as_deref());
+    let configured_codex_launch_path =
+        prepare_codex_launch_path_for_current_settings(&app, configured_codex_launch_path)?;
+    let multi_model_launch = is_codex_multi_model_mode_enabled(&app);
+
+    if !stopped_codex_before_prepare {
+        force_stop_running_codex(configured_codex_launch_path.as_deref(), multi_model_launch);
+    }
 
     let mut app_launch_error = None;
-    if let Some(path) = cli::find_configured_codex_app_path(configured_codex_launch_path.as_deref())
-        .or_else(cli::find_codex_app_path)
+    let configured_app_path =
+        cli::find_configured_codex_app_path(configured_codex_launch_path.as_deref());
+    if let Some(path) = configured_app_path
+        .clone()
+        .or_else(|| (!multi_model_launch).then(cli::find_codex_app_path).flatten())
     {
-        match launch_codex_app(&path, workspace_path.as_deref()) {
+        match launch_codex_app(
+            &path,
+            workspace_path.as_deref(),
+            disable_gpu_acceleration,
+        ) {
             Ok(()) => {
                 return Ok(SwitchAccountResult {
                     account_id: relay_account.account_id,
@@ -1284,8 +1698,15 @@ async fn switch_hybrid_account_and_launch(
         }
     }
 
+    if multi_model_launch {
+        return Err(app_launch_error.unwrap_or_else(|| {
+            "多模型模式只允许启动受控 Codex 副本，但当前受控启动路径不可用。请在设置中重置后重新开启多模型模式。".to_string()
+        }));
+    }
+
     #[cfg(target_os = "windows")]
     if cli::has_windows_store_codex_app() {
+        app_paths::apply_codex_home_process_env()?;
         match cli::launch_windows_store_codex() {
             Ok(()) => {
                 return Ok(SwitchAccountResult {
@@ -1313,6 +1734,7 @@ async fn switch_hybrid_account_and_launch(
     }
 
     let mut cmd = cli::new_codex_command(configured_codex_launch_path.as_deref())?;
+    app_paths::apply_codex_home_env(&mut cmd)?;
     cmd.arg("app");
     if let Some(workspace) = workspace_path.as_deref() {
         cmd.arg(workspace);
@@ -1340,10 +1762,196 @@ async fn switch_hybrid_account_and_launch(
     })
 }
 
-fn launch_codex_app(path: &std::path::Path, workspace_path: Option<&str>) -> Result<(), String> {
+#[tauri::command]
+async fn launch_current_codex_config(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    workspace_path: Option<String>,
+    restart_editors_on_switch: Option<bool>,
+    restart_editor_targets: Option<Vec<EditorAppId>>,
+) -> Result<SwitchAccountResult, String> {
+    let (
+        configured_codex_launch_path,
+        account_id,
+        should_restart_editors,
+        restart_targets,
+        disable_gpu_acceleration,
+    ) = {
+        let _guard = state.store_lock.lock().await;
+        let mut latest_store = store::load_store(&app)?;
+        if !latest_store.settings.model_router_enabled {
+            return Err("请先开启路由模式。".to_string());
+        }
+        let router_account_id = latest_store.settings.model_router_account_id.clone();
+        let stored_account_id = apply_relay_model_router_profile_for_store(
+            &app,
+            state.inner(),
+            &mut latest_store,
+            router_account_id,
+            false,
+        )
+        .await?;
+        let account_id = latest_store
+            .accounts
+            .iter()
+            .find(|account| account.id == stored_account_id)
+            .map(|account| account.account_id.clone())
+            .ok_or_else(|| "找不到路由模式默认 API 条目。".to_string())?;
+        let configured_codex_launch_path = latest_store.settings.codex_launch_path.clone();
+        let should_restart_editors =
+            restart_editors_on_switch.unwrap_or(latest_store.settings.restart_editors_on_switch);
+        let restart_targets = restart_editor_targets
+            .unwrap_or_else(|| latest_store.settings.restart_editor_targets.clone());
+        let disable_gpu_acceleration = latest_store.settings.codex_disable_gpu_acceleration;
+        store::save_store(&app, &latest_store)?;
+        (
+            configured_codex_launch_path,
+            account_id,
+            should_restart_editors,
+            restart_targets,
+            disable_gpu_acceleration,
+        )
+    };
+    let _ = tray::refresh_macos_tray_snapshot(&app);
+
+    let (restarted_editor_apps, editor_restart_error) = if should_restart_editors {
+        editor_apps::restart_selected_editor_apps(&restart_targets)
+    } else {
+        (Vec::new(), None)
+    };
+
+    let stopped_codex_before_prepare =
+        stop_running_codex_before_multi_model_prepare(&app, configured_codex_launch_path.as_deref());
+    let configured_codex_launch_path =
+        prepare_codex_launch_path_for_current_settings(&app, configured_codex_launch_path)?;
+    let multi_model_launch = is_codex_multi_model_mode_enabled(&app);
+
+    let launch_result = launch_codex_using_current_config(
+        configured_codex_launch_path.as_deref(),
+        workspace_path.as_deref(),
+        multi_model_launch,
+        disable_gpu_acceleration,
+        stopped_codex_before_prepare,
+    )
+    .await?;
+
+    Ok(SwitchAccountResult {
+        account_id,
+        launched_app_path: launch_result.launched_app_path,
+        used_fallback_cli: launch_result.used_fallback_cli,
+        opencode_synced: false,
+        opencode_sync_error: None,
+        opencode_desktop_restarted: false,
+        opencode_desktop_restart_error: None,
+        restarted_editor_apps,
+        editor_restart_error,
+    })
+}
+
+async fn launch_codex_using_current_config(
+    configured_codex_launch_path: Option<&str>,
+    workspace_path: Option<&str>,
+    multi_model_launch: bool,
+    disable_gpu_acceleration: bool,
+    already_stopped_codex: bool,
+) -> Result<CodexLaunchOutcome, String> {
+    if !already_stopped_codex {
+        force_stop_running_codex(configured_codex_launch_path, multi_model_launch);
+    }
+
+    let mut app_launch_error = None;
+    let configured_app_path = cli::find_configured_codex_app_path(configured_codex_launch_path);
+    if let Some(path) = configured_app_path
+        .clone()
+        .or_else(|| (!multi_model_launch).then(cli::find_codex_app_path).flatten())
+    {
+        match launch_codex_app(&path, workspace_path, disable_gpu_acceleration) {
+            Ok(()) => {
+                return Ok(CodexLaunchOutcome {
+                    launched_app_path: Some(path.to_string_lossy().to_string()),
+                    used_fallback_cli: false,
+                });
+            }
+            Err(error) => {
+                log::warn!("通过 Codex 应用路径启动失败 {}: {}", path.display(), error);
+                app_launch_error = Some(error);
+            }
+        }
+    }
+
+    if multi_model_launch {
+        return Err(app_launch_error.unwrap_or_else(|| {
+            "多模型模式只允许启动受控 Codex 副本，但当前受控启动路径不可用。请在设置中重置后重新开启多模型模式。".to_string()
+        }));
+    }
+
+    #[cfg(target_os = "windows")]
+    if cli::has_windows_store_codex_app() {
+        app_paths::apply_codex_home_process_env()?;
+        match cli::launch_windows_store_codex() {
+            Ok(()) => {
+                return Ok(CodexLaunchOutcome {
+                    launched_app_path: None,
+                    used_fallback_cli: false,
+                });
+            }
+            Err(error) => {
+                log::warn!("通过 Windows Store AUMID 启动 Codex 失败: {error}");
+                app_launch_error = Some(match app_launch_error {
+                    Some(previous_error) => {
+                        format!("{previous_error}；且通过 Windows Store AUMID 启动失败: {error}")
+                    }
+                    None => format!("通过 Windows Store AUMID 启动失败: {error}"),
+                });
+            }
+        }
+    }
+
+    launch_codex_cli_app(
+        configured_codex_launch_path,
+        workspace_path,
+        app_launch_error.as_deref(),
+    )?;
+
+    Ok(CodexLaunchOutcome {
+        launched_app_path: None,
+        used_fallback_cli: true,
+    })
+}
+
+fn launch_codex_cli_app(
+    configured_codex_launch_path: Option<&str>,
+    workspace_path: Option<&str>,
+    app_launch_error: Option<&str>,
+) -> Result<(), String> {
+    let mut cmd = cli::new_codex_command(configured_codex_launch_path)?;
+    app_paths::apply_codex_home_env(&mut cmd)?;
+    cmd.arg("app");
+    if let Some(workspace) = workspace_path {
+        cmd.arg(workspace);
+    }
+    cmd.spawn().map_err(|e| {
+        if let Some(app_launch_error) = app_launch_error {
+            format!(
+                "通过 Codex 应用路径启动失败: {app_launch_error}；且通过 codex app 启动失败: {e}"
+            )
+        } else {
+            format!("未检测到本地 Codex 应用，且通过 codex app 启动失败: {e}")
+        }
+    })?;
+    Ok(())
+}
+
+fn launch_codex_app(
+    path: &std::path::Path,
+    workspace_path: Option<&str>,
+    disable_gpu_acceleration: bool,
+) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
+        let _ = disable_gpu_acceleration;
         let mut cmd = Command::new("open");
+        app_paths::apply_codex_home_env(&mut cmd)?;
         cmd.arg("-na").arg(path);
         if let Some(workspace) = workspace_path {
             cmd.arg(workspace);
@@ -1360,11 +1968,19 @@ fn launch_codex_app(path: &std::path::Path, workspace_path: Option<&str>) -> Res
     #[cfg(target_os = "windows")]
     {
         if cli::is_windows_store_codex_path(path) {
-            let _ = workspace_path;
-            return cli::launch_windows_store_codex();
+            let arguments = workspace_path
+                .map(|workspace| vec![workspace.to_string()])
+                .unwrap_or_default();
+            app_paths::apply_codex_home_process_env()?;
+            return cli::launch_windows_store_codex_with_args(&arguments);
         }
 
         let mut cmd = new_background_command(path);
+        app_paths::apply_codex_home_env(&mut cmd)?;
+        apply_codex_desktop_user_data_env(&mut cmd);
+        if disable_gpu_acceleration {
+            cmd.arg("--disable-gpu");
+        }
         if let Some(workspace) = workspace_path {
             cmd.arg(workspace);
         }
@@ -1375,7 +1991,9 @@ fn launch_codex_app(path: &std::path::Path, workspace_path: Option<&str>) -> Res
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
+        let _ = disable_gpu_acceleration;
         let mut cmd = Command::new(path);
+        app_paths::apply_codex_home_env(&mut cmd)?;
         if let Some(workspace) = workspace_path {
             cmd.arg(workspace);
         }
@@ -1388,7 +2006,24 @@ fn launch_codex_app(path: &std::path::Path, workspace_path: Option<&str>) -> Res
     {
         let _ = path;
         let _ = workspace_path;
+        let _ = disable_gpu_acceleration;
         Err("当前平台暂不支持直接启动 Codex 应用".to_string())
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn apply_codex_desktop_user_data_env(command: &mut std::process::Command) {
+    if std::env::var_os("CODEX_ELECTRON_USER_DATA_PATH").is_some()
+        || std::env::var_os("CODEX_COMMAND_DESKTOP_USER_DATA_DIR").is_some()
+    {
+        return;
+    }
+
+    if let Some(app_data) = std::env::var_os("APPDATA") {
+        command.env(
+            "CODEX_ELECTRON_USER_DATA_PATH",
+            PathBuf::from(app_data).join("Codex"),
+        );
     }
 }
 
@@ -1434,9 +2069,8 @@ async fn refresh_chatgpt_account_before_switch(
 
             if should_block_refresh {
                 let blocked_message = "授权过期，请重新登录授权。";
-                match app_paths::app_data_dir(app) {
-                    Ok(data_dir) => {
-                        let store_path = store::account_store_path_from_data_dir(&data_dir);
+                match store::account_store_path_for_app(app) {
+                    Ok(store_path) => {
                         let _store_guard = state.store_lock.lock().await;
                         if let Err(persist_error) =
                             store::update_account_group_refresh_state_in_path(
@@ -1453,7 +2087,7 @@ async fn refresh_chatgpt_account_before_switch(
                         }
                     }
                     Err(path_error) => {
-                        log::warn!("切换失败后获取应用数据目录失败: {path_error}");
+                        log::warn!("切换失败后获取账号存储路径失败: {path_error}");
                     }
                 }
             }
@@ -1480,7 +2114,7 @@ async fn refresh_chatgpt_account_before_switch(
     stored_account.auth_refresh_next_at = auth::auth_refresh_next_at(&stored_account.auth_json);
     clear_stale_auth_usage_error(stored_account);
     profile_files::sync_account_profile_in_store_path(
-        &store::account_store_path_from_data_dir(&app_paths::app_data_dir(app)?),
+        &store::account_store_path_for_app(app)?,
         stored_account,
     )?;
     account = stored_account.clone();
@@ -1528,20 +2162,28 @@ fn is_auth_related_usage_error(message: &str) -> bool {
         || normalized.contains("token is expired")
 }
 
-fn force_stop_running_codex() {
+fn force_stop_running_codex(
+    configured_codex_launch_path: Option<&str>,
+    only_configured_install: bool,
+) {
     #[cfg(target_os = "macos")]
     {
-        let _ = Command::new("pkill").args(["-9", "-x", "Codex"]).status();
-        let _ = Command::new("pkill")
-            .args(["-9", "-x", "Codex Desktop"])
-            .status();
+        if let Some(app_root) = cli::configured_codex_app_install_root(configured_codex_launch_path) {
+            let app_name = app_root
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("Codex")
+                .to_string();
+            let _ = Command::new("pkill").args(["-9", "-x", &app_name]).status();
+        }
     }
 
     #[cfg(target_os = "windows")]
     {
-        let _ = new_background_command("taskkill")
-            .args(["/F", "/IM", "Codex.exe", "/T"])
-            .status();
+        cli::stop_running_windows_codex_processes(
+            configured_codex_launch_path,
+            only_configured_install,
+        );
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -1585,6 +2227,7 @@ pub(crate) fn restore_main_window(app: &AppHandle) {
 
 fn start_auth_keepalive_loop(app: AppHandle) {
     tauri::async_runtime::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(AUTH_KEEPALIVE_INITIAL_DELAY_SECS)).await;
         loop {
             let state = app.state::<AppState>();
             match account_service::refresh_all_usage_internal(&app, state.inner(), true).await {
@@ -1600,73 +2243,21 @@ fn start_auth_keepalive_loop(app: AppHandle) {
     });
 }
 
-async fn restore_hybrid_relay_profile_on_startup(app: &AppHandle) -> Result<(), String> {
-    let state = app.state::<AppState>();
-    let active_profile = {
+async fn run_startup_maintenance_internal(
+    app: &AppHandle,
+    state: &AppState,
+) -> Result<Vec<AccountSummary>, String> {
+    {
         let _guard = state.store_lock.lock().await;
-        let store = store::load_store(app)?;
-        let active_account_id = store.settings.active_account_id.clone();
-        let Some(active_relay_id) = active_account_id else {
-            return Ok(());
-        };
-        let Some(active_relay_account) = store
-            .accounts
-            .iter()
-            .find(|account| {
-                account.id == active_relay_id
-                    && matches!(account.source_kind, models::AccountSourceKind::Relay)
-            })
-            .cloned()
-        else {
-            return Ok(());
-        };
-
-        if let Some(hybrid) = store.settings.active_hybrid_profile.as_ref() {
-            if hybrid.relay_account_id == active_relay_account.id {
-                let chatgpt_account = store
-                    .accounts
-                    .iter()
-                    .find(|account| {
-                        account.id == hybrid.chatgpt_account_id
-                            && matches!(account.source_kind, models::AccountSourceKind::Chatgpt)
-                    })
-                    .cloned()
-                    .ok_or_else(|| "启动时找不到混合模式的 ChatGPT 官方账号".to_string())?;
-                let relay_account = store
-                    .accounts
-                    .iter()
-                    .find(|account| {
-                        account.id == hybrid.relay_account_id
-                            && matches!(account.source_kind, models::AccountSourceKind::Relay)
-                    })
-                    .cloned()
-                    .ok_or_else(|| "启动时找不到混合模式的 API 条目".to_string())?;
-                Some((Some(chatgpt_account), relay_account))
-            } else {
-                Some((None, active_relay_account))
-            }
-        } else {
-            Some((None, active_relay_account))
+        if let Err(err) = store::sync_current_auth_account_on_startup(app) {
+            log::warn!("启动后同步当前本机登录账号失败: {err}");
         }
-    };
-
-    let Some((chatgpt_account, relay_account)) = active_profile else {
-        return Ok(());
-    };
-    if let Some(chatgpt_account) = chatgpt_account {
-        let local_base_url = hybrid_relay_proxy::ensure_hybrid_relay_proxy_for_account(
-            state.inner(),
-            &relay_account,
-        )
-        .await?;
-        profile_files::apply_hybrid_account_profile_with_provider_base_url(
-            &chatgpt_account,
-            &relay_account,
-            &local_base_url,
-        )
-    } else {
-        profile_files::apply_account_profile(&relay_account)
+        if let Err(err) = settings_service::reconcile_startup_settings(app) {
+            log::warn!("启动后校准设置失败: {err}");
+        }
     }
+
+    account_service::list_accounts_internal(app, state).await
 }
 
 fn apply_main_window_chrome(app: &AppHandle) {
@@ -1725,48 +2316,34 @@ pub fn run() {
                 )?;
             }
 
-            if let Err(err) = settings_service::sync_autostart_from_store(app.handle()) {
-                log::warn!("启动时同步开机启动状态失败: {err}");
-            }
-            // 启动阶段先同步当前本机登录账号，再初始化状态栏，保证首次展示即一致。
-            store::sync_current_auth_account_on_startup(app.handle())?;
-            let account_store_path =
-                store::account_store_path_from_data_dir(&app_paths::app_data_dir(app.handle())?);
-            match store::sync_relay_account_profiles_on_startup_in_path(&account_store_path, false)
-            {
-                Ok(count) if count > 0 => {
-                    log::info!("启动时已同步 {count} 个 API profile");
-                }
-                Ok(_) => {}
-                Err(err) => {
-                    log::warn!("启动时同步 API profile 失败: {err}");
-                }
-            }
-            let setup_app_handle = app.handle().clone();
+            tray::setup_system_tray(app.handle())?;
+            let app_handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {
-                if let Err(err) = restore_hybrid_relay_profile_on_startup(&setup_app_handle).await {
-                    log::warn!("启动时恢复混合模式本地代理失败: {err}");
+                if let Err(err) = settings_service::sync_autostart_from_store(&app_handle) {
+                    log::warn!("启动后同步开机启动状态失败: {err}");
+                }
+                match app_paths::codex_state_provider_backup_dir().and_then(|backup_dir| {
+                    session_provider_sync::cleanup_codex_state_provider_backups(&backup_dir)
+                }) {
+                    Ok(removed) if removed > 0 => {
+                        log::info!("启动后已清理 {removed} 个旧 Codex 线程 provider 备份");
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        log::warn!("启动后清理 Codex 线程 provider 备份失败: {err}");
+                    }
                 }
             });
-            tray::setup_system_tray(app.handle())?;
-            match app_paths::codex_state_provider_backup_dir().and_then(|backup_dir| {
-                session_provider_sync::cleanup_codex_state_provider_backups(&backup_dir)
-            }) {
-                Ok(removed) if removed > 0 => {
-                    log::info!("启动时已清理 {removed} 个旧 Codex 线程 provider 备份");
-                }
-                Ok(_) => {}
-                Err(err) => {
-                    log::warn!("启动时清理 Codex 线程 provider 备份失败: {err}");
-                }
-            }
             start_auth_keepalive_loop(app.handle().clone());
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
             list_accounts,
             import_current_auth_account,
+            run_startup_maintenance,
             create_api_account,
+            probe_api_models,
+            probe_api_account_models,
             import_auth_json_accounts,
             export_accounts_zip,
             delete_account,
@@ -1782,6 +2359,8 @@ pub fn run() {
             get_codex_token_usage,
             get_app_settings,
             update_app_settings,
+            enable_codex_multi_model_mode,
+            reset_codex_multi_model_mode,
             test_notification_target,
             test_notification_provider,
             test_aggregate_notification,
@@ -1794,6 +2373,8 @@ pub fn run() {
             prepare_oauth_login,
             complete_oauth_callback_login,
             cancel_oauth_login,
+            set_model_router_mode,
+            launch_current_codex_config,
             switch_account_and_launch,
             switch_hybrid_account_and_launch
         ])

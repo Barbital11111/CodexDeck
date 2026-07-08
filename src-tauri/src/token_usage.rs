@@ -105,8 +105,8 @@ fn token_usage_cache_path() -> Result<PathBuf, String> {
 fn app_data_dir_without_tauri_handle() -> Result<PathBuf, String> {
     #[cfg(debug_assertions)]
     {
-        if let Some(path) = env_path("CODEX_SWITCH_DEV_DATA_DIR")
-            .or_else(|| env_path("CODEX_TOOLS_DEV_DATA_DIR"))
+        if let Some(path) =
+            env_path("CODEX_SWITCH_DEV_DATA_DIR").or_else(|| env_path("CODEX_TOOLS_DEV_DATA_DIR"))
         {
             return Ok(path);
         }
