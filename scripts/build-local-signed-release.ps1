@@ -149,7 +149,7 @@ function Invoke-TauriSigner {
 
   try {
     $env:TAURI_SIGNING_PRIVATE_KEY = $PrivateKey
-    if ($null -ne $Password) {
+    if (-not [string]::IsNullOrEmpty($Password)) {
       $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $Password
     }
 
@@ -279,10 +279,11 @@ function Invoke-TauriBuild {
 
   if (-not $completedByArtifacts) {
     $process.WaitForExit()
-    if ($process.ExitCode -ne 0) {
+    $exitCode = $process.ExitCode
+    if ($null -ne $exitCode -and -not [string]::IsNullOrWhiteSpace([string]$exitCode) -and $exitCode -ne 0) {
       Write-LogTail -Path $stdoutLog
       Write-LogTail -Path $stderrLog
-      throw "tauri build failed with exit code: $($process.ExitCode)"
+      throw "tauri build failed with exit code: $exitCode"
     }
   }
 
