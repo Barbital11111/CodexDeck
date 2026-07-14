@@ -27,7 +27,9 @@ use windows::Win32::UI::Shell::{
 };
 
 const INVALID_CONFIGURED_CODEX_PATH_MESSAGE: &str =
-    "设置的 Codex 启动路径无效。请填写 Codex.exe 或 codex/codex.exe 的完整路径，或填写包含它们的安装目录。";
+    "设置的 Codex 启动路径无效。请填写 ChatGPT.exe、Codex.exe 或 codex/codex.exe 的完整路径，或填写包含它们的安装目录。";
+#[cfg(target_os = "windows")]
+const WINDOWS_CODEX_APP_FILE_NAMES: [&str; 3] = ["ChatGPT.exe", "Codex.exe", "Codex Desktop.exe"];
 #[cfg(target_os = "windows")]
 const WINDOWS_STORE_LAUNCH_TIMEOUT_MS: u64 = 8_000;
 #[cfg(target_os = "windows")]
@@ -204,7 +206,7 @@ $prefixes = @('__PREFIXES__')
 $codexHome = '__CODEX_HOME__'
 $killGlobalCodex = '__KILL_GLOBAL_CODEX__' -eq 'true'
 Get-CimInstance Win32_Process |
-  Where-Object { $_.Name -in @('Codex.exe','Codex Desktop.exe','codex.exe') -and $_.ExecutablePath } |
+  Where-Object { $_.Name -in @('ChatGPT.exe','Codex.exe','Codex Desktop.exe','codex.exe') -and $_.ExecutablePath } |
   Where-Object {
     $path = $_.ExecutablePath.Replace('/','\').ToLowerInvariant()
     if ($killGlobalCodex -and $path -like '*\windowsapps\openai.codex_*') { return $true }
@@ -222,7 +224,7 @@ do {
   Start-Sleep -Milliseconds 150
   $stillRunning = @(
     Get-CimInstance Win32_Process |
-      Where-Object { $_.Name -in @('Codex.exe','Codex Desktop.exe','codex.exe') -and $_.ExecutablePath } |
+      Where-Object { $_.Name -in @('ChatGPT.exe','Codex.exe','Codex Desktop.exe','codex.exe') -and $_.ExecutablePath } |
       Where-Object {
         $path = $_.ExecutablePath.Replace('/','\').ToLowerInvariant()
         if ($killGlobalCodex -and $path -like '*\windowsapps\openai.codex_*') { return $true }
@@ -249,9 +251,16 @@ do {
         .replace("'__PREFIXES__'", &prefix_literal)
         .replace(
             "__KILL_GLOBAL_CODEX__",
-            if only_configured_install { "false" } else { "true" },
+            if only_configured_install {
+                "false"
+            } else {
+                "true"
+            },
         )
-        .replace("__CODEX_HOME__", &escape_powershell_single_quoted(&codex_home));
+        .replace(
+            "__CODEX_HOME__",
+            &escape_powershell_single_quoted(&codex_home),
+        );
 
     let _ = new_background_command("powershell")
         .args([
@@ -269,7 +278,9 @@ pub(crate) fn find_codex_app_path() -> Option<PathBuf> {
     #[cfg(target_os = "windows")]
     {
         static CODEX_APP_PATH: OnceLock<Option<PathBuf>> = OnceLock::new();
-        return CODEX_APP_PATH.get_or_init(find_windows_codex_app_path).clone();
+        return CODEX_APP_PATH
+            .get_or_init(find_windows_codex_app_path)
+            .clone();
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -335,6 +346,7 @@ fn cached_windows_codex_store_app_id() -> Option<String> {
 fn find_codex_cli_path() -> Option<PathBuf> {
     let mut candidates = codex_cli_candidates();
     append_nvm_codex_candidates(&mut candidates);
+    append_windows_desktop_codex_cli_candidates(&mut candidates);
     append_macos_app_bundle_codex_candidates(&mut candidates);
 
     let mut seen = HashSet::new();
@@ -421,7 +433,8 @@ fn codex_cli_candidates() -> Vec<PathBuf> {
         #[cfg(target_os = "windows")]
         append_windows_openai_codex_cli_candidates(
             &mut candidates,
-            &home.join("AppData")
+            &home
+                .join("AppData")
                 .join("Local")
                 .join("OpenAI")
                 .join("Codex")
@@ -472,26 +485,34 @@ fn codex_cli_candidates() -> Vec<PathBuf> {
 
 #[cfg(target_os = "windows")]
 fn find_windows_codex_app_path() -> Option<PathBuf> {
-    let mut candidates = Vec::new();
+    let mut trusted_candidates = Vec::new();
 
     if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
         append_windows_codex_app_candidates_from_dir(
-            &mut candidates,
-            &local_app_data.join("Microsoft").join("WindowsApps"),
-        );
-        append_windows_codex_app_candidates_from_dir(
-            &mut candidates,
+            &mut trusted_candidates,
             &local_app_data.join("Programs").join("Codex"),
         );
         append_windows_codex_app_candidates_from_dir(
-            &mut candidates,
+            &mut trusted_candidates,
             &local_app_data.join("Programs").join("OpenAI Codex"),
         );
     }
 
+    append_windows_store_package_candidates(&mut trusted_candidates);
+    if let Some(path) = first_executable_candidate(trusted_candidates) {
+        return Some(path);
+    }
+
+    let mut discovered_candidates = Vec::new();
+    if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+        append_windows_codex_app_candidates_from_dir(
+            &mut discovered_candidates,
+            &local_app_data.join("Microsoft").join("WindowsApps"),
+        );
+    }
     if let Some(home) = dirs::home_dir() {
         append_windows_codex_app_candidates_from_dir(
-            &mut candidates,
+            &mut discovered_candidates,
             &home
                 .join("AppData")
                 .join("Local")
@@ -500,10 +521,9 @@ fn find_windows_codex_app_path() -> Option<PathBuf> {
         );
     }
 
-    append_windows_store_package_candidates(&mut candidates);
-    append_where_matches(&mut candidates, &["Codex.exe", "Codex Desktop.exe"]);
+    append_where_matches(&mut discovered_candidates, &WINDOWS_CODEX_APP_FILE_NAMES);
 
-    first_executable_candidate(candidates)
+    first_auto_discovered_executable_candidate(discovered_candidates)
 }
 
 #[cfg(target_os = "windows")]
@@ -562,6 +582,10 @@ fn append_configured_codex_candidates(candidates: &mut Vec<PathBuf>, configured_
         if is_codex_cli_file(configured_path) {
             candidates.push(configured_path.to_path_buf());
         }
+        #[cfg(target_os = "windows")]
+        if is_windows_codex_app_file(configured_path) {
+            append_windows_codex_cli_candidates_from_app_executable(candidates, configured_path);
+        }
         return;
     }
 
@@ -571,6 +595,16 @@ fn append_configured_codex_candidates(candidates: &mut Vec<PathBuf>, configured_
         search_dirs.push(configured_path.join("bin"));
         search_dirs.push(configured_path.join("resources"));
         search_dirs.push(configured_path.join("resources").join("bin"));
+        #[cfg(target_os = "windows")]
+        {
+            search_dirs.push(configured_path.join("app").join("resources"));
+            search_dirs.push(
+                configured_path
+                    .join("current")
+                    .join("app")
+                    .join("resources"),
+            );
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -586,6 +620,41 @@ fn append_configured_codex_candidates(candidates: &mut Vec<PathBuf>, configured_
     for dir in search_dirs {
         push_codex_candidates_from_dir(candidates, &dir);
     }
+}
+
+#[cfg(target_os = "windows")]
+fn append_windows_desktop_codex_cli_candidates(candidates: &mut Vec<PathBuf>) {
+    if let Some(app_executable) = find_codex_app_path() {
+        append_windows_codex_cli_candidates_from_app_executable(candidates, &app_executable);
+    }
+
+    let Ok(workspace) = crate::codex_multimodel::workspace_dir() else {
+        return;
+    };
+    for generation in ["current", "previous"] {
+        push_codex_candidates_from_dir(
+            candidates,
+            &workspace
+                .join("controlled-codex")
+                .join(generation)
+                .join("app")
+                .join("resources"),
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn append_windows_desktop_codex_cli_candidates(_candidates: &mut Vec<PathBuf>) {}
+
+#[cfg(target_os = "windows")]
+fn append_windows_codex_cli_candidates_from_app_executable(
+    candidates: &mut Vec<PathBuf>,
+    app_executable: &Path,
+) {
+    let Some(app_root) = app_executable.parent() else {
+        return;
+    };
+    push_codex_candidates_from_dir(candidates, &app_root.join("resources"));
 }
 
 #[cfg(target_os = "macos")]
@@ -634,7 +703,7 @@ fn append_windows_store_package_candidates(candidates: &mut Vec<PathBuf>) {
             }
 
             let package_name = entry.file_name().to_string_lossy().to_ascii_lowercase();
-            if !package_name.contains("codex") {
+            if !package_name.starts_with("openai.codex_") {
                 continue;
             }
 
@@ -820,7 +889,7 @@ fn wait_for_windows_store_codex_process(expected_pid: u32, baseline_pids: &[u32]
 #[cfg(target_os = "windows")]
 fn list_running_windows_codex_process_ids() -> Vec<u32> {
     let mut pids = Vec::new();
-    for image_name in ["Codex.exe", "Codex Desktop.exe"] {
+    for image_name in WINDOWS_CODEX_APP_FILE_NAMES {
         let filter = format!("IMAGENAME eq {image_name}");
         let Ok(output) = new_resolved_command("tasklist")
             .args(["/FO", "CSV", "/NH", "/FI", &filter])
@@ -912,7 +981,7 @@ impl Drop for WindowsComGuard {
 
 #[cfg(target_os = "windows")]
 fn append_windows_codex_app_candidates_from_dir(candidates: &mut Vec<PathBuf>, dir: &Path) {
-    for name in ["Codex.exe", "Codex Desktop.exe"] {
+    for name in WINDOWS_CODEX_APP_FILE_NAMES {
         candidates.push(dir.join(name));
     }
 }
@@ -965,6 +1034,48 @@ fn first_executable_candidate(candidates: Vec<PathBuf>) -> Option<PathBuf> {
     None
 }
 
+#[cfg(target_os = "windows")]
+fn first_auto_discovered_executable_candidate(candidates: Vec<PathBuf>) -> Option<PathBuf> {
+    let mut seen = HashSet::new();
+    for candidate in candidates {
+        if !seen.insert(candidate.clone()) {
+            continue;
+        }
+        if is_executable_file(&candidate)
+            && is_windows_codex_app_file(&candidate)
+            && is_trusted_auto_discovered_codex_app_file(&candidate)
+        {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn is_trusted_auto_discovered_codex_app_file(path: &Path) -> bool {
+    let is_chatgpt = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case("ChatGPT.exe"));
+    if !is_chatgpt {
+        return true;
+    }
+
+    is_windows_apps_codex_package_path(path)
+        || path
+            .parent()
+            .is_some_and(|parent| parent.join(".codexdeck-controlled.json").is_file())
+}
+
+#[cfg(target_os = "windows")]
+pub(crate) fn is_windows_apps_codex_package_path(path: &Path) -> bool {
+    let normalized = path
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
+    normalized.contains("\\windowsapps\\openai.codex_")
+}
+
 fn is_codex_cli_file(path: &Path) -> bool {
     let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
         return false;
@@ -987,11 +1098,14 @@ fn is_windows_codex_app_file(path: &Path) -> bool {
         return false;
     };
 
-    if !matches_ignore_ascii_case(file_name, &["codex.exe", "codex desktop.exe"]) {
+    if !matches_ignore_ascii_case(file_name, &WINDOWS_CODEX_APP_FILE_NAMES) {
         return false;
     }
 
-    let normalized_path = path.to_string_lossy().replace('/', "\\").to_ascii_lowercase();
+    let normalized_path = path
+        .to_string_lossy()
+        .replace('/', "\\")
+        .to_ascii_lowercase();
     if normalized_path.contains("\\winget\\links\\")
         || normalized_path.contains("\\shims\\")
         || normalized_path.contains("\\resources\\")
@@ -1066,4 +1180,131 @@ fn first_spotlight_match(query: &str) -> Option<PathBuf> {
         .filter(|line| !line.is_empty())
         .map(PathBuf::from)
         .find(|path| path.exists())
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod tests {
+    use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn temp_workspace(name: &str) -> PathBuf {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock before unix epoch")
+            .as_nanos();
+        env::temp_dir().join(format!(
+            "codexdeck-cli-{name}-{}-{nonce}",
+            std::process::id()
+        ))
+    }
+
+    fn write_fake_executable(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("create executable parent");
+        }
+        fs::write(path, b"test executable").expect("write executable fixture");
+    }
+
+    #[test]
+    fn configured_chatgpt_executable_is_accepted() {
+        let workspace = temp_workspace("chatgpt-file");
+        let chatgpt = workspace.join("ChatGPT.exe");
+        write_fake_executable(&chatgpt);
+
+        let actual = find_configured_codex_app_path_from_path(Some(&chatgpt));
+
+        assert_eq!(actual, Some(chatgpt));
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn auto_discovery_rejects_unidentified_chatgpt_executable() {
+        let workspace = temp_workspace("unidentified-chatgpt");
+        let chatgpt = workspace.join("ChatGPT.exe");
+        write_fake_executable(&chatgpt);
+
+        let actual = first_auto_discovered_executable_candidate(vec![chatgpt]);
+
+        assert_eq!(actual, None);
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn auto_discovery_accepts_controlled_chatgpt_executable() {
+        let workspace = temp_workspace("controlled-chatgpt");
+        let chatgpt = workspace.join("ChatGPT.exe");
+        write_fake_executable(&chatgpt);
+        fs::write(workspace.join(".codexdeck-controlled.json"), b"{}")
+            .expect("write controlled marker");
+
+        let actual = first_auto_discovered_executable_candidate(vec![chatgpt.clone()]);
+
+        assert_eq!(actual, Some(chatgpt));
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn windows_apps_codex_identity_requires_openai_codex_package() {
+        assert!(is_windows_apps_codex_package_path(Path::new(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_26.707.3748.0_x64__fixture\app\ChatGPT.exe"
+        )));
+        assert!(!is_windows_apps_codex_package_path(Path::new(
+            r"C:\Program Files\WindowsApps\OpenAI.ChatGPT_1.0.0.0_x64__fixture\app\ChatGPT.exe"
+        )));
+    }
+
+    #[test]
+    fn configured_directory_prefers_chatgpt_executable() {
+        let workspace = temp_workspace("chatgpt-preferred");
+        let chatgpt = workspace.join("ChatGPT.exe");
+        write_fake_executable(&workspace.join("Codex.exe"));
+        write_fake_executable(&chatgpt);
+
+        let actual = find_configured_codex_app_path_from_path(Some(&workspace));
+
+        assert_eq!(actual, Some(chatgpt));
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn controlled_root_resolves_chatgpt_from_app_directory() {
+        let workspace = temp_workspace("controlled-root");
+        let chatgpt = workspace.join("app").join("ChatGPT.exe");
+        write_fake_executable(&chatgpt);
+
+        let actual = find_configured_codex_app_path_from_path(Some(&workspace));
+
+        assert_eq!(actual, Some(chatgpt));
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn configured_chatgpt_executable_resolves_bundled_codex_cli() {
+        let workspace = temp_workspace("chatgpt-bundled-cli");
+        let chatgpt = workspace.join("ChatGPT.exe");
+        let bundled_cli = workspace.join("resources").join("codex.exe");
+        write_fake_executable(&chatgpt);
+        write_fake_executable(&bundled_cli);
+
+        let actual = find_configured_codex_cli_path(Some(&chatgpt));
+
+        assert_eq!(actual, Some(bundled_cli));
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn controlled_root_resolves_bundled_codex_cli() {
+        let workspace = temp_workspace("controlled-bundled-cli");
+        let bundled_cli = workspace
+            .join("current")
+            .join("app")
+            .join("resources")
+            .join("codex.exe");
+        write_fake_executable(&bundled_cli);
+
+        let actual = find_configured_codex_cli_path(Some(&workspace));
+
+        assert_eq!(actual, Some(bundled_cli));
+        let _ = fs::remove_dir_all(workspace);
+    }
 }

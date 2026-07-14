@@ -149,7 +149,7 @@ CodexDeck 切换账号时使用同一套修复方式：
 不使用下面这种规则：
 
 ```text
-https://gateway.example.invalid/v1 -> aihubmix
+https://gateway.example.invalid/v1 -> gateway
 https://example-gateway.invalid/v1  -> example-gateway
 ```
 

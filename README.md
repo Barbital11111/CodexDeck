@@ -12,6 +12,7 @@ CodexDeck 是一个基于 **React + Tauri** 的桌面工具，用来管理 Codex
 - 支持 API 余额显示、Sub2API/New API 额度查询和通知数据源配置。
 - 支持增强启动相关开关，用于补齐 API 登录时的部分 Codex 页面能力。
 - 支持 API 模型探测、菜单模型与实际请求模型分离、模型上下文窗口配置和本地模型路由模式。
+- 支持 Windows Codex Desktop 受控副本、多模型选择器与可选的 GPU 加速禁用启动。
 - 支持 classic / modern 两套 PC 端 UI 皮肤并行开发。
 - 不内置 Sub2API、远程控制 runtime、Android 端、cloudflared 或外部反代源码。
 
@@ -23,11 +24,17 @@ API Key:  <gateway-api-key>
 Model:    <model-name>
 ```
 
+## 下载与安装
+
+- Windows 安装包从 [GitHub Releases](https://github.com/Barbital11111/CodexDeck/releases/latest) 下载，可选择 NSIS `setup.exe` 或 MSI。
+- 正式版保留 Tauri updater；Release 同时提供签名文件与 `latest.json`，用于后续应用内更新。
+- 多模型模式需要本机已安装官方 Codex Desktop。CodexDeck 只复制并 patch 自己的受控副本，不修改 `WindowsApps` 中的官方文件。
+
 ## 本地开发
 
 ### 环境准备
 
-- Node.js 20+
+- Node.js 22
 - Rust stable
 - Windows 或 macOS
 
@@ -63,7 +70,7 @@ npm run dev
 ### API 与混合模式
 
 - 支持 OpenAI 兼容 `Base URL + API Key + Model` 配置。
-- 保存前会检测 `/responses` 兼容性。
+- 保存 API 配置时只写入本地；模型能力与额度由用户按需手动探测，避免保存操作被网络请求阻塞。
 - 支持预设供应商入口，包括 MiniMax、Xiaomi MiMo、Xiaomi MiMo Token Plan、DeepSeek、Z.AI GLM 和 Kimi。
 - 支持探测上游 `/models`，并在账号内维护模型目录；菜单模型 ID、显示名称、实际请求模型和上下文窗口可以分别编辑。
 - 上下文窗口在 UI 中使用 `256K`、`512K`、`1M` 这类格式展示，内部仍保存为 token 数。未知非 GPT 模型默认推荐 `256K`，GPT 系列不自动补写。
@@ -71,6 +78,15 @@ npm run dev
 - 混合模式会保留官方账号态，并通过 `experimental_bearer_token` 走指定 API 中转。
 - 切换账号时会同步 Codex 线程 provider，降低历史会话不可见风险。
 - 路由模式会在本机临时启动只监听 `127.0.0.1` 的模型路由，将多个 API 账号的已选模型聚合为一个 OpenAI 兼容入口；关闭或切换模式时会停止旧路由。
+
+### Codex 多模型模式
+
+- 使用受控 Codex 副本提供 Terra、Sol、Luna 模型切换，以及 `Low / Medium / High / Extra high / Max / ULTRA` 六档推理强度选择。
+- 启动时会校验官方 Codex 版本与现有受控副本；仅在来源或 patch 版本变化时重建，平时复用已验证副本。
+- Luna 的 `ULTRA` 保留统一的视觉档位，实际推理强度仍按 `Max` 发送。
+- 旧候选副本会避开正在运行的目录后清理；patch 备份和 provider 备份默认仅保留最近一份。
+
+![CodexDeck 多模型选择器](docs/assets/model-picker-v2.1.1.png)
 
 ### 额度与通知
 
@@ -83,7 +99,9 @@ npm run dev
 ### 启动与增强
 
 - 一键切换账号并启动 Codex。
+- 支持直接启动新版 `ChatGPT.exe` 以及旧版 `Codex.exe`，并避免把普通 ChatGPT 客户端误识别为 Codex。
 - 找不到桌面应用时自动回退到 `codex app`。
+- “禁用 Codex GPU 加速”会为 Windows 直接 exe 启动追加 `--disable-gpu`；不会把参数传给 `codex app` fallback 或 Windows Store/AUMID 启动。
 - 可选同步 Opencode OpenAI 授权。
 - 可选在切换后重启已选编辑器。
 - API 登录可启用增强启动，补齐部分官方账号态页面能力。
@@ -111,8 +129,12 @@ npm run dev
 
 ```bash
 npm run lint -- --max-warnings=0
+npx tsc --noEmit
+node --test scripts/tests/*.mjs
 npm run build
+cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo test --manifest-path src-tauri/Cargo.toml
+cargo check --manifest-path src-tauri/Cargo.toml --release
 ```
 
 发布前必须执行脱敏检查，确认没有本地路径、邮箱、token、API key、auth 文件、`.env`、运行时缓存、构建临时目录或私有服务配置泄露。

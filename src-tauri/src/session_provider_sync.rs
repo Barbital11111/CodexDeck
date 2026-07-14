@@ -8,6 +8,7 @@ use std::io::BufReader;
 use std::io::Seek;
 use std::io::SeekFrom;
 use std::io::Write;
+use std::path::Component;
 use std::path::Path;
 use std::path::PathBuf;
 use std::time::Duration;
@@ -28,8 +29,6 @@ const CODEX_GLOBAL_STATE_NAME: &str = ".codex-global-state.json";
 const CODEX_GLOBAL_STATE_BACKUP_NAME: &str = ".codex-global-state.json.bak";
 const CHATGPT_PROVIDER_ID: &str = "openai";
 const PROVIDER_SYNC_NAMESPACE: &str = "provider-sync";
-const PROVIDER_SYNC_BACKUP_PREFIX: &str = "state_5.sqlite.provider-sync-";
-const PROVIDER_SYNC_BACKUP_SUFFIX: &str = ".bak";
 const MANAGED_BACKUP_PREFIX: &str = "provider-sync-";
 const MAX_PROVIDER_SYNC_BACKUPS: usize = 1;
 const SQLITE_BUSY_TIMEOUT: Duration = Duration::from_secs(5);
@@ -1133,94 +1132,127 @@ fn create_provider_sync_backup(
     target_provider: &str,
     session_changes: &[SessionChange],
 ) -> Result<PathBuf, String> {
+    ensure_backup_root_has_no_link_like_ancestors(backup_root)?;
     fs::create_dir_all(backup_root).map_err(|error| {
         format!(
             "创建 Codex 线程备份目录失败 {}: {error}",
             backup_root.display()
         )
     })?;
-    let timestamp = current_timestamp_millis()?;
-    let backup_dir = backup_root.join(format!("{MANAGED_BACKUP_PREFIX}{timestamp}"));
-    let db_dir = backup_dir.join("db");
-    fs::create_dir_all(&db_dir).map_err(|error| {
-        format!(
-            "创建 Codex 线程数据库备份目录失败 {}: {error}",
-            db_dir.display()
+    ensure_backup_root_has_no_link_like_ancestors(backup_root)?;
+    let (timestamp, backup_dir) =
+        reserve_provider_backup_dir(backup_root, current_timestamp_millis()?)?;
+    let result = (|| {
+        let db_dir = backup_dir.join("db");
+        fs::create_dir(&db_dir).map_err(|error| {
+            format!(
+                "创建 Codex 线程数据库备份目录失败 {}: {error}",
+                db_dir.display()
+            )
+        })?;
+
+        let mut db_files = Vec::new();
+        for suffix in ["", "-shm", "-wal"] {
+            let file_name = format!("{CODEX_STATE_DB_NAME}{suffix}");
+            let source = codex_home.join(&file_name);
+            if source.is_file() {
+                let destination = db_dir.join(&file_name);
+                fs::copy(&source, &destination).map_err(|error| {
+                    format!(
+                        "备份 Codex 线程数据库失败 {} -> {}: {error}",
+                        source.display(),
+                        destination.display()
+                    )
+                })?;
+                set_private_permissions(&destination);
+                db_files.push(file_name);
+            }
+        }
+
+        for file_name in [CODEX_GLOBAL_STATE_NAME, CODEX_GLOBAL_STATE_BACKUP_NAME] {
+            let source = codex_home.join(file_name);
+            if source.is_file() {
+                let destination = backup_dir.join(file_name);
+                fs::copy(&source, &destination).map_err(|error| {
+                    format!(
+                        "备份 Codex 全局状态失败 {} -> {}: {error}",
+                        source.display(),
+                        destination.display()
+                    )
+                })?;
+                set_private_permissions(&destination);
+            }
+        }
+
+        let session_manifest = serde_json::json!({
+            "version": 1,
+            "namespace": PROVIDER_SYNC_NAMESPACE,
+            "codexHome": codex_home.to_string_lossy(),
+            "targetProvider": target_provider,
+            "createdAtMs": timestamp,
+            "files": session_changes.iter().map(|change| {
+                serde_json::json!({
+                    "path": change.path.to_string_lossy(),
+                    "originalFirstLine": change.original_first_line,
+                    "originalSeparator": change.original_separator,
+                })
+            }).collect::<Vec<_>>(),
+        });
+        let session_manifest_path = backup_dir.join("session-meta-backup.json");
+        fs::write(
+            &session_manifest_path,
+            serde_json::to_string_pretty(&session_manifest)
+                .map_err(|error| format!("序列化 Codex 会话备份清单失败: {error}"))?,
         )
-    })?;
+        .map_err(|error| format!("写入 Codex 会话备份清单失败: {error}"))?;
+        set_private_permissions(&session_manifest_path);
 
-    let mut db_files = Vec::new();
-    for suffix in ["", "-shm", "-wal"] {
-        let file_name = format!("{CODEX_STATE_DB_NAME}{suffix}");
-        let source = codex_home.join(&file_name);
-        if source.is_file() {
-            let destination = db_dir.join(&file_name);
-            fs::copy(&source, &destination).map_err(|error| {
-                format!(
-                    "备份 Codex 线程数据库失败 {} -> {}: {error}",
-                    source.display(),
-                    destination.display()
-                )
-            })?;
-            set_private_permissions(&destination);
-            db_files.push(file_name);
+        let metadata = serde_json::json!({
+            "version": 1,
+            "namespace": PROVIDER_SYNC_NAMESPACE,
+            "codexHome": codex_home.to_string_lossy(),
+            "targetProvider": target_provider,
+            "createdAtMs": timestamp,
+            "dbFiles": db_files,
+            "changedSessionFiles": session_changes.len(),
+        });
+        let metadata_path = backup_dir.join("metadata.json");
+        fs::write(
+            &metadata_path,
+            serde_json::to_string_pretty(&metadata)
+                .map_err(|error| format!("序列化 Codex 线程备份元数据失败: {error}"))?,
+        )
+        .map_err(|error| format!("写入 Codex 线程备份元数据失败: {error}"))?;
+        set_private_permissions(&metadata_path);
+        Ok(backup_dir.clone())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_dir_all(&backup_dir);
+    }
+    result
+}
+
+fn reserve_provider_backup_dir(
+    backup_root: &Path,
+    initial_timestamp: u128,
+) -> Result<(u128, PathBuf), String> {
+    for offset in 0..1024u128 {
+        let timestamp = initial_timestamp
+            .checked_add(offset)
+            .ok_or_else(|| "Codex 线程备份时间戳溢出".to_string())?;
+        let backup_dir = backup_root.join(format!("{MANAGED_BACKUP_PREFIX}{timestamp}"));
+        match fs::create_dir(&backup_dir) {
+            Ok(()) => return Ok((timestamp, backup_dir)),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "创建 Codex 线程备份目录失败 {}: {error}",
+                    backup_dir.display()
+                ));
+            }
         }
     }
-
-    for file_name in [CODEX_GLOBAL_STATE_NAME, CODEX_GLOBAL_STATE_BACKUP_NAME] {
-        let source = codex_home.join(file_name);
-        if source.is_file() {
-            let destination = backup_dir.join(file_name);
-            fs::copy(&source, &destination).map_err(|error| {
-                format!(
-                    "备份 Codex 全局状态失败 {} -> {}: {error}",
-                    source.display(),
-                    destination.display()
-                )
-            })?;
-            set_private_permissions(&destination);
-        }
-    }
-
-    let session_manifest = serde_json::json!({
-        "version": 1,
-        "namespace": PROVIDER_SYNC_NAMESPACE,
-        "codexHome": codex_home.to_string_lossy(),
-        "targetProvider": target_provider,
-        "createdAtMs": timestamp,
-        "files": session_changes.iter().map(|change| {
-            serde_json::json!({
-                "path": change.path.to_string_lossy(),
-                "originalFirstLine": change.original_first_line,
-                "originalSeparator": change.original_separator,
-            })
-        }).collect::<Vec<_>>(),
-    });
-    fs::write(
-        backup_dir.join("session-meta-backup.json"),
-        serde_json::to_string_pretty(&session_manifest)
-            .map_err(|error| format!("序列化 Codex 会话备份清单失败: {error}"))?,
-    )
-    .map_err(|error| format!("写入 Codex 会话备份清单失败: {error}"))?;
-
-    let metadata = serde_json::json!({
-        "version": 1,
-        "namespace": PROVIDER_SYNC_NAMESPACE,
-        "codexHome": codex_home.to_string_lossy(),
-        "targetProvider": target_provider,
-        "createdAtMs": timestamp,
-        "dbFiles": db_files,
-        "changedSessionFiles": session_changes.len(),
-    });
-    fs::write(
-        backup_dir.join("metadata.json"),
-        serde_json::to_string_pretty(&metadata)
-            .map_err(|error| format!("序列化 Codex 线程备份元数据失败: {error}"))?,
-    )
-    .map_err(|error| format!("写入 Codex 线程备份元数据失败: {error}"))?;
-
-    set_private_permissions(&backup_dir);
-    Ok(backup_dir)
+    Err("无法为 Codex 线程备份分配唯一目录".to_string())
 }
 
 pub(crate) fn cleanup_codex_state_provider_backups(backup_dir: &Path) -> Result<usize, String> {
@@ -1243,10 +1275,24 @@ fn cleanup_codex_state_provider_backups_keep(
     backup_dir: &Path,
     keep_latest: usize,
 ) -> Result<usize, String> {
-    if !backup_dir.exists() {
-        return Ok(0);
+    ensure_backup_root_has_no_link_like_ancestors(backup_dir)?;
+    let backup_dir_metadata = match fs::symlink_metadata(backup_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => {
+            return Err(format!(
+                "检查 Codex 线程备份路径失败 {}: {error}",
+                backup_dir.display()
+            ));
+        }
+    };
+    if metadata_is_link_like(&backup_dir_metadata) {
+        return Err(format!(
+            "Codex 线程备份路径是符号链接或 junction，已拒绝清理 {}",
+            backup_dir.display()
+        ));
     }
-    if !backup_dir.is_dir() {
+    if !backup_dir_metadata.is_dir() {
         return Err(format!(
             "Codex 线程备份路径不是目录 {}",
             backup_dir.display()
@@ -1268,13 +1314,16 @@ fn cleanup_codex_state_provider_backups_keep(
         })?;
         let path = entry.path();
         let file_name = entry.file_name().to_string_lossy().to_string();
-        if path.is_dir() && is_managed_backup_dir(&path) {
+        let metadata = fs::symlink_metadata(&path)
+            .map_err(|error| format!("检查 Codex 线程备份条目失败 {}: {error}", path.display()))?;
+        if metadata_is_link_like(&metadata) {
+            continue;
+        }
+        if metadata.is_dir() && is_managed_backup_dir(&path) {
             if let Some(timestamp) = managed_backup_timestamp(&file_name) {
                 backups.push((timestamp, path, true));
             }
-            continue;
-        }
-        if path.is_file() {
+        } else if metadata.is_file() {
             if let Some(timestamp) = legacy_provider_sync_backup_timestamp(&file_name) {
                 backups.push((timestamp, path, false));
             }
@@ -1288,12 +1337,43 @@ fn cleanup_codex_state_provider_backups_keep(
     backups.sort_by_key(|(timestamp, _, _)| *timestamp);
     let remove_count = backups.len().saturating_sub(keep_latest);
     let mut removed = 0usize;
-    for (_, path, is_dir) in backups.into_iter().take(remove_count) {
+    for (timestamp, path, is_dir) in backups.into_iter().take(remove_count) {
+        ensure_backup_root_has_no_link_like_ancestors(backup_dir)?;
+        let metadata = fs::symlink_metadata(&path).map_err(|error| {
+            format!("删除前检查 Codex 线程备份失败 {}: {error}", path.display())
+        })?;
+        if metadata_is_link_like(&metadata) {
+            return Err(format!(
+                "Codex 线程备份在删除前变成符号链接或 junction，已拒绝清理 {}",
+                path.display()
+            ));
+        }
+        let file_name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .ok_or_else(|| format!("Codex 线程备份名称无效 {}", path.display()))?;
         if is_dir {
+            if !metadata.is_dir()
+                || managed_backup_timestamp(file_name) != Some(timestamp)
+                || !is_managed_backup_dir(&path)
+            {
+                return Err(format!(
+                    "Codex 线程备份在删除前不再符合受管目录格式，已拒绝清理 {}",
+                    path.display()
+                ));
+            }
             fs::remove_dir_all(&path).map_err(|error| {
                 format!("删除旧 Codex 线程备份失败 {}: {error}", path.display())
             })?;
         } else {
+            if !metadata.is_file()
+                || legacy_provider_sync_backup_timestamp(file_name) != Some(timestamp)
+            {
+                return Err(format!(
+                    "Codex 线程备份在删除前不再符合 legacy 文件格式，已拒绝清理 {}",
+                    path.display()
+                ));
+            }
             fs::remove_file(&path).map_err(|error| {
                 format!("删除旧 Codex 线程备份失败 {}: {error}", path.display())
             })?;
@@ -1303,15 +1383,149 @@ fn cleanup_codex_state_provider_backups_keep(
     Ok(removed)
 }
 
+fn ensure_backup_root_has_no_link_like_ancestors(backup_root: &Path) -> Result<(), String> {
+    if backup_root
+        .components()
+        .any(|component| matches!(component, Component::ParentDir))
+    {
+        return Err(format!(
+            "Codex 线程备份路径包含 ..，已拒绝创建备份 {}",
+            backup_root.display()
+        ));
+    }
+
+    let absolute_backup_root = if backup_root.is_absolute() {
+        backup_root.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| format!("读取当前目录失败，无法创建 Codex 线程备份: {error}"))?
+            .join(backup_root)
+    };
+    let ancestors: Vec<_> = absolute_backup_root.ancestors().collect();
+    for path in ancestors.into_iter().rev() {
+        if path.as_os_str().is_empty() {
+            continue;
+        }
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata_is_link_like(&metadata) => {
+                return Err(format!(
+                    "Codex 线程备份路径包含符号链接或 junction，已拒绝创建备份 {}",
+                    path.display()
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "检查 Codex 线程备份路径失败 {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn metadata_is_link_like(metadata: &fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        return metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0;
+    }
+    #[cfg(not(target_os = "windows"))]
+    false
+}
+
 fn is_managed_backup_dir(path: &Path) -> bool {
     let metadata_path = path.join("metadata.json");
-    let Ok(text) = fs::read_to_string(metadata_path) else {
+    let Ok(metadata) = fs::symlink_metadata(&metadata_path) else {
         return false;
+    };
+    if !metadata.is_file() || metadata_is_link_like(&metadata) {
+        return false;
+    }
+    let text = match fs::read_to_string(&metadata_path) {
+        Ok(text) => text,
+        Err(error) if error.kind() == io::ErrorKind::PermissionDenied => {
+            return is_legacy_managed_backup_layout(path);
+        }
+        Err(_) => return false,
     };
     let Ok(value) = serde_json::from_str::<Value>(&text) else {
         return false;
     };
-    value.get("namespace").and_then(Value::as_str) == Some(PROVIDER_SYNC_NAMESPACE)
+    let Some(timestamp) = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .and_then(managed_backup_timestamp)
+    else {
+        return false;
+    };
+    value.get("version").and_then(Value::as_u64) == Some(1)
+        && value.get("namespace").and_then(Value::as_str) == Some(PROVIDER_SYNC_NAMESPACE)
+        && value
+            .get("createdAtMs")
+            .and_then(Value::as_u64)
+            .is_some_and(|created_at| u128::from(created_at) == timestamp)
+}
+
+fn is_legacy_managed_backup_layout(path: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(path) else {
+        return false;
+    };
+    let mut has_db = false;
+    let mut has_metadata = false;
+    let mut has_session_metadata = false;
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return false;
+        };
+        let entry_path = entry.path();
+        let Ok(metadata) = fs::symlink_metadata(&entry_path) else {
+            return false;
+        };
+        if metadata_is_link_like(&metadata) {
+            return false;
+        }
+        let name = entry.file_name().to_string_lossy().to_string();
+        match name.as_str() {
+            "db" if metadata.is_dir() => {
+                let Ok(db_entries) = fs::read_dir(&entry_path) else {
+                    return false;
+                };
+                for db_entry in db_entries {
+                    let Ok(db_entry) = db_entry else {
+                        return false;
+                    };
+                    let Ok(db_metadata) = fs::symlink_metadata(db_entry.path()) else {
+                        return false;
+                    };
+                    let db_name = db_entry.file_name().to_string_lossy().to_string();
+                    if !db_metadata.is_file()
+                        || metadata_is_link_like(&db_metadata)
+                        || ![
+                            CODEX_STATE_DB_NAME,
+                            "state_5.sqlite-shm",
+                            "state_5.sqlite-wal",
+                        ]
+                        .contains(&db_name.as_str())
+                    {
+                        return false;
+                    }
+                }
+                has_db = true;
+            }
+            "metadata.json" if metadata.is_file() => has_metadata = true,
+            "session-meta-backup.json" if metadata.is_file() => has_session_metadata = true,
+            CODEX_GLOBAL_STATE_NAME | CODEX_GLOBAL_STATE_BACKUP_NAME if metadata.is_file() => {}
+            _ => return false,
+        }
+    }
+    has_db && has_metadata && has_session_metadata
 }
 
 fn managed_backup_timestamp(file_name: &str) -> Option<u128> {
@@ -1323,8 +1537,8 @@ fn managed_backup_timestamp(file_name: &str) -> Option<u128> {
 
 fn legacy_provider_sync_backup_timestamp(file_name: &str) -> Option<u128> {
     file_name
-        .strip_prefix(PROVIDER_SYNC_BACKUP_PREFIX)?
-        .strip_suffix(PROVIDER_SYNC_BACKUP_SUFFIX)?
+        .strip_prefix(&format!("{CODEX_STATE_DB_NAME}.{PROVIDER_SYNC_NAMESPACE}-"))?
+        .strip_suffix(".bak")?
         .parse::<u128>()
         .ok()
 }
@@ -1351,6 +1565,9 @@ fn current_timestamp_millis() -> Result<u128, String> {
 #[cfg(test)]
 mod tests {
     use super::cleanup_codex_state_provider_backups_keep;
+    use super::create_provider_sync_backup;
+    use super::is_legacy_managed_backup_layout;
+    use super::reserve_provider_backup_dir;
     use super::sync_codex_thread_visibility_in_home;
     use super::table_has_column;
     use super::to_desktop_workspace_path;
@@ -1365,6 +1582,20 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("codex-state-sync-test-{}", Uuid::new_v4()));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    #[cfg(target_os = "windows")]
+    fn create_directory_symlink(target: &Path, link: &Path) {
+        use std::os::windows::fs::symlink_dir;
+
+        symlink_dir(target, link).expect("create directory symlink");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn create_directory_symlink(target: &Path, link: &Path) {
+        use std::os::unix::fs::symlink;
+
+        symlink(target, link).expect("create directory symlink");
     }
 
     fn write_rollout(path: &Path, id: &str, provider: &str, cwd: &str, user_event: bool) {
@@ -1577,35 +1808,213 @@ mod tests {
     }
 
     #[test]
-    fn cleanup_provider_backups_keeps_only_latest_matching_items() {
+    fn cleanup_provider_backups_removes_only_metadata_managed_directories() {
         let backup_dir = temp_dir().join("backups");
         fs::create_dir_all(&backup_dir).expect("create backup dir");
-        fs::write(
-            backup_dir.join("state_5.sqlite.provider-sync-200.bak"),
-            "old file backup",
-        )
-        .expect("write file backup");
         for timestamp in [100u128, 300] {
             let dir = backup_dir.join(format!("provider-sync-{timestamp}"));
             fs::create_dir_all(&dir).expect("create managed dir");
             fs::write(
                 dir.join("metadata.json"),
-                serde_json::json!({ "namespace": "provider-sync" }).to_string(),
+                serde_json::json!({
+                    "version": 1,
+                    "namespace": "provider-sync",
+                    "createdAtMs": timestamp,
+                })
+                .to_string(),
             )
             .expect("write metadata");
         }
-        fs::write(backup_dir.join("notes.txt"), "keep").expect("write non backup");
+        let missing_metadata = backup_dir.join("provider-sync-150");
+        fs::create_dir_all(&missing_metadata).expect("create missing metadata dir");
+        let malformed_metadata = backup_dir.join("provider-sync-175");
+        fs::create_dir_all(&malformed_metadata).expect("create malformed metadata dir");
+        fs::write(malformed_metadata.join("metadata.json"), "{not valid json")
+            .expect("write malformed metadata");
+        let wrong_namespace = backup_dir.join("provider-sync-200");
+        fs::create_dir_all(&wrong_namespace).expect("create wrong namespace dir");
+        fs::write(
+            wrong_namespace.join("metadata.json"),
+            serde_json::json!({ "namespace": "another-namespace" }).to_string(),
+        )
+        .expect("write wrong namespace metadata");
+        let future_schema = backup_dir.join("provider-sync-225");
+        fs::create_dir_all(&future_schema).expect("create future schema dir");
+        fs::write(
+            future_schema.join("metadata.json"),
+            serde_json::json!({
+                "version": 999,
+                "namespace": "provider-sync",
+                "createdAtMs": 225,
+            })
+            .to_string(),
+        )
+        .expect("write future schema metadata");
+        let timestamp_named_file = backup_dir.join("provider-sync-250");
+        fs::write(&timestamp_named_file, "keep").expect("write timestamp-named file");
+        let legacy_file = backup_dir.join("state_5.sqlite.provider-sync-275.bak");
+        fs::write(&legacy_file, "keep").expect("write legacy file backup");
 
         let removed =
             cleanup_codex_state_provider_backups_keep(&backup_dir, 1).expect("cleanup backups");
 
         assert_eq!(removed, 2);
-        assert!(!backup_dir
-            .join("state_5.sqlite.provider-sync-200.bak")
-            .exists());
         assert!(!backup_dir.join("provider-sync-100").exists());
         assert!(backup_dir.join("provider-sync-300").exists());
-        assert!(backup_dir.join("notes.txt").exists());
+        assert!(missing_metadata.exists());
+        assert!(malformed_metadata.exists());
+        assert!(wrong_namespace.exists());
+        assert!(future_schema.exists());
+        assert!(timestamp_named_file.exists());
+        assert!(!legacy_file.exists());
+    }
+
+    #[test]
+    fn legacy_provider_backup_layout_requires_only_known_regular_files() {
+        let backup_dir = temp_dir().join("provider-sync-100");
+        let db_dir = backup_dir.join("db");
+        fs::create_dir_all(&db_dir).expect("create legacy backup db dir");
+        fs::write(db_dir.join("state_5.sqlite"), b"db").expect("write legacy db");
+        fs::write(backup_dir.join("metadata.json"), b"metadata").expect("write legacy metadata");
+        fs::write(backup_dir.join("session-meta-backup.json"), b"sessions")
+            .expect("write legacy session metadata");
+
+        assert!(is_legacy_managed_backup_layout(&backup_dir));
+
+        fs::write(backup_dir.join("unknown-user-file.txt"), b"unknown")
+            .expect("write unknown file");
+        assert!(!is_legacy_managed_backup_layout(&backup_dir));
+
+        let _ = fs::remove_dir_all(backup_dir.parent().expect("backup parent"));
+    }
+
+    #[test]
+    fn provider_backup_reservation_avoids_timestamp_collisions() {
+        let backup_root = temp_dir();
+        fs::create_dir(backup_root.join("provider-sync-100")).expect("create colliding backup");
+
+        let (timestamp, reserved) =
+            reserve_provider_backup_dir(&backup_root, 100).expect("reserve backup dir");
+
+        assert_eq!(timestamp, 101);
+        assert_eq!(reserved, backup_root.join("provider-sync-101"));
+        assert!(reserved.is_dir());
+
+        let _ = fs::remove_dir_all(backup_root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn cleanup_recognizes_legacy_backup_with_unreadable_metadata_acl() {
+        fn write_managed_backup(root: &Path, timestamp: u128) -> PathBuf {
+            let backup = root.join(format!("provider-sync-{timestamp}"));
+            fs::create_dir_all(backup.join("db")).expect("create managed backup");
+            fs::write(backup.join("db/state_5.sqlite"), b"db").expect("write managed db");
+            fs::write(backup.join("session-meta-backup.json"), b"sessions")
+                .expect("write managed session metadata");
+            fs::write(
+                backup.join("metadata.json"),
+                serde_json::json!({
+                    "version": 1,
+                    "namespace": "provider-sync",
+                    "createdAtMs": timestamp,
+                })
+                .to_string(),
+            )
+            .expect("write managed metadata");
+            backup
+        }
+
+        let backup_root = temp_dir();
+        let legacy = write_managed_backup(&backup_root, 100);
+        let latest = write_managed_backup(&backup_root, 200);
+        let metadata_path = legacy.join("metadata.json");
+        let output = std::process::Command::new("icacls")
+            .arg(&metadata_path)
+            .arg("/inheritance:r")
+            .output()
+            .expect("run icacls ACL fixture");
+        assert!(
+            output.status.success(),
+            "ACL fixture failed: stdout={} stderr={}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            fs::read_to_string(&metadata_path)
+                .expect_err("metadata should be unreadable")
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+
+        let removed = cleanup_codex_state_provider_backups_keep(&backup_root, 1)
+            .expect("cleanup ACL legacy backup");
+
+        assert_eq!(removed, 1);
+        assert!(!legacy.exists());
+        assert!(latest.exists());
+        let _ = fs::remove_dir_all(backup_root);
+    }
+
+    #[test]
+    fn create_provider_sync_backup_rejects_symlinked_backup_root() {
+        let codex_home = temp_dir();
+        let root = temp_dir();
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).expect("create outside dir");
+        let backup_root = root.join("backup-root");
+        create_directory_symlink(&outside, &backup_root);
+
+        let result = create_provider_sync_backup(&codex_home, &backup_root, "provider", &[]);
+
+        assert!(result.is_err());
+        assert!(fs::read_dir(&outside)
+            .expect("read outside dir")
+            .next()
+            .is_none());
+    }
+
+    #[test]
+    fn create_provider_sync_backup_rejects_symlinked_backup_root_ancestor() {
+        let codex_home = temp_dir();
+        let root = temp_dir();
+        let outside = root.join("outside");
+        fs::create_dir_all(&outside).expect("create outside dir");
+        let linked_parent = root.join("linked-parent");
+        create_directory_symlink(&outside, &linked_parent);
+        let backup_root = linked_parent.join("backups");
+
+        let result = create_provider_sync_backup(&codex_home, &backup_root, "provider", &[]);
+
+        assert!(result.is_err());
+        assert!(!outside.join("backups").exists());
+    }
+
+    #[test]
+    fn cleanup_provider_sync_backup_rejects_symlinked_ancestor() {
+        let root = temp_dir();
+        let outside = root.join("outside");
+        let outside_backups = outside.join("backups");
+        fs::create_dir_all(&outside_backups).expect("create outside backup dir");
+        let managed = outside_backups.join("provider-sync-100");
+        fs::create_dir_all(&managed).expect("create managed backup");
+        fs::write(
+            managed.join("metadata.json"),
+            serde_json::json!({
+                "version": 1,
+                "namespace": "provider-sync",
+                "createdAtMs": 100,
+            })
+            .to_string(),
+        )
+        .expect("write managed metadata");
+        let linked_parent = root.join("linked-parent");
+        create_directory_symlink(&outside, &linked_parent);
+
+        let result = cleanup_codex_state_provider_backups_keep(&linked_parent.join("backups"), 0);
+
+        assert!(result.is_err());
+        assert!(managed.exists());
     }
 
     #[test]

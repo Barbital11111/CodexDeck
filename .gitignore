@@ -12,6 +12,27 @@ dist
 dist-ssr
 *.local
 
+# Sensitive local credentials and runtime state
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+credentials.json
+auth.json
+accounts.json
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.db
+*.db-*
+*.dmp
+*.trace
+*.tmp
+
 # Editor directories and files
 .vscode/*
 !.vscode/extensions.json

@@ -815,8 +815,12 @@ fn sync_agents_from_model_catalog_json(catalog_json: &str) -> Result<(), String>
     };
 
     let agents_dir = app_paths::codex_dir()?.join("agents");
-    fs::create_dir_all(&agents_dir)
-        .map_err(|error| format!("创建 Codex agents 目录失败 {}: {error}", agents_dir.display()))?;
+    fs::create_dir_all(&agents_dir).map_err(|error| {
+        format!(
+            "创建 Codex agents 目录失败 {}: {error}",
+            agents_dir.display()
+        )
+    })?;
     let mut expected_file_names = HashSet::new();
 
     for model in models {
@@ -891,9 +895,12 @@ fn cleanup_stale_codexdeck_agents(
     if !agents_dir.is_dir() {
         return Ok(());
     }
-    for entry in fs::read_dir(agents_dir)
-        .map_err(|error| format!("读取 Codex agents 目录失败 {}: {error}", agents_dir.display()))?
-    {
+    for entry in fs::read_dir(agents_dir).map_err(|error| {
+        format!(
+            "读取 Codex agents 目录失败 {}: {error}",
+            agents_dir.display()
+        )
+    })? {
         let entry = entry.map_err(|error| format!("读取 Codex agent 文件失败: {error}"))?;
         let path = entry.path();
         let is_expected = path
@@ -901,8 +908,9 @@ fn cleanup_stale_codexdeck_agents(
             .and_then(|item| item.to_str())
             .is_some_and(|name| expected_file_names.contains(name));
         if path.is_file() && !is_expected && is_codexdeck_managed_agent(&path) {
-            fs::remove_file(&path)
-                .map_err(|error| format!("移除旧 CodexDeck agent 失败 {}: {error}", path.display()))?;
+            fs::remove_file(&path).map_err(|error| {
+                format!("移除旧 CodexDeck agent 失败 {}: {error}", path.display())
+            })?;
         }
     }
     Ok(())
@@ -1973,13 +1981,13 @@ fn write_file_if_changed(path: &Path, contents: &[u8]) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    use super::apply_model_instructions_fix_to_document;
     use super::build_chatgpt_profile_config;
     use super::build_hybrid_chatgpt_auth_json;
     use super::build_hybrid_relay_profile_config;
     use super::build_model_catalog_json_from_entries;
     use super::build_relay_profile_config;
     use super::cleanup_orphan_profiles_in_store_path;
-    use super::apply_model_instructions_fix_to_document;
     use super::merge_active_codex_profile_config;
     use super::normalize_relay_api_key;
     use super::normalize_relay_base_url;
@@ -2200,8 +2208,7 @@ responses_websockets_v2 = true
 
     #[test]
     fn relay_profile_config_normalizes_root_base_url_to_v1() {
-        let config =
-            build_relay_profile_config(None, "http://127.0.0.1:8787", "relay-model", None);
+        let config = build_relay_profile_config(None, "http://127.0.0.1:8787", "relay-model", None);
 
         assert!(config.contains(r#"openai_base_url = "http://127.0.0.1:8787/v1""#));
         assert!(config.contains(r#"base_url = "http://127.0.0.1:8787/v1""#));

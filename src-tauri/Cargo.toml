@@ -1,6 +1,6 @@
 [package]
 name = "app"
-version = "2.1.0"
+version = "2.1.1"
 description = "CodexDeck"
 authors = ["you"]
 license = "MIT"
@@ -50,6 +50,8 @@ axum = { version = "0.7", features = ["ws"] }
 rfd = "0.15"
 if-addrs = "0.13"
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
-windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_System_Com", "Win32_UI_Shell"] }
+windows = { version = "0.61.3", features = ["Win32_Foundation", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_UI_Shell"] }
 toml_edit = "0.22"
 rusqlite = { version = "0.31", features = ["bundled"] }
+regex = "1"
+flate2 = "1"

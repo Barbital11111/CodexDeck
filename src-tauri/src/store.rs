@@ -1179,8 +1179,8 @@ fn backup_corrupted_store_file(path: &Path, raw: &str) -> Result<PathBuf, String
 
 #[cfg(test)]
 mod tests {
-    use super::ensure_account_store_available_in_dir;
     use super::empty_store_marker_path;
+    use super::ensure_account_store_available_in_dir;
     use super::load_store_from_path;
     use super::record_relay_key_success_in_path;
     use super::save_store_to_path;
@@ -1374,9 +1374,11 @@ mod tests {
 
         let small_store = sample_store("small", "workspace-small", 10);
         let mut large_store = sample_store("large-a", "workspace-large-a", 20);
-        large_store
-            .accounts
-            .push(sample_store("large-b", "workspace-large-b", 21).accounts.remove(0));
+        large_store.accounts.push(
+            sample_store("large-b", "workspace-large-b", 21)
+                .accounts
+                .remove(0),
+        );
         fs::write(
             old_small.join("accounts.json"),
             serde_json::to_string_pretty(&small_store).expect("serialize small"),

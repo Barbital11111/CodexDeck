@@ -797,5 +797,4 @@ fn is_legacy_controlled_codex_launch_path(path: &str) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-}
+mod tests {}

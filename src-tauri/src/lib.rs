@@ -2,6 +2,7 @@ mod account_service;
 mod app_paths;
 mod auth;
 mod cli;
+mod codex_model_picker_patch;
 mod codex_multimodel;
 mod editor_apps;
 mod hybrid_relay_proxy;
@@ -939,7 +940,11 @@ mod tests {
     use super::bind_oauth_callback_listener;
     use super::build_oauth_callback_url;
     use super::is_auth_related_usage_error;
+    #[cfg(target_os = "windows")]
+    use super::select_codex_desktop_user_data_path;
     use std::net::TcpListener;
+    #[cfg(target_os = "windows")]
+    use std::path::Path;
 
     #[test]
     fn build_oauth_callback_url_uses_redirect_origin_and_runtime_query() {
@@ -979,6 +984,38 @@ mod tests {
             "令牌刷新失败: refresh_token_reused"
         ));
         assert!(!is_auth_related_usage_error("连接 NewAPI 额度接口失败"));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn multi_model_launch_uses_stable_isolated_electron_user_data() {
+        let workspace = Path::new(r"C:\CodexDeck\codexdeck-multimodel");
+
+        let selected = select_codex_desktop_user_data_path(
+            true,
+            Some(workspace),
+            Some(Path::new(r"C:\Users\test\AppData\Roaming")),
+            true,
+        );
+
+        assert_eq!(
+            selected,
+            Some(workspace.join("electron-user-data")),
+            "the controlled desktop must not share the official Electron session"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn standard_launch_preserves_explicit_electron_user_data_override() {
+        let selected = select_codex_desktop_user_data_path(
+            false,
+            None,
+            Some(Path::new(r"C:\Users\test\AppData\Roaming")),
+            true,
+        );
+
+        assert_eq!(selected, None);
     }
 }
 
@@ -1249,9 +1286,7 @@ async fn switch_account_and_launch(
             log::info!("已同步 {synced_thread_count} 条 Codex 线程 provider");
         }
         profile_files::apply_model_instructions_fix_setting(
-            latest_store
-                .settings
-                .codex_model_instructions_fix_enabled,
+            latest_store.settings.codex_model_instructions_fix_enabled,
         )?;
         latest_store.settings.active_account_id = Some(stored_account.id.clone());
         latest_store.settings.active_hybrid_profile = None;
@@ -1315,8 +1350,10 @@ async fn switch_account_and_launch(
         });
     }
 
-    let stopped_codex_before_prepare =
-        stop_running_codex_before_multi_model_prepare(&app, configured_codex_launch_path.as_deref());
+    let stopped_codex_before_prepare = stop_running_codex_before_multi_model_prepare(
+        &app,
+        configured_codex_launch_path.as_deref(),
+    );
     let configured_codex_launch_path =
         prepare_codex_launch_path_for_current_settings(&app, configured_codex_launch_path)?;
     let multi_model_launch = is_codex_multi_model_mode_enabled(&app);
@@ -1329,13 +1366,15 @@ async fn switch_account_and_launch(
     let mut app_launch_error = None;
     let configured_app_path =
         cli::find_configured_codex_app_path(configured_codex_launch_path.as_deref());
-    if let Some(path) = configured_app_path
-        .clone()
-        .or_else(|| (!multi_model_launch).then(cli::find_codex_app_path).flatten())
-    {
+    if let Some(path) = configured_app_path.clone().or_else(|| {
+        (!multi_model_launch)
+            .then(cli::find_codex_app_path)
+            .flatten()
+    }) {
         match launch_codex_app(
             &path,
             workspace_path.as_deref(),
+            multi_model_launch,
             disable_gpu_acceleration,
         ) {
             Ok(()) => {
@@ -1459,15 +1498,14 @@ fn prepare_codex_launch_path_for_current_settings(
         return Ok(configured_codex_launch_path);
     }
 
-    let Some(managed_launch_path) = codex_multimodel::prepare_managed_codex_launch_path(app)? else {
+    let Some(managed_launch_path) = codex_multimodel::prepare_managed_codex_launch_path(app)?
+    else {
         return Ok(configured_codex_launch_path);
     };
 
     let mut latest_store = store::load_store(app)?;
     profile_files::apply_model_instructions_fix_setting(
-        latest_store
-            .settings
-            .codex_model_instructions_fix_enabled,
+        latest_store.settings.codex_model_instructions_fix_enabled,
     )?;
     latest_store.settings.codex_launch_path = Some(managed_launch_path.clone());
     store::save_store(app, &latest_store)?;
@@ -1618,9 +1656,7 @@ async fn switch_hybrid_account_and_launch(
             log::info!("混合模式已同步 {synced_thread_count} 条 Codex 线程 provider");
         }
         profile_files::apply_model_instructions_fix_setting(
-            latest_store
-                .settings
-                .codex_model_instructions_fix_enabled,
+            latest_store.settings.codex_model_instructions_fix_enabled,
         )?;
         latest_store.settings.active_account_id = Some(stored_relay.id.clone());
         latest_store.settings.active_hybrid_profile = Some(models::ActiveHybridProfile {
@@ -1656,8 +1692,10 @@ async fn switch_hybrid_account_and_launch(
         });
     }
 
-    let stopped_codex_before_prepare =
-        stop_running_codex_before_multi_model_prepare(&app, configured_codex_launch_path.as_deref());
+    let stopped_codex_before_prepare = stop_running_codex_before_multi_model_prepare(
+        &app,
+        configured_codex_launch_path.as_deref(),
+    );
     let configured_codex_launch_path =
         prepare_codex_launch_path_for_current_settings(&app, configured_codex_launch_path)?;
     let multi_model_launch = is_codex_multi_model_mode_enabled(&app);
@@ -1669,13 +1707,15 @@ async fn switch_hybrid_account_and_launch(
     let mut app_launch_error = None;
     let configured_app_path =
         cli::find_configured_codex_app_path(configured_codex_launch_path.as_deref());
-    if let Some(path) = configured_app_path
-        .clone()
-        .or_else(|| (!multi_model_launch).then(cli::find_codex_app_path).flatten())
-    {
+    if let Some(path) = configured_app_path.clone().or_else(|| {
+        (!multi_model_launch)
+            .then(cli::find_codex_app_path)
+            .flatten()
+    }) {
         match launch_codex_app(
             &path,
             workspace_path.as_deref(),
+            multi_model_launch,
             disable_gpu_acceleration,
         ) {
             Ok(()) => {
@@ -1820,8 +1860,10 @@ async fn launch_current_codex_config(
         (Vec::new(), None)
     };
 
-    let stopped_codex_before_prepare =
-        stop_running_codex_before_multi_model_prepare(&app, configured_codex_launch_path.as_deref());
+    let stopped_codex_before_prepare = stop_running_codex_before_multi_model_prepare(
+        &app,
+        configured_codex_launch_path.as_deref(),
+    );
     let configured_codex_launch_path =
         prepare_codex_launch_path_for_current_settings(&app, configured_codex_launch_path)?;
     let multi_model_launch = is_codex_multi_model_mode_enabled(&app);
@@ -1861,11 +1903,17 @@ async fn launch_codex_using_current_config(
 
     let mut app_launch_error = None;
     let configured_app_path = cli::find_configured_codex_app_path(configured_codex_launch_path);
-    if let Some(path) = configured_app_path
-        .clone()
-        .or_else(|| (!multi_model_launch).then(cli::find_codex_app_path).flatten())
-    {
-        match launch_codex_app(&path, workspace_path, disable_gpu_acceleration) {
+    if let Some(path) = configured_app_path.clone().or_else(|| {
+        (!multi_model_launch)
+            .then(cli::find_codex_app_path)
+            .flatten()
+    }) {
+        match launch_codex_app(
+            &path,
+            workspace_path,
+            multi_model_launch,
+            disable_gpu_acceleration,
+        ) {
             Ok(()) => {
                 return Ok(CodexLaunchOutcome {
                     launched_app_path: Some(path.to_string_lossy().to_string()),
@@ -1945,10 +1993,12 @@ fn launch_codex_cli_app(
 fn launch_codex_app(
     path: &std::path::Path,
     workspace_path: Option<&str>,
+    multi_model_launch: bool,
     disable_gpu_acceleration: bool,
 ) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     {
+        let _ = multi_model_launch;
         let _ = disable_gpu_acceleration;
         let mut cmd = Command::new("open");
         app_paths::apply_codex_home_env(&mut cmd)?;
@@ -1977,7 +2027,7 @@ fn launch_codex_app(
 
         let mut cmd = new_background_command(path);
         app_paths::apply_codex_home_env(&mut cmd)?;
-        apply_codex_desktop_user_data_env(&mut cmd);
+        apply_codex_desktop_user_data_env(&mut cmd, multi_model_launch)?;
         if disable_gpu_acceleration {
             cmd.arg("--disable-gpu");
         }
@@ -1991,6 +2041,7 @@ fn launch_codex_app(
 
     #[cfg(all(unix, not(target_os = "macos")))]
     {
+        let _ = multi_model_launch;
         let _ = disable_gpu_acceleration;
         let mut cmd = Command::new(path);
         app_paths::apply_codex_home_env(&mut cmd)?;
@@ -2006,25 +2057,55 @@ fn launch_codex_app(
     {
         let _ = path;
         let _ = workspace_path;
+        let _ = multi_model_launch;
         let _ = disable_gpu_acceleration;
         Err("当前平台暂不支持直接启动 Codex 应用".to_string())
     }
 }
 
 #[cfg(target_os = "windows")]
-fn apply_codex_desktop_user_data_env(command: &mut std::process::Command) {
-    if std::env::var_os("CODEX_ELECTRON_USER_DATA_PATH").is_some()
-        || std::env::var_os("CODEX_COMMAND_DESKTOP_USER_DATA_DIR").is_some()
-    {
-        return;
+fn select_codex_desktop_user_data_path(
+    multi_model_launch: bool,
+    multi_model_workspace: Option<&std::path::Path>,
+    app_data: Option<&std::path::Path>,
+    has_explicit_override: bool,
+) -> Option<PathBuf> {
+    if multi_model_launch {
+        return multi_model_workspace.map(|workspace| workspace.join("electron-user-data"));
     }
 
-    if let Some(app_data) = std::env::var_os("APPDATA") {
-        command.env(
-            "CODEX_ELECTRON_USER_DATA_PATH",
-            PathBuf::from(app_data).join("Codex"),
-        );
+    if has_explicit_override {
+        return None;
     }
+
+    app_data.map(|path| path.join("Codex"))
+}
+
+#[cfg(target_os = "windows")]
+fn apply_codex_desktop_user_data_env(
+    command: &mut std::process::Command,
+    multi_model_launch: bool,
+) -> Result<(), String> {
+    let multi_model_workspace = if multi_model_launch {
+        Some(codex_multimodel::workspace_dir()?)
+    } else {
+        None
+    };
+    let app_data = std::env::var_os("APPDATA");
+    let app_data_path = app_data.as_deref().map(|value| std::path::Path::new(value));
+    let has_explicit_override = std::env::var_os("CODEX_ELECTRON_USER_DATA_PATH").is_some()
+        || std::env::var_os("CODEX_COMMAND_DESKTOP_USER_DATA_DIR").is_some();
+
+    if let Some(user_data_path) = select_codex_desktop_user_data_path(
+        multi_model_launch,
+        multi_model_workspace.as_deref(),
+        app_data_path,
+        has_explicit_override,
+    ) {
+        command.env("CODEX_ELECTRON_USER_DATA_PATH", user_data_path);
+    }
+
+    Ok(())
 }
 
 async fn refresh_chatgpt_account_before_switch(
@@ -2168,7 +2249,8 @@ fn force_stop_running_codex(
 ) {
     #[cfg(target_os = "macos")]
     {
-        if let Some(app_root) = cli::configured_codex_app_install_root(configured_codex_launch_path) {
+        if let Some(app_root) = cli::configured_codex_app_install_root(configured_codex_launch_path)
+        {
             let app_name = app_root
                 .file_stem()
                 .and_then(|value| value.to_str())
@@ -2331,6 +2413,15 @@ pub fn run() {
                     Ok(_) => {}
                     Err(err) => {
                         log::warn!("启动后清理 Codex 线程 provider 备份失败: {err}");
+                    }
+                }
+                match session_provider_sync::cleanup_legacy_codex_state_provider_backups() {
+                    Ok(removed) if removed > 0 => {
+                        log::info!("启动后已清理 {removed} 个旧版 Codex 线程 provider 备份");
+                    }
+                    Ok(_) => {}
+                    Err(err) => {
+                        log::warn!("启动后清理旧版 Codex 线程 provider 备份失败: {err}");
                     }
                 }
             });

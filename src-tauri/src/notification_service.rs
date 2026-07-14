@@ -2510,32 +2510,36 @@ mod tests {
 
     #[test]
     fn sub2api_candidates_try_api_v1_for_root_site_url() {
-        let candidates = sub2api_base_url_candidates("https://gateway.example.invalid").unwrap();
+        let candidates = sub2api_base_url_candidates("https://sub2api.example.invalid").unwrap();
 
         assert_eq!(
             candidates,
             vec![
-                "https://gateway.example.invalid",
-                "https://gateway.example.invalid/api/v1",
-                "https://gateway.example.invalid/v1",
+                "https://sub2api.example.invalid",
+                "https://sub2api.example.invalid/api/v1",
+                "https://sub2api.example.invalid/v1",
             ]
         );
     }
 
     #[test]
     fn sub2api_candidates_keep_explicit_api_v1_first() {
-        let candidates = sub2api_base_url_candidates("https://gateway.example.invalid/api/v1/").unwrap();
+        let candidates =
+            sub2api_base_url_candidates("https://sub2api.example.invalid/api/v1/").unwrap();
 
-        assert_eq!(candidates, vec!["https://gateway.example.invalid/api/v1"]);
+        assert_eq!(candidates, vec!["https://sub2api.example.invalid/api/v1"]);
     }
 
     #[test]
     fn sub2api_candidates_try_api_v1_sibling_for_v1_url() {
-        let candidates = sub2api_base_url_candidates("https://gateway.example.invalid/v1").unwrap();
+        let candidates = sub2api_base_url_candidates("https://sub2api.example.invalid/v1").unwrap();
 
         assert_eq!(
             candidates,
-            vec!["https://gateway.example.invalid/v1", "https://gateway.example.invalid/api/v1"]
+            vec![
+                "https://sub2api.example.invalid/v1",
+                "https://sub2api.example.invalid/api/v1"
+            ]
         );
     }
 
@@ -2918,7 +2922,7 @@ mod tests {
             kind: Default::default(),
             enabled: true,
             cost_multiplier: 1.0,
-            base_url: "https://gateway.example.invalid/api/v1".to_string(),
+            base_url: "https://sub2api.example.invalid/api/v1".to_string(),
             email: "alex@example.com".to_string(),
             password: Some("secret".to_string()),
             created_at: 0,
@@ -2978,7 +2982,7 @@ mod tests {
             kind: Default::default(),
             enabled: true,
             cost_multiplier: 1.0,
-            base_url: "https://gateway.example.invalid/api/v1".to_string(),
+            base_url: "https://sub2api.example.invalid/api/v1".to_string(),
             email: "alex@example.com".to_string(),
             password: Some("secret".to_string()),
             created_at: 0,
@@ -3012,7 +3016,7 @@ mod tests {
             kind: Default::default(),
             enabled: true,
             cost_multiplier: 1.0,
-            base_url: "https://gateway.example.invalid/api/v1".to_string(),
+            base_url: "https://sub2api.example.invalid/api/v1".to_string(),
             email: "alex@example.com".to_string(),
             password: Some("secret".to_string()),
             created_at: 0,

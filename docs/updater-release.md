@@ -23,7 +23,7 @@ npx @tauri-apps/cli signer generate -w "$env:USERPROFILE\\.tauri\\codex-tools-up
 如果你丢失了当前已发布版本对应的私钥，**这批已经安装的用户就无法继续通过应用内更新升级**。这种情况下只能：
 
 1. 生成一套新的 updater 密钥
-2. 发布一个新版本（例如 `1.8.3`）
+2. 发布一个使用新公钥的过渡版本
 3. 让用户手动覆盖安装一次
 4. 从这个新版本开始恢复自动更新
 
@@ -31,14 +31,14 @@ npx @tauri-apps/cli signer generate -w "$env:USERPROFILE\\.tauri\\codex-tools-up
 
 至少要有这些：
 
-- `Codex-Tools-<version>-x64-setup.exe`
-- `Codex-Tools-<version>-x64-setup.exe.sig`
+- `CodexDeck_<version>_x64-setup.exe`
+- `CodexDeck_<version>_x64-setup.exe.sig`
 - `latest.json`
 
 建议同时上传：
 
-- `Codex-Tools-<version>-x64.msi`
-- `Codex-Tools-<version>-x64.msi.sig`
+- `CodexDeck_<version>_x64_<locale>.msi`
+- `CodexDeck_<version>_x64_<locale>.msi.sig`
 
 ## GitHub Actions 自动发布
 
@@ -49,11 +49,13 @@ npx @tauri-apps/cli signer generate -w "$env:USERPROFILE\\.tauri\\codex-tools-up
 - `TAURI_SIGNING_PRIVATE_KEY`
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`（如果私钥有密码）
 
-然后推送 tag：
+确认 `package.json`、`package-lock.json`、`src-tauri/Cargo.toml` 和 `src-tauri/tauri.conf.json` 的版本一致，并在 `changelog.md` 中存在对应的 `- v<version>` 条目。然后推送 tag，例如：
 
 ```powershell
-git tag v1.8.3
-git push origin v1.8.3
+$version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+$tag = "v$version"
+git tag $tag
+git push origin $tag
 ```
 
 只要私钥配置正确，GitHub Actions 会自动上传：
@@ -118,7 +120,8 @@ npx @tauri-apps/cli build
 仓库内置了脚本：
 
 ```powershell
-npm run release:prepare-manual -- -Tag v1.8.3
+$version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+npm run release:prepare-manual -- -Tag "v$version"
 ```
 
 默认会：
@@ -126,27 +129,30 @@ npm run release:prepare-manual -- -Tag v1.8.3
 1. 读取当前版本号与仓库地址
 2. 从 `bundle/nsis` 与 `bundle/msi` 中查找安装包和 `.sig`
 3. 生成可直接上传到 GitHub Release 的 `latest.json`
-4. 把这些文件整理到 `release/v1.8.3/`
+4. 把这些文件整理到 `release/v<version>/`
+
+`release/` 是本地发布暂存目录，已被 Git 忽略，不应提交到仓库。
 
 ### 第三步：上传到 GitHub Release
 
 至少上传：
 
-- `Codex-Tools-1.8.3-x64-setup.exe`
-- `Codex-Tools-1.8.3-x64-setup.exe.sig`
+- `CodexDeck_<version>_x64-setup.exe`
+- `CodexDeck_<version>_x64-setup.exe.sig`
 - `latest.json`
 
 建议再附带：
 
-- `Codex-Tools-1.8.3-x64.msi`
-- `Codex-Tools-1.8.3-x64.msi.sig`
+- `CodexDeck_<version>_x64_<locale>.msi`
+- `CodexDeck_<version>_x64_<locale>.msi.sig`
 
 ## 发布后校验
 
 可以直接运行：
 
 ```powershell
-npm run release:check-updater -- -Tag v1.8.3
+$version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+npm run release:check-updater -- -Tag "v$version"
 ```
 
 它会检查 release 里是否包含：

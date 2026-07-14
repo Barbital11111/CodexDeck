@@ -393,7 +393,7 @@ function firstApiQuotaRefreshError(items: AccountSummary[], accountKeys: string[
   )?.profileLastValidationError ?? null;
 }
 
-async function upsertNotificationProviderForApiUpdate(
+function upsertNotificationProviderForApiUpdate(
   input: UpdateApiAccountInput,
   accountKey: string,
   providers: NotificationProviderConfig[],
@@ -422,13 +422,12 @@ async function upsertNotificationProviderForApiUpdate(
     return providers;
   }
 
-  const testedProvider = await probeNotificationProviderForImport(provider);
-  const existingIndex = providers.findIndex((item) => item.id === testedProvider.id);
+  const existingIndex = providers.findIndex((item) => item.id === provider.id);
   if (existingIndex >= 0) {
     return providers.map((item, index) =>
       index === existingIndex
         ? {
-            ...testedProvider,
+            ...provider,
             id: item.id,
             createdAt: item.createdAt,
           }
@@ -436,38 +435,7 @@ async function upsertNotificationProviderForApiUpdate(
     );
   }
 
-  return [...providers, testedProvider];
-}
-
-async function probeNotificationProviderForImport(
-  provider: NotificationProviderConfig,
-): Promise<NotificationProviderConfig> {
-  if (provider.lastTestAt && !provider.lastTestError) {
-    return provider;
-  }
-
-  if (isPreviewRuntime()) {
-    return {
-      ...provider,
-      lastTestAt: nowUnixSeconds(),
-      lastTestError: null,
-    };
-  }
-
-  try {
-    await invoke<string>("test_notification_provider", { provider });
-    return {
-      ...provider,
-      lastTestAt: nowUnixSeconds(),
-      lastTestError: null,
-    };
-  } catch (error) {
-    return {
-      ...provider,
-      lastTestAt: null,
-      lastTestError: String(error),
-    };
-  }
+  return [...providers, provider];
 }
 
 function buildPreviewRelayAccount(
@@ -2545,27 +2513,26 @@ export function useCodexController() {
             nextAccount.accountKey,
           );
           if (provider) {
-            const testedProvider = await probeNotificationProviderForImport(provider);
             const providers = settingsRef.current.notificationProviders ?? [];
             const existingIndex = providers.findIndex(
               (item) =>
                 item.accountKey === nextAccount.accountKey ||
                 (!item.accountKey?.trim() &&
-                  item.baseUrl === testedProvider.baseUrl &&
-                  item.email.trim().toLowerCase() === testedProvider.email.trim().toLowerCase()),
+                  item.baseUrl === provider.baseUrl &&
+                  item.email.trim().toLowerCase() === provider.email.trim().toLowerCase()),
             );
             const nextProviders =
               existingIndex >= 0
                 ? providers.map((item, index) =>
                     index === existingIndex
                       ? {
-                          ...testedProvider,
+                          ...provider,
                           id: item.id,
                           createdAt: item.createdAt,
                         }
                       : item,
                   )
-                : [...providers, testedProvider];
+                : [...providers, provider];
             const nextSettings = {
               ...settingsRef.current,
               notificationProviders: nextProviders,
@@ -2588,27 +2555,26 @@ export function useCodexController() {
         });
         const provider = buildNotificationProviderFromApiInput(normalizedInput, created.accountKey);
         if (provider) {
-          const testedProvider = await probeNotificationProviderForImport(provider);
           const providers = settingsRef.current.notificationProviders ?? [];
           const existingIndex = providers.findIndex(
             (item) =>
               item.accountKey === created.accountKey ||
               (!item.accountKey?.trim() &&
-                item.baseUrl === testedProvider.baseUrl &&
-                item.email.trim().toLowerCase() === testedProvider.email.trim().toLowerCase()),
+                item.baseUrl === provider.baseUrl &&
+                item.email.trim().toLowerCase() === provider.email.trim().toLowerCase()),
           );
           const nextProviders =
             existingIndex >= 0
               ? providers.map((item, index) =>
                   index === existingIndex
                     ? {
-                        ...testedProvider,
+                        ...provider,
                         id: item.id,
                         createdAt: item.createdAt,
                       }
                     : item,
                 )
-              : [...providers, testedProvider];
+              : [...providers, provider];
           await updateSettings(
             { notificationProviders: nextProviders, notificationSchemaVersion: 1 },
             { silent: true },
@@ -2896,7 +2862,7 @@ export function useCodexController() {
           writePreviewAccounts(nextAccounts);
           applyAccounts(nextAccounts);
           if (input.platformLoginEmail !== undefined || input.platformLoginPassword !== undefined) {
-            const nextProviders = await upsertNotificationProviderForApiUpdate(
+            const nextProviders = upsertNotificationProviderForApiUpdate(
               input,
               account.accountKey,
               settingsRef.current.notificationProviders ?? [],
@@ -2944,7 +2910,7 @@ export function useCodexController() {
           },
         });
         if (input.platformLoginEmail !== undefined || input.platformLoginPassword !== undefined) {
-          const nextProviders = await upsertNotificationProviderForApiUpdate(
+          const nextProviders = upsertNotificationProviderForApiUpdate(
             input,
             account.accountKey,
             settingsRef.current.notificationProviders ?? [],

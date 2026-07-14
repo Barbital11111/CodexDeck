@@ -352,32 +352,13 @@ pub(crate) async fn create_api_account_internal(
         normalize_relay_model_catalog(Some(model_name.as_str()), &input.model_catalog);
     let (provider_id, provider_name) =
         infer_provider_metadata_from_base_url(Some(base_url.as_str()));
-    let quota_fields = resolve_create_api_quota_fields(&input, &label, &base_url, &api_key).await;
+    let quota_fields = resolve_create_api_quota_fields(&input);
     let tags = normalize_account_tags(input.tags);
 
-    let (last_validated_at, balance_text, profile_last_validation_error, proxy_endpoints) = if input
-        .force_save
-    {
-        (
-                None,
-                None,
-                Some("已跳过接口探测，仅启用 /v1/chat/completions；如需 Responses/Compact，请在 Key 池中手动开启。".to_string()),
-                vec![ProxyEndpointCapability::ChatCompletions],
-            )
-    } else {
-        let validation =
-            profile_files::validate_relay_target(&base_url, &api_key, &model_name).await?;
-        (
-            Some(now_unix_seconds()),
-            if input.balance_display_enabled {
-                validation.balance_text
-            } else {
-                None
-            },
-            None,
-            validation.endpoints,
-        )
-    };
+    // Kept for request compatibility; saving is now always local and probing stays explicit.
+    let _legacy_force_save = input.force_save;
+    let (last_validated_at, balance_text, profile_last_validation_error, proxy_endpoints) =
+        unverified_relay_probe_state();
 
     let current_account_key = current_auth_account_key();
     let current_variant_key = current_auth_variant_key();
@@ -1328,16 +1309,7 @@ pub(crate) async fn update_api_account_internal(
 
         let (provider_id, provider_name) =
             infer_provider_metadata_from_base_url(Some(resolved_base_url.as_str()));
-        let quota_api_key = maybe_new_api_key
-            .as_deref()
-            .or_else(|| account.primary_relay_api_key());
-        let quota_fields = resolve_update_api_quota_fields(
-            &input,
-            &resolved_label,
-            &resolved_base_url,
-            quota_api_key,
-        )
-        .await;
+        let quota_fields = resolve_update_api_quota_fields(&input, account);
         let reset_proxy_capabilities = relay_profile_change_requires_proxy_reset(
             account,
             resolved_base_url.as_str(),
@@ -1356,7 +1328,9 @@ pub(crate) async fn update_api_account_internal(
         account.model_name = Some(resolved_model_name);
         account.model_catalog = resolved_model_catalog;
         account.model_routing_enabled = false;
-        let balance_display_enabled = input.balance_display_enabled.unwrap_or(true);
+        let balance_display_enabled = input
+            .balance_display_enabled
+            .unwrap_or(account.balance_display_enabled);
         account.balance_display_enabled = balance_display_enabled;
         if balance_display_enabled {
             account.api_quota_mode = quota_fields.mode;
@@ -1375,16 +1349,14 @@ pub(crate) async fn update_api_account_internal(
         account.provider_id = provider_id;
         account.provider_name = provider_name;
         account.updated_at = now;
-        account.profile_last_validated_at = None;
-        account.profile_last_validation_error = if reset_proxy_capabilities {
+        if reset_proxy_capabilities {
+            account.profile_last_validated_at = None;
             account.proxy_endpoints = vec![ProxyEndpointCapability::ChatCompletions];
-            Some(
+            account.profile_last_validation_error = Some(
                 "接口能力已重置为仅 /v1/chat/completions；如需 Responses/Compact，请重新探测或手动开启。"
                     .to_string(),
-            )
-        } else {
-            None
-        };
+            );
+        }
         account.profile_integrity_error = None;
 
         profile_files::sync_account_profile_in_store_path(&store_path, account)?;
@@ -4101,13 +4073,14 @@ fn normalize_optional_quota_display_text(value: Option<String>) -> Option<String
     })
 }
 
-async fn resolve_create_api_quota_fields(
+fn resolve_create_api_quota_fields(
     input: &crate::models::CreateApiAccountInput,
-    label: &str,
-    base_url: &str,
-    api_key: &str,
 ) -> ResolvedApiQuotaFields {
-    let fallback = ResolvedApiQuotaFields {
+    if !input.balance_display_enabled {
+        return ResolvedApiQuotaFields::empty();
+    }
+
+    ResolvedApiQuotaFields {
         mode: input.api_quota_mode,
         today_used_text: normalize_optional_quota_display_text(
             input.api_quota_today_used_text.clone(),
@@ -4130,146 +4103,75 @@ async fn resolve_create_api_quota_fields(
         subscription_name: normalize_optional_quota_display_text(
             input.api_quota_subscription_name.clone(),
         ),
-    };
-
-    resolve_platform_api_quota_fields(
-        fallback,
-        label,
-        base_url,
-        Some(api_key),
-        input.platform_login_email.as_deref(),
-        input.platform_login_password.as_deref(),
-        input.balance_display_enabled,
-    )
-    .await
+    }
 }
 
-async fn resolve_update_api_quota_fields(
+fn resolve_update_api_quota_fields(
     input: &crate::models::UpdateApiAccountInput,
-    label: &str,
-    base_url: &str,
-    api_key: Option<&str>,
+    account: &StoredAccount,
 ) -> ResolvedApiQuotaFields {
-    let fallback = ResolvedApiQuotaFields {
-        mode: input.api_quota_mode,
-        today_used_text: normalize_optional_quota_display_text(
-            input.api_quota_today_used_text.clone(),
-        ),
-        remaining_text: normalize_optional_quota_display_text(
-            input.api_quota_remaining_text.clone(),
-        ),
-        total_remaining_text: normalize_optional_quota_display_text(
-            input.api_quota_total_remaining_text.clone(),
-        ),
-        total_tokens_text: normalize_optional_quota_display_text(
-            input.api_quota_total_tokens_text.clone(),
-        ),
-        today_tokens_text: normalize_optional_quota_display_text(
-            input.api_quota_today_tokens_text.clone(),
-        ),
-        daily_window: input.api_quota_daily_window.clone(),
-        total_window: input.api_quota_total_window.clone(),
-        subscription_expires_at: input.api_quota_subscription_expires_at,
-        subscription_name: normalize_optional_quota_display_text(
-            input.api_quota_subscription_name.clone(),
-        ),
-    };
-
-    resolve_platform_api_quota_fields(
-        fallback,
-        label,
-        base_url,
-        api_key,
-        input.platform_login_email.as_deref(),
-        input.platform_login_password.as_deref(),
-        input.balance_display_enabled.unwrap_or(true),
-    )
-    .await
-}
-
-async fn resolve_platform_api_quota_fields(
-    fallback: ResolvedApiQuotaFields,
-    label: &str,
-    base_url: &str,
-    api_key: Option<&str>,
-    email: Option<&str>,
-    password: Option<&str>,
-    balance_display_enabled: bool,
-) -> ResolvedApiQuotaFields {
+    let balance_display_enabled = input
+        .balance_display_enabled
+        .unwrap_or(account.balance_display_enabled);
     if !balance_display_enabled {
         return ResolvedApiQuotaFields::empty();
     }
 
-    let email = email.map(str::trim).filter(|value| !value.is_empty());
-    let password = password.map(str::trim).filter(|value| !value.is_empty());
-
-    if let Some(api_key) = api_key
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .filter(|_| email.is_none() || password.is_none())
-    {
-        if let Ok(snapshot) = fetch_api_key_quota_snapshot(base_url, api_key).await {
-            return ResolvedApiQuotaFields {
-                mode: snapshot.mode,
-                today_used_text: snapshot.today_used_text.or(fallback.today_used_text),
-                remaining_text: snapshot.remaining_text.or(fallback.remaining_text),
-                total_remaining_text: snapshot
-                    .total_remaining_text
-                    .or(fallback.total_remaining_text),
-                total_tokens_text: snapshot.total_tokens_text.or(fallback.total_tokens_text),
-                today_tokens_text: snapshot.today_tokens_text.or(fallback.today_tokens_text),
-                daily_window: snapshot.daily_window.or(fallback.daily_window),
-                total_window: snapshot.total_window.or(fallback.total_window),
-                subscription_expires_at: snapshot
-                    .subscription_expires_at
-                    .or(fallback.subscription_expires_at),
-                subscription_name: fallback.subscription_name.or(snapshot.subscription_name),
-            };
-        }
+    ResolvedApiQuotaFields {
+        mode: input.api_quota_mode,
+        today_used_text: normalize_optional_quota_display_text(
+            input.api_quota_today_used_text.clone(),
+        )
+        .or_else(|| account.api_quota_today_used_text.clone()),
+        remaining_text: normalize_optional_quota_display_text(
+            input.api_quota_remaining_text.clone(),
+        )
+        .or_else(|| account.api_quota_remaining_text.clone()),
+        total_remaining_text: normalize_optional_quota_display_text(
+            input.api_quota_total_remaining_text.clone(),
+        )
+        .or_else(|| account.api_quota_total_remaining_text.clone()),
+        total_tokens_text: normalize_optional_quota_display_text(
+            input.api_quota_total_tokens_text.clone(),
+        )
+        .or_else(|| account.api_quota_total_tokens_text.clone()),
+        today_tokens_text: normalize_optional_quota_display_text(
+            input.api_quota_today_tokens_text.clone(),
+        )
+        .or_else(|| account.api_quota_today_tokens_text.clone()),
+        daily_window: input
+            .api_quota_daily_window
+            .clone()
+            .or_else(|| account.api_quota_daily_window.clone()),
+        total_window: input
+            .api_quota_total_window
+            .clone()
+            .or_else(|| account.api_quota_total_window.clone()),
+        subscription_expires_at: input
+            .api_quota_subscription_expires_at
+            .or(account.api_quota_subscription_expires_at),
+        subscription_name: normalize_optional_quota_display_text(
+            input.api_quota_subscription_name.clone(),
+        )
+        .or_else(|| account.api_quota_subscription_name.clone()),
     }
+}
 
-    let Some(email) = email else {
-        return fallback;
-    };
-    let Some(password) = password else {
-        return fallback;
-    };
-
-    let provider = crate::models::NotificationProviderConfig {
-        id: "api-quota-probe".to_string(),
-        name: label.to_string(),
-        account_key: None,
-        kind: Default::default(),
-        enabled: true,
-        cost_multiplier: crate::models::default_notification_cost_multiplier(),
-        base_url: base_url.to_string(),
-        email: email.to_string(),
-        password: Some(password.to_string()),
-        created_at: now_unix_seconds(),
-        updated_at: now_unix_seconds(),
-        last_test_at: None,
-        last_test_error: None,
-    };
-
-    match notification_service::fetch_api_quota_snapshot(provider).await {
-        Ok(snapshot) => ResolvedApiQuotaFields {
-            mode: snapshot.mode,
-            today_used_text: snapshot.today_used_text.or(fallback.today_used_text),
-            remaining_text: snapshot.remaining_text.or(fallback.remaining_text),
-            total_remaining_text: snapshot
-                .total_remaining_text
-                .or(fallback.total_remaining_text),
-            total_tokens_text: snapshot.total_tokens_text.or(fallback.total_tokens_text),
-            today_tokens_text: snapshot.today_tokens_text.or(fallback.today_tokens_text),
-            daily_window: snapshot.daily_window.or(fallback.daily_window),
-            total_window: snapshot.total_window.or(fallback.total_window),
-            subscription_expires_at: snapshot
-                .subscription_expires_at
-                .or(fallback.subscription_expires_at),
-            subscription_name: fallback.subscription_name.or(snapshot.subscription_name),
-        },
-        Err(_) => fallback,
-    }
+fn unverified_relay_probe_state() -> (
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Vec<ProxyEndpointCapability>,
+) {
+    (
+        None,
+        None,
+        Some(
+            "接口能力尚未探测，当前仅启用 /v1/chat/completions；如需 Responses/Compact，请重新探测或手动开启。"
+                .to_string(),
+        ),
+        vec![ProxyEndpointCapability::ChatCompletions],
+    )
 }
 
 fn normalize_account_tags(tags: Vec<String>) -> Vec<String> {
@@ -4324,7 +4226,10 @@ mod tests {
     use super::probe_api_models_internal;
     use super::probe_failure_message;
     use super::relay_profile_change_requires_proxy_reset;
+    use super::resolve_create_api_quota_fields;
+    use super::resolve_update_api_quota_fields;
     use super::sync_primary_api_key_from_relay_key_pool;
+    use super::unverified_relay_probe_state;
     use super::upsert_prepared_import;
     use super::upsert_prepared_relay_import;
     use super::ChatgptImportCandidate;
@@ -5305,6 +5210,92 @@ mod tests {
             "gpt-5.4",
             Some("sk-changed"),
         ));
+    }
+
+    #[test]
+    fn api_account_create_uses_local_quota_input_without_validation() {
+        let input = serde_json::from_value(json!({
+            "label": "Local API",
+            "baseUrl": "https://api.example.com/v1",
+            "apiKey": "sk-local",
+            "modelName": "gpt-5.6-luna",
+            "balanceDisplayEnabled": true,
+            "apiQuotaMode": "platformSubscription",
+            "apiQuotaTodayUsedText": " 12.5 ",
+            "apiQuotaRemainingText": " 87.5 ",
+            "apiQuotaSubscriptionName": " Coding Plan "
+        }))
+        .expect("create API input");
+
+        let fields = resolve_create_api_quota_fields(&input);
+
+        assert_eq!(fields.mode, ApiQuotaMode::PlatformSubscription);
+        assert_eq!(fields.today_used_text.as_deref(), Some("12.5"));
+        assert_eq!(fields.remaining_text.as_deref(), Some("87.5"));
+        assert_eq!(fields.subscription_name.as_deref(), Some("Coding Plan"));
+    }
+
+    #[test]
+    fn api_account_update_preserves_existing_quota_snapshot() {
+        let mut account = relay_account_for_tests();
+        account.balance_display_enabled = true;
+        account.api_quota_mode = ApiQuotaMode::PlatformSubscription;
+        account.api_quota_today_used_text = Some("21".to_string());
+        account.api_quota_remaining_text = Some("79".to_string());
+        account.api_quota_total_remaining_text = Some("7900".to_string());
+        account.api_quota_subscription_expires_at = Some(1_900_000_000);
+        account.api_quota_subscription_name = Some("Existing Plan".to_string());
+        let input = serde_json::from_value(json!({
+            "label": "Renamed API",
+            "baseUrl": "https://api.example.com/v1",
+            "modelName": "gpt-5.4",
+            "balanceDisplayEnabled": true,
+            "apiQuotaMode": "platformSubscription"
+        }))
+        .expect("update API input");
+
+        let fields = resolve_update_api_quota_fields(&input, &account);
+
+        assert_eq!(fields.mode, ApiQuotaMode::PlatformSubscription);
+        assert_eq!(fields.today_used_text.as_deref(), Some("21"));
+        assert_eq!(fields.remaining_text.as_deref(), Some("79"));
+        assert_eq!(fields.total_remaining_text.as_deref(), Some("7900"));
+        assert_eq!(fields.subscription_expires_at, Some(1_900_000_000));
+        assert_eq!(fields.subscription_name.as_deref(), Some("Existing Plan"));
+    }
+
+    #[test]
+    fn api_account_update_clears_quota_when_balance_display_is_disabled() {
+        let mut account = relay_account_for_tests();
+        account.api_quota_mode = ApiQuotaMode::PlatformSubscription;
+        account.api_quota_remaining_text = Some("79".to_string());
+        let input = serde_json::from_value(json!({
+            "label": "Local API",
+            "baseUrl": "https://api.example.com/v1",
+            "modelName": "gpt-5.4",
+            "balanceDisplayEnabled": false,
+            "apiQuotaMode": "platformSubscription"
+        }))
+        .expect("update API input");
+
+        let fields = resolve_update_api_quota_fields(&input, &account);
+
+        assert_eq!(fields.mode, ApiQuotaMode::ApiOnly);
+        assert!(fields.remaining_text.is_none());
+        assert!(fields.subscription_name.is_none());
+    }
+
+    #[test]
+    fn new_api_account_starts_unverified_with_chat_completions_only() {
+        let (last_validated_at, balance_text, validation_error, endpoints) =
+            unverified_relay_probe_state();
+
+        assert!(last_validated_at.is_none());
+        assert!(balance_text.is_none());
+        assert!(validation_error
+            .as_deref()
+            .is_some_and(|message| message.contains("未探测")));
+        assert_eq!(endpoints, vec![ProxyEndpointCapability::ChatCompletions]);
     }
 
     #[test]

@@ -6,3 +6,24 @@ release/
 src-tauri/target/
 src-tauri/gen/
 src-tauri/resources/
+
+# Sensitive local credentials and runtime state
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.kdbx
+credentials.json
+auth.json
+accounts.json
+*.sqlite
+*.sqlite3
+*.sqlite-*
+*.db
+*.db-*
+*.dmp
+*.trace
+*.tmp
