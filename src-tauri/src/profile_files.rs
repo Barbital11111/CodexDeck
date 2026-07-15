@@ -858,34 +858,79 @@ fn existing_model_catalog_path_if_entries_match(
     let Some(models) = catalog.get("models").and_then(Value::as_array) else {
         return Ok(None);
     };
+    if !model_catalog_models_match_entries(models, entries) {
+        return Ok(None);
+    }
+    Ok(Some(path))
+}
+
+fn model_catalog_models_match_entries(
+    models: &[Value],
+    entries: &[RelayModelCatalogEntry],
+) -> bool {
     let enabled_entries = entries
         .iter()
         .filter(|entry| entry.enabled && !entry.model.trim().is_empty())
         .collect::<Vec<_>>();
     if models.len() != enabled_entries.len() {
-        return Ok(None);
+        return false;
     }
     for (model, entry) in models.iter().zip(enabled_entries) {
         let Some(slug) = model.get("slug").and_then(Value::as_str) else {
-            return Ok(None);
+            return false;
         };
         if slug != entry.model.trim() {
-            return Ok(None);
+            return false;
         }
         let display_name = model
             .get("display_name")
             .and_then(Value::as_str)
             .unwrap_or(slug);
         if display_name != entry.display_name_or_model() {
-            return Ok(None);
+            return false;
         }
         if let Some(context_window) = entry.context_window {
             if model.get("context_window").and_then(Value::as_u64) != Some(context_window as u64) {
-                return Ok(None);
+                return false;
             }
         }
+        if !model_reasoning_profile_matches_entry(model, entry) {
+            return false;
+        }
     }
-    Ok(Some(path))
+    true
+}
+
+fn model_reasoning_profile_matches_entry(model: &Value, entry: &RelayModelCatalogEntry) -> bool {
+    if entry_uses_bundled_reasoning_profile(entry) {
+        return true;
+    }
+
+    let profile = relay_reasoning_profile(entry);
+    if model.get("default_reasoning_level").and_then(Value::as_str) != Some(profile.default_effort)
+    {
+        return false;
+    }
+    if model
+        .get("supports_reasoning_summaries")
+        .and_then(Value::as_bool)
+        != Some(profile.supports_reasoning_summaries)
+    {
+        return false;
+    }
+    let Some(actual_efforts) = model
+        .get("supported_reasoning_levels")
+        .and_then(Value::as_array)
+    else {
+        return profile.efforts.is_empty();
+    };
+    actual_efforts.len() == profile.efforts.len()
+        && actual_efforts
+            .iter()
+            .zip(profile.efforts)
+            .all(|(actual, (expected, _))| {
+                actual.get("effort").and_then(Value::as_str) == Some(*expected)
+            })
 }
 
 fn cleanup_stale_codexdeck_agents(
@@ -1006,13 +1051,16 @@ fn build_model_catalog_json_from_entries(
         .get("models")
         .and_then(Value::as_array)
         .ok_or_else(|| "Codex bundled model catalog 缺少 models 数组。".to_string())?;
-    let template = select_catalog_template_model(bundled_models, entries)
+    let fallback_template = select_catalog_fallback_model(bundled_models)
         .cloned()
         .ok_or_else(|| "Codex bundled model catalog 缺少可复用模型模板。".to_string())?;
 
     let mut models = Vec::new();
     for (index, entry) in entries.iter().enumerate() {
-        let mut model = template.clone();
+        let exact_template = select_exact_catalog_model(bundled_models, entry);
+        let mut model = exact_template
+            .cloned()
+            .unwrap_or_else(|| fallback_template.clone());
         if let Some(object) = model.as_object_mut() {
             object.insert("slug".to_string(), Value::String(entry.model.clone()));
             object.insert(
@@ -1032,6 +1080,9 @@ fn build_model_catalog_json_from_entries(
             );
             object.insert("visibility".to_string(), Value::String("list".to_string()));
             object.insert("supported_in_api".to_string(), Value::Bool(true));
+            if exact_template.is_none() {
+                apply_relay_reasoning_profile(object, entry);
+            }
             if let Some(context_window) = entry.context_window {
                 object.insert(
                     "context_window".to_string(),
@@ -1063,25 +1114,138 @@ fn build_model_catalog_json_from_entries(
         .map_err(|error| format!("序列化 Codex 模型 catalog 失败: {error}"))
 }
 
-fn select_catalog_template_model<'a>(
+fn select_exact_catalog_model<'a>(
     bundled_models: &'a [Value],
-    entries: &[RelayModelCatalogEntry],
+    entry: &RelayModelCatalogEntry,
 ) -> Option<&'a Value> {
-    for entry in entries {
-        if let Some(model) = bundled_models.iter().find(|model| {
-            model
-                .get("slug")
-                .and_then(Value::as_str)
-                .is_some_and(|slug| slug == entry.model)
-        }) {
-            return Some(model);
-        }
-    }
+    [Some(entry.model.as_str()), entry.request_model.as_deref()]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|candidate| !candidate.is_empty())
+        .find_map(|candidate| {
+            bundled_models.iter().find(|model| {
+                model
+                    .get("slug")
+                    .and_then(Value::as_str)
+                    .is_some_and(|slug| slug == candidate)
+            })
+        })
+}
 
+fn select_catalog_fallback_model(bundled_models: &[Value]) -> Option<&Value> {
     bundled_models
         .iter()
         .find(|model| model.get("slug").and_then(Value::as_str) == Some("gpt-5.5"))
         .or_else(|| bundled_models.first())
+}
+
+#[derive(Clone, Copy)]
+struct RelayReasoningProfile {
+    default_effort: &'static str,
+    efforts: &'static [(&'static str, &'static str)],
+    supports_reasoning_summaries: bool,
+}
+
+const NO_REASONING_PROFILE: RelayReasoningProfile = RelayReasoningProfile {
+    default_effort: "none",
+    efforts: &[],
+    supports_reasoning_summaries: false,
+};
+const THINKING_TOGGLE_PROFILE: RelayReasoningProfile = RelayReasoningProfile {
+    default_effort: "high",
+    efforts: &[("none", "Thinking off"), ("high", "Thinking on")],
+    supports_reasoning_summaries: true,
+};
+const HIGH_MAX_REASONING_PROFILE: RelayReasoningProfile = RelayReasoningProfile {
+    default_effort: "high",
+    efforts: &[
+        ("none", "Thinking off"),
+        ("high", "Enhanced reasoning"),
+        ("max", "Deep reasoning"),
+    ],
+    supports_reasoning_summaries: true,
+};
+const GLM_5_2_REASONING_PROFILE: RelayReasoningProfile = RelayReasoningProfile {
+    default_effort: "max",
+    ..HIGH_MAX_REASONING_PROFILE
+};
+
+fn compact_model_identity(entry: &RelayModelCatalogEntry) -> String {
+    [
+        Some(entry.model.as_str()),
+        entry.display_name.as_deref(),
+        entry.request_model.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .flat_map(str::chars)
+    .filter(|ch| ch.is_ascii_alphanumeric())
+    .map(|ch| ch.to_ascii_lowercase())
+    .collect()
+}
+
+fn compact_model_name(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric())
+        .map(|ch| ch.to_ascii_lowercase())
+        .collect()
+}
+
+fn entry_uses_bundled_reasoning_profile(entry: &RelayModelCatalogEntry) -> bool {
+    [
+        Some(entry.model.as_str()),
+        entry.display_name.as_deref(),
+        entry.request_model.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    .map(compact_model_name)
+    .any(|identity| identity.starts_with("gpt") || identity.starts_with("codexauto"))
+}
+
+fn relay_reasoning_profile(entry: &RelayModelCatalogEntry) -> RelayReasoningProfile {
+    let identity = compact_model_identity(entry);
+    if identity.contains("minimaxm3") {
+        THINKING_TOGGLE_PROFILE
+    } else if identity.contains("glm52") {
+        GLM_5_2_REASONING_PROFILE
+    } else if identity.contains("deepseek") {
+        HIGH_MAX_REASONING_PROFILE
+    } else {
+        NO_REASONING_PROFILE
+    }
+}
+
+fn apply_relay_reasoning_profile(
+    model: &mut serde_json::Map<String, Value>,
+    entry: &RelayModelCatalogEntry,
+) {
+    let profile = relay_reasoning_profile(entry);
+    model.insert(
+        "default_reasoning_level".to_string(),
+        Value::String(profile.default_effort.to_string()),
+    );
+    model.insert(
+        "supported_reasoning_levels".to_string(),
+        Value::Array(
+            profile
+                .efforts
+                .iter()
+                .map(|(effort, description)| {
+                    serde_json::json!({
+                        "effort": effort,
+                        "description": description,
+                    })
+                })
+                .collect(),
+        ),
+    );
+    model.insert(
+        "supports_reasoning_summaries".to_string(),
+        Value::Bool(profile.supports_reasoning_summaries),
+    );
 }
 
 fn read_cached_bundled_codex_model_catalog_json() -> Result<String, String> {
@@ -1989,6 +2153,7 @@ mod tests {
     use super::build_relay_profile_config;
     use super::cleanup_orphan_profiles_in_store_path;
     use super::merge_active_codex_profile_config;
+    use super::model_catalog_models_match_entries;
     use super::normalize_relay_api_key;
     use super::normalize_relay_base_url;
     use super::profile_dir_from_store_path;
@@ -2283,7 +2448,190 @@ responses_websockets_v2 = true
         assert_eq!(models[0]["truncation_policy"]["limit"], json!(128000));
         assert_eq!(models[1]["slug"], json!("menu-heavy"));
         assert_eq!(models[1]["display_name"], json!("menu-heavy"));
-        assert_eq!(models[1]["default_reasoning_level"], json!("medium"));
+        assert_eq!(models[1]["default_reasoning_level"], json!("none"));
+        assert_eq!(models[1]["supported_reasoning_levels"], json!([]));
+        assert_eq!(models[1]["supports_reasoning_summaries"], json!(false));
+    }
+
+    #[test]
+    fn model_catalog_json_uses_provider_specific_reasoning_profiles() {
+        let bundled = json!({
+            "models": [
+                {
+                    "slug": "gpt-5.6-sol",
+                    "display_name": "GPT-5.6-Sol",
+                    "description": "managed model",
+                    "default_reasoning_level": "low",
+                    "supported_reasoning_levels": [
+                        { "effort": "low", "description": "Low" },
+                        { "effort": "medium", "description": "Medium" },
+                        { "effort": "high", "description": "High" },
+                        { "effort": "xhigh", "description": "Extra high" },
+                        { "effort": "max", "description": "Max" },
+                        { "effort": "ultra", "description": "Ultra" }
+                    ],
+                    "shell_type": "shell_command",
+                    "visibility": "list",
+                    "supported_in_api": true,
+                    "priority": 0,
+                    "supports_reasoning_summaries": true
+                },
+                {
+                    "slug": "gpt-5.5",
+                    "display_name": "GPT-5.5",
+                    "description": "fallback template",
+                    "default_reasoning_level": "medium",
+                    "supported_reasoning_levels": [
+                        { "effort": "low", "description": "Low" },
+                        { "effort": "medium", "description": "Medium" },
+                        { "effort": "high", "description": "High" },
+                        { "effort": "xhigh", "description": "Extra high" }
+                    ],
+                    "shell_type": "shell_command",
+                    "visibility": "list",
+                    "supported_in_api": true,
+                    "priority": 1,
+                    "supports_reasoning_summaries": true
+                }
+            ]
+        })
+        .to_string();
+        let entries = [
+            RelayModelCatalogEntry {
+                model: "gpt-5.6-sol".to_string(),
+                display_name: Some("GPT 5.6 Sol".to_string()),
+                request_model: None,
+                context_window: None,
+                enabled: true,
+            },
+            RelayModelCatalogEntry {
+                model: "glm-5-2-260617".to_string(),
+                display_name: Some("glm-5.2".to_string()),
+                request_model: None,
+                context_window: None,
+                enabled: true,
+            },
+            RelayModelCatalogEntry {
+                model: "MiniMax-M3".to_string(),
+                display_name: None,
+                request_model: None,
+                context_window: None,
+                enabled: true,
+            },
+            RelayModelCatalogEntry {
+                model: "deepseek-menu".to_string(),
+                display_name: Some("DeepSeek V4 Pro".to_string()),
+                request_model: Some("deepseek-v4-pro".to_string()),
+                context_window: None,
+                enabled: true,
+            },
+            RelayModelCatalogEntry {
+                model: "vendor-unknown".to_string(),
+                display_name: Some("Unknown Model".to_string()),
+                request_model: None,
+                context_window: None,
+                enabled: true,
+            },
+        ];
+
+        let catalog = build_model_catalog_json_from_entries(&bundled, &entries)
+            .expect("build provider-specific catalog");
+        let parsed: Value = serde_json::from_str(&catalog).expect("parse generated catalog");
+        let models = parsed["models"].as_array().expect("models array");
+        let efforts = |index: usize| {
+            models[index]["supported_reasoning_levels"]
+                .as_array()
+                .expect("reasoning levels")
+                .iter()
+                .map(|level| level["effort"].as_str().expect("effort"))
+                .collect::<Vec<_>>()
+        };
+
+        assert_eq!(
+            efforts(0),
+            ["low", "medium", "high", "xhigh", "max", "ultra"]
+        );
+        assert_eq!(models[0]["default_reasoning_level"], json!("low"));
+        assert_eq!(efforts(1), ["none", "high", "max"]);
+        assert_eq!(models[1]["default_reasoning_level"], json!("max"));
+        assert_eq!(efforts(2), ["none", "high"]);
+        assert_eq!(models[2]["default_reasoning_level"], json!("high"));
+        assert_eq!(efforts(3), ["none", "high", "max"]);
+        assert_eq!(models[3]["default_reasoning_level"], json!("high"));
+        assert!(efforts(4).is_empty());
+        assert_eq!(models[4]["default_reasoning_level"], json!("none"));
+        assert_eq!(models[4]["supports_reasoning_summaries"], json!(false));
+    }
+
+    #[test]
+    fn model_catalog_cache_rejects_inherited_reasoning_levels() {
+        let entries = [RelayModelCatalogEntry {
+            model: "glm-5-2-260617".to_string(),
+            display_name: Some("glm-5.2".to_string()),
+            request_model: None,
+            context_window: Some(1_000_000),
+            enabled: true,
+        }];
+        let stale_models = vec![json!({
+            "slug": "glm-5-2-260617",
+            "display_name": "glm-5.2",
+            "context_window": 1_000_000,
+            "default_reasoning_level": "low",
+            "supported_reasoning_levels": [
+                { "effort": "low" },
+                { "effort": "medium" },
+                { "effort": "high" },
+                { "effort": "xhigh" },
+                { "effort": "max" },
+                { "effort": "ultra" }
+            ],
+            "supports_reasoning_summaries": true
+        })];
+        let current_models = vec![json!({
+            "slug": "glm-5-2-260617",
+            "display_name": "glm-5.2",
+            "context_window": 1_000_000,
+            "default_reasoning_level": "max",
+            "supported_reasoning_levels": [
+                { "effort": "none" },
+                { "effort": "high" },
+                { "effort": "max" }
+            ],
+            "supports_reasoning_summaries": true
+        })];
+
+        assert!(!model_catalog_models_match_entries(&stale_models, &entries));
+        assert!(model_catalog_models_match_entries(
+            &current_models,
+            &entries
+        ));
+    }
+
+    #[test]
+    fn model_catalog_cache_preserves_official_request_model_reasoning() {
+        let entries = [RelayModelCatalogEntry {
+            model: "sol-menu".to_string(),
+            display_name: Some("GPT 5.6 Sol".to_string()),
+            request_model: Some("gpt-5.6-sol".to_string()),
+            context_window: None,
+            enabled: true,
+        }];
+        let models = vec![json!({
+            "slug": "sol-menu",
+            "display_name": "GPT 5.6 Sol",
+            "default_reasoning_level": "low",
+            "supported_reasoning_levels": [
+                { "effort": "low" },
+                { "effort": "medium" },
+                { "effort": "high" },
+                { "effort": "xhigh" },
+                { "effort": "max" },
+                { "effort": "ultra" }
+            ],
+            "supports_reasoning_summaries": true
+        })];
+
+        assert!(model_catalog_models_match_entries(&models, &entries));
     }
 
     #[test]

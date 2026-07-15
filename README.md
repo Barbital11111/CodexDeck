@@ -14,7 +14,7 @@ CodexDeck 是一个基于 **React + Tauri** 的桌面工具，用来管理 Codex
 - 支持 API 模型探测、菜单模型与实际请求模型分离、模型上下文窗口配置和本地模型路由模式。
 - 支持 Windows Codex Desktop 受控副本、多模型选择器与可选的 GPU 加速禁用启动。
 - 支持 classic / modern 两套 PC 端 UI 皮肤并行开发。
-- 不内置 Sub2API、远程控制 runtime、Android 端、cloudflared 或外部反代源码。
+- 不内置 Sub2API、Android 端、cloudflared 或外部反代源码。
 
 如需 Sub2API、New API、NAS 网关或其他中转服务，请作为外部服务部署，然后在 CodexDeck 中按普通 API 配置填写：
 
@@ -26,7 +26,7 @@ Model:    <model-name>
 
 ## 下载与安装
 
-- Windows 安装包从 [GitHub Releases](https://github.com/Barbital11111/CodexDeck/releases/latest) 下载，可选择 NSIS `setup.exe` 或 MSI。
+- Windows 安装包从 [GitHub Releases](../../releases/latest) 下载，可选择 NSIS `setup.exe` 或 MSI。
 - 正式版保留 Tauri updater；Release 同时提供签名文件与 `latest.json`，用于后续应用内更新。
 - 多模型模式需要本机已安装官方 Codex Desktop。CodexDeck 只复制并 patch 自己的受控副本，不修改 `WindowsApps` 中的官方文件。
 
@@ -79,14 +79,16 @@ npm run dev
 - 切换账号时会同步 Codex 线程 provider，降低历史会话不可见风险。
 - 路由模式会在本机临时启动只监听 `127.0.0.1` 的模型路由，将多个 API 账号的已选模型聚合为一个 OpenAI 兼容入口；关闭或切换模式时会停止旧路由。
 
-### Codex 多模型模式
+### Codex 模型切换卡片
 
-- 使用受控 Codex 副本提供 Terra、Sol、Luna 模型切换，以及 `Low / Medium / High / Extra high / Max / ULTRA` 六档推理强度选择。
+![CodexDeck 2.1.1 模型切换卡片](docs/assets/model-picker-v2.1.1.png)
+
+- 在 Codex 输入区直接切换 Terra、Sol、Luna，并通过卡片内的滑杆选择 `Low / Medium / High / Extra high / Max / ULTRA` 六档推理强度。
+- 模型、档位、拉杆状态和光效会随选择联动，并适配 Codex 的深色与浅色界面。
+- 第三方模型不会继承上述六档：MiniMax-M3 使用 `None / High` 作为思考开关，GLM-5.2 与 DeepSeek 使用 `None / High / Max`，未知模型默认不声明推理档位。
 - 启动时会校验官方 Codex 版本与现有受控副本；仅在来源或 patch 版本变化时重建，平时复用已验证副本。
 - Luna 的 `ULTRA` 保留统一的视觉档位，实际推理强度仍按 `Max` 发送。
 - 旧候选副本会避开正在运行的目录后清理；patch 备份和 provider 备份默认仅保留最近一份。
-
-![CodexDeck 多模型选择器](docs/assets/model-picker-v2.1.1.png)
 
 ### 额度与通知
 

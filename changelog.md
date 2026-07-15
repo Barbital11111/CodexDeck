@@ -4,8 +4,8 @@
   2. API 配置改为本地快速保存，模型能力与额度保留手动探测入口。
   3. 增加受控 Codex 快速校验与旧副本、patch/provider 备份清理，减少重复启动等待和磁盘占用。
   4. 修复受控副本已完成 patch 但未成功晋级，启动后回退官方界面的问题。
-
-  ![CodexDeck 2.1.1 多模型选择器](https://raw.githubusercontent.com/Barbital11111/CodexDeck/v2.1.1/docs/assets/model-picker-v2.1.1.png)
+  5. 修复第三方模型错误继承 GPT 六档推理强度的问题，按 MiniMax-M3、GLM-5.2 和 DeepSeek 的实际能力生成档位。
+  ![CodexDeck 2.1.1 多模型选择器](docs/assets/model-picker-v2.1.1.png)
 - v2.1.0
   1. 清理前端构建产物，避免历史 Hash 静态资源被打入安装包。
   2. 更换自动更新签名密钥，后续版本将使用新密钥验证更新。
