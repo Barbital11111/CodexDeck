@@ -89,7 +89,7 @@ npm run dev
 - 启动时会校验官方 Codex 版本与现有受控副本；仅在来源或 patch 版本变化时重建，平时复用已验证副本。
 - Luna 的 `ULTRA` 保留统一的视觉档位，实际推理强度仍按 `Max` 发送。
 - 旧候选副本会避开正在运行的目录后清理；patch 备份和 provider 备份默认仅保留最近一份。
-
+- 启动需要打开多模型模式才能覆盖启动模型切换卡片,如果不行请复制源代码修一下
 ### 额度与通知
 
 - 展示账号用量窗口和 API 余额信息。
@@ -108,22 +108,6 @@ npm run dev
 - 可选在切换后重启已选编辑器。
 - API 登录可启用增强启动，补齐部分官方账号态页面能力。
 
-### UI 皮肤
-
-- `classic` 皮肤保留原版布局和蓝白观感，经典组件位于 `src/components/classic/`，样式集中在 `src/styles/classic-restore.css`。
-- `modern` 皮肤承接新版暖橙 UI，使用新版 Header、供应商与模型入口和路由启动卡片。
-- 预览可通过 URL 参数临时覆盖：`?codexdeckPreviewWindow=1&uiSkin=classic` 或 `?codexdeckPreviewWindow=1&uiSkin=modern`。
-
-## 安装兼容策略
-
-当前 Windows 构建仍沿用历史安装身份：
-
-```text
-应用身份: com.carry.codex-tools
-数据目录: %APPDATA%\com.carry.codex-tools
-```
-
-这是为了让新版 CodexDeck 能覆盖早期 Codex Tools / Codex Switch 安装，并继续读取已有账号、profile 和设置数据。后续如果要迁移到新的应用身份，需要单独做迁移版本，避免用户数据丢失。
 
 ## 验证
 
