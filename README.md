@@ -123,8 +123,6 @@ cargo test --manifest-path src-tauri/Cargo.toml
 cargo check --manifest-path src-tauri/Cargo.toml --release
 ```
 
-发布前必须执行脱敏检查，确认没有本地路径、邮箱、token、API key、auth 文件、`.env`、运行时缓存、构建临时目录或私有服务配置泄露。
-
 ## License
 
 MIT，详见 [LICENSE](LICENSE)。
