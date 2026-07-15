@@ -30,6 +30,13 @@ const LEGACY_SOL_POWER_SELECTIONS: &str = concat!(
     "{id:`gpt-5.6-sol:xhigh`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`xhigh`},",
     "{id:`gpt-5.6-sol:ultra`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`ultra`}",
 );
+const LEGACY_SPLIT_POWER_SELECTIONS: &str = concat!(
+    "{id:`gpt-5.6-terra:low`,model:`gpt-5.6-terra`,modelLabel:`5.6 Terra`,reasoningEffort:`low`},",
+    "{id:`gpt-5.6-sol:low`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`low`},",
+    "{id:`gpt-5.6-sol:medium`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`medium`},",
+    "{id:`gpt-5.6-sol:high`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`high`},",
+    "{id:`gpt-5.6-sol:xhigh`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`xhigh`}",
+);
 const MANAGED_POWER_SELECTIONS_EXPRESSION: &str = concat!(
     "`terra,sol,luna`.split`,`",
     ".flatMap(t=>`low,medium,high,xhigh,max,ultra`.split`,`",
@@ -39,10 +46,14 @@ const MANAGED_POWER_SELECTIONS_EXPRESSION: &str = concat!(
 const LEGACY_POWER_SELECTION_FILTER: &str = "function K(e){return q.flatMap((t,n)=>e?.some(e=>e.model===t.model&&e.supportedReasoningEfforts.some(({reasoningEffort:e})=>e===t.reasoningEffort))?[{...t,powerSettingIndex:n}]:[])}";
 const LEGACY_FALLBACK_POWER_SELECTION_FILTER: &str =
     "function K(e){let t=q(ce,e);if(t.length>=4)return t;let n=q(le,e);return n.length>=4?n:[]}";
+const LEGACY_SPLIT_POWER_SELECTION_FILTER: &str =
+    "function ae(e,t=!1){let n=K(t?[...q,le]:q,e);if(n.length>=4)return n;let r=K(ue,e);return r.length>=4?r:[]}";
 const CURRENT_LEGACY_POWER_SELECTION_FILTER: &str =
     "function K(e){return q.filter(t=>t.modelLabel=e?.find(e=>e.model==t.model)?.displayName)}";
 const CURRENT_FALLBACK_POWER_SELECTION_FILTER: &str =
     "function K(e){return ce.filter(t=>t.modelLabel=e?.find(e=>e.model==t.model)?.displayName)}";
+const CURRENT_SPLIT_POWER_SELECTION_FILTER: &str =
+    "function ae(e){return q.filter(t=>t.modelLabel=e?.find(e=>e.model==t.model)?.displayName)}";
 const PREVIOUS_V5_LEGACY_POWER_SELECTION_FILTER: &str =
     "function K(e){return q.filter(t=>e?.some(e=>e.model===t.model))}";
 const PREVIOUS_V5_FALLBACK_POWER_SELECTION_FILTER: &str =
@@ -64,7 +75,7 @@ const REASONING_LABEL_DEFAULT_REPLACEMENTS: [(&str, &str); 3] = [
 
 const CUSTOM_PICKER_UI_MARKER: &str = "codexdeck-model-picker-ui-v7";
 const CUSTOM_PICKER_CSS_MARKER: &str = ".cdpv8";
-const DEFAULT_PATCH_VERSION: &str = "model-picker-v21";
+const DEFAULT_PATCH_VERSION: &str = "model-picker-v22";
 const CUSTOM_PICKER_COMPONENT_SHA256: &str =
     "4172a556d950840debd0b40f0c652a59e030fb7720f76d0d6d8c3392f4d90faa";
 const CUSTOM_PICKER_CSS_SHA256: &str =
@@ -466,10 +477,19 @@ fn read_asar_header(asar_path: &Path) -> Result<AsarHeader, String> {
     let mut prefix = [0_u8; 16];
     file.read_exact(&mut prefix)
         .map_err(|error| format!("读取 app.asar 头部失败 {}: {error}", asar_path.display()))?;
+    let header_pickle_size =
+        u32::from_le_bytes(prefix[4..8].try_into().expect("slice length")) as u64;
     let header_size = u32::from_le_bytes(prefix[12..16].try_into().expect("slice length")) as usize;
-    let files_offset = 16_u64
+    let header_end = 16_u64
         .checked_add(header_size as u64)
         .ok_or_else(|| "ASAR 头部偏移溢出。".to_string())?;
+    let files_offset = 8_u64
+        .checked_add(header_pickle_size)
+        .ok_or_else(|| "ASAR 文件区偏移溢出。".to_string())?;
+    let padding_size = files_offset
+        .checked_sub(header_end)
+        .filter(|padding_size| *padding_size <= 3)
+        .ok_or_else(|| "ASAR header pickle 布局无效。".to_string())?;
     if files_offset > metadata.len() {
         return Err(format!(
             "app.asar JSON header 超出文件范围: {}",
@@ -484,6 +504,21 @@ fn read_asar_header(asar_path: &Path) -> Result<AsarHeader, String> {
             asar_path.display()
         )
     })?;
+    if padding_size > 0 {
+        let mut padding = vec![0_u8; padding_size as usize];
+        file.read_exact(&mut padding).map_err(|error| {
+            format!(
+                "读取 app.asar header padding 失败 {}: {error}",
+                asar_path.display()
+            )
+        })?;
+        if padding.iter().any(|byte| *byte != 0) {
+            return Err(format!(
+                "app.asar header padding 无效: {}",
+                asar_path.display()
+            ));
+        }
+    }
     let header = serde_json::from_slice(&header_bytes).map_err(|error| {
         format!(
             "解析 app.asar JSON header 失败 {}: {error}",
@@ -1618,7 +1653,8 @@ fn replace_marked_power_selections(text: &str, marker: &str) -> TextPatch {
 
 fn replace_power_selection_filter(text: &str) -> TextPatch {
     let current_filter_count = count_occurrences(text, CURRENT_LEGACY_POWER_SELECTION_FILTER)
-        + count_occurrences(text, CURRENT_FALLBACK_POWER_SELECTION_FILTER);
+        + count_occurrences(text, CURRENT_FALLBACK_POWER_SELECTION_FILTER)
+        + count_occurrences(text, CURRENT_SPLIT_POWER_SELECTION_FILTER);
     if current_filter_count > 1 {
         return TextPatch::state(PatchDisposition::Ambiguous);
     }
@@ -1688,6 +1724,10 @@ fn replace_power_selection_filter(text: &str) -> TextPatch {
             LEGACY_FALLBACK_POWER_SELECTION_FILTER,
             CURRENT_FALLBACK_POWER_SELECTION_FILTER,
         ),
+        (
+            LEGACY_SPLIT_POWER_SELECTION_FILTER,
+            CURRENT_SPLIT_POWER_SELECTION_FILTER,
+        ),
     ];
     let matching = replacements
         .iter()
@@ -1748,10 +1788,14 @@ fn replace_power_picker_menu_width(text: &str) -> TextPatch {
 }
 
 fn contains_power_picker_signature(text: &str) -> bool {
+    let has_split_ultra_picker = text.contains(LEGACY_SPLIT_POWER_SELECTIONS)
+        && text.contains(LEGACY_SPLIT_POWER_SELECTION_FILTER);
     text.contains("gpt-5.6-terra:low")
         && text.contains("gpt-5.6-sol:xhigh")
         && text.contains("gpt-5.6-sol:ultra")
-        && (text.contains("gpt-5.6-luna") || text.contains(LEGACY_SOL_POWER_SELECTIONS))
+        && (text.contains("gpt-5.6-luna")
+            || text.contains(LEGACY_SOL_POWER_SELECTIONS)
+            || has_split_ultra_picker)
 }
 
 #[derive(Debug)]
@@ -1890,7 +1934,8 @@ fn replace_reasoning_menu_visible_labels(text: &str) -> TextPatch {
 
 fn has_complete_power_selections(text: &str) -> bool {
     let current_filter_count = count_occurrences(text, CURRENT_LEGACY_POWER_SELECTION_FILTER)
-        + count_occurrences(text, CURRENT_FALLBACK_POWER_SELECTION_FILTER);
+        + count_occurrences(text, CURRENT_FALLBACK_POWER_SELECTION_FILTER)
+        + count_occurrences(text, CURRENT_SPLIT_POWER_SELECTION_FILTER);
     validate_current_power_selections(text).state == PatchDisposition::Patched
         && text.contains("terra,sol,luna")
         && text.contains("gpt-5.6-${t}:${e}")
@@ -1919,15 +1964,25 @@ fn replace_power_selections(text: &str) -> TextPatch {
         } else if text.contains(LEGACY_SOL_POWER_SELECTIONS_PATCH_MARKER) {
             replace_marked_power_selections(text, LEGACY_SOL_POWER_SELECTIONS_PATCH_MARKER)
         } else {
-            let count = count_occurrences(text, LEGACY_SOL_POWER_SELECTIONS);
-            if count == 0 {
-                return TextPatch::state(PatchDisposition::Missing);
-            }
-            if count > 1 {
+            let unified_count = count_occurrences(text, LEGACY_SOL_POWER_SELECTIONS);
+            let split_count = if unified_count == 0 {
+                count_occurrences(text, LEGACY_SPLIT_POWER_SELECTIONS)
+            } else {
+                0
+            };
+            if unified_count > 1 || split_count > 1 {
                 return TextPatch::state(PatchDisposition::Ambiguous);
             }
+            if unified_count == 0 && split_count == 0 {
+                return TextPatch::state(PatchDisposition::Missing);
+            }
+            let legacy_selection = if unified_count == 1 {
+                LEGACY_SOL_POWER_SELECTIONS
+            } else {
+                LEGACY_SPLIT_POWER_SELECTIONS
+            };
             let selections_offset = text
-                .find(LEGACY_SOL_POWER_SELECTIONS)
+                .find(legacy_selection)
                 .expect("counted legacy selections must have an offset");
             let assignment_regex = Regex::new(&format!(r"({IDENT})=\[[ \t]*$"))
                 .expect("valid legacy selection assignment regex");
@@ -1936,7 +1991,7 @@ fn replace_power_selections(text: &str) -> TextPatch {
             };
             let full_assignment = assignment.get(0).expect("full assignment");
             let before_offset = full_assignment.start();
-            let closing_bracket_offset = selections_offset + LEGACY_SOL_POWER_SELECTIONS.len();
+            let closing_bracket_offset = selections_offset + legacy_selection.len();
             if text.as_bytes().get(closing_bracket_offset) != Some(&b']') {
                 return TextPatch::state(PatchDisposition::Missing);
             }
@@ -3325,8 +3380,14 @@ mod tests {
 
     fn write_asar_header_bytes_fixture(path: &Path, header_bytes: &[u8], contents: &[u8]) {
         let mut asar = vec![0_u8; 16];
+        let string_pickle_size = (4 + header_bytes.len() + 3) & !3;
+        let header_pickle_size = 4 + string_pickle_size;
+        asar[0..4].copy_from_slice(&4_u32.to_le_bytes());
+        asar[4..8].copy_from_slice(&(header_pickle_size as u32).to_le_bytes());
+        asar[8..12].copy_from_slice(&(string_pickle_size as u32).to_le_bytes());
         asar[12..16].copy_from_slice(&(header_bytes.len() as u32).to_le_bytes());
         asar.extend_from_slice(&header_bytes);
+        asar.resize(8 + header_pickle_size, 0);
         asar.extend_from_slice(contents);
         fs::write(path, &asar).expect("write ASAR fixture");
     }
@@ -3362,6 +3423,30 @@ mod tests {
         let (offset, bytes) =
             read_asar_entry(&asar_path, asar.files_offset, &files[0]).expect("read ASAR entry");
         assert_eq!(offset, asar.files_offset);
+        assert_eq!(bytes, b"abc");
+
+        let _ = fs::remove_dir_all(directory);
+    }
+
+    #[test]
+    fn asar_header_padding_is_excluded_from_file_entries() {
+        let directory = temporary_test_dir("asar-header-padding");
+        let asar_path = directory.join("app.asar");
+        let mut header_bytes = br#"{"files":{"entry.js":{"offset":"0","size":3}}}"#.to_vec();
+        while header_bytes.len() % 4 != 3 {
+            header_bytes.push(b' ');
+        }
+        write_asar_header_bytes_fixture(&asar_path, &header_bytes, b"abc");
+
+        let asar = read_asar_header(&asar_path).expect("read padded ASAR header");
+        assert_eq!(asar.files_offset, 16 + header_bytes.len() as u64 + 1);
+        let entry = list_asar_files(&asar.header)
+            .expect("list padded fixture files")
+            .into_iter()
+            .next()
+            .expect("padded fixture entry");
+        let (_, bytes) =
+            read_asar_entry(&asar_path, asar.files_offset, &entry).expect("read padded entry");
         assert_eq!(bytes, b"abc");
 
         let _ = fs::remove_dir_all(directory);
@@ -3658,6 +3743,45 @@ mod tests {
             replace_power_selections(&patched).state,
             PatchDisposition::Patched
         );
+    }
+
+    #[test]
+    fn split_ultra_power_options_patch_and_menu_width_together() {
+        let collapsed_label = concat!(
+            "function Qe(e,t){return`${e.modelLabel} ${t.formatMessage(Ke[e.reasoningEffort])}`};",
+            "var We,Ge,Z,Ke,qe=e((()=>{Ke={...L,medium:s({id:`composer.modelPicker.work.reasoning.standard.label`,defaultMessage:`Standard`}),",
+            "high:s({id:`composer.modelPicker.work.reasoning.extended.label`,defaultMessage:`Extended`})}}))"
+        );
+        let visible_menu_labels = concat!(
+            "let Pe=L[q],Fe;t[32]===Pe?Fe=t[33]:(Fe=(0,$.jsx)(u,{...Pe}),t[32]=Pe,t[33]=Fe);",
+            "children:(0,$.jsx)(u,{...L[t]});children:(0,$.jsx)(u,{...L[t]})"
+        );
+        let source = format!(
+            concat!(
+                "q=[",
+                "{{id:`gpt-5.6-terra:low`,model:`gpt-5.6-terra`,modelLabel:`5.6 Terra`,reasoningEffort:`low`}},",
+                "{{id:`gpt-5.6-sol:low`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`low`}},",
+                "{{id:`gpt-5.6-sol:medium`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`medium`}},",
+                "{{id:`gpt-5.6-sol:high`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`high`}},",
+                "{{id:`gpt-5.6-sol:xhigh`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`xhigh`}}",
+                "];",
+                "le={{id:`gpt-5.6-sol:ultra`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`ultra`}};",
+                "ue=[];",
+                "function ae(e,t=!1){{let n=K(t?[...q,le]:q,e);if(n.length>=4)return n;let r=K(ue,e);return r.length>=4?r:[]}};",
+                "x(`w-56`,y);{collapsed_label};{visible_menu_labels}"
+            ),
+            collapsed_label = collapsed_label,
+            visible_menu_labels = visible_menu_labels,
+        );
+
+        assert!(contains_power_picker_signature(&source));
+        let patch = replace_power_selections(&source);
+        assert_eq!(patch.state, PatchDisposition::Patchable);
+        let patched = patch.text.expect("patched split Ultra Power options");
+        assert_eq!(patched.as_bytes().len(), source.as_bytes().len());
+        assert!(has_complete_power_selections(&patched));
+        assert!(patched.contains("`cdpw`"));
+        assert!(patched.contains("terra,sol,luna"));
     }
 
     #[test]

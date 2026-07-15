@@ -56,6 +56,13 @@ const LEGACY_SOL_POWER_SELECTIONS = [
   "{id:`gpt-5.6-sol:xhigh`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`xhigh`}",
   "{id:`gpt-5.6-sol:ultra`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`ultra`}",
 ].join(",");
+const LEGACY_SPLIT_POWER_SELECTIONS = [
+  TERRA_LOW_POWER_SELECTION,
+  "{id:`gpt-5.6-sol:low`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`low`}",
+  "{id:`gpt-5.6-sol:medium`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`medium`}",
+  "{id:`gpt-5.6-sol:high`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`high`}",
+  "{id:`gpt-5.6-sol:xhigh`,model:`gpt-5.6-sol`,modelLabel:`5.6 Sol`,reasoningEffort:`xhigh`}",
+].join(",");
 const MANAGED_POWER_SELECTIONS_EXPRESSION =
   "`terra,sol,luna`.split`,`" +
   ".flatMap(t=>`low,medium,high,xhigh,max,ultra`.split`,`" +
@@ -66,10 +73,14 @@ const LEGACY_POWER_SELECTION_FILTER =
   "function K(e){return q.flatMap((t,n)=>e?.some(e=>e.model===t.model&&e.supportedReasoningEfforts.some(({reasoningEffort:e})=>e===t.reasoningEffort))?[{...t,powerSettingIndex:n}]:[])}";
 const LEGACY_FALLBACK_POWER_SELECTION_FILTER =
   "function K(e){let t=q(ce,e);if(t.length>=4)return t;let n=q(le,e);return n.length>=4?n:[]}";
+const LEGACY_SPLIT_POWER_SELECTION_FILTER =
+  "function ae(e,t=!1){let n=K(t?[...q,le]:q,e);if(n.length>=4)return n;let r=K(ue,e);return r.length>=4?r:[]}";
 const CURRENT_LEGACY_POWER_SELECTION_FILTER =
   "function K(e){return q.filter(t=>t.modelLabel=e?.find(e=>e.model==t.model)?.displayName)}";
 const CURRENT_FALLBACK_POWER_SELECTION_FILTER =
   "function K(e){return ce.filter(t=>t.modelLabel=e?.find(e=>e.model==t.model)?.displayName)}";
+const CURRENT_SPLIT_POWER_SELECTION_FILTER =
+  "function ae(e){return q.filter(t=>t.modelLabel=e?.find(e=>e.model==t.model)?.displayName)}";
 const PREVIOUS_V5_LEGACY_POWER_SELECTION_FILTER =
   "function K(e){return q.filter(t=>e?.some(e=>e.model===t.model))}";
 const PREVIOUS_V5_FALLBACK_POWER_SELECTION_FILTER =
@@ -89,7 +100,7 @@ const REASONING_LABEL_DEFAULT_REPLACEMENTS = [
   ["defaultMessage:`Ultra`", "defaultMessage:`ULTRA`"],
 ];
 
-const PATCH_VERSION = process.env.CODEXDECK_PATCH_VERSION?.trim() || "model-picker-v21";
+const PATCH_VERSION = process.env.CODEXDECK_PATCH_VERSION?.trim() || "model-picker-v22";
 const sourceCodexVersion = process.env.CODEXDECK_SOURCE_CODEX_VERSION?.trim() || null;
 const sourceAsarHashFromEnv = process.env.CODEXDECK_SOURCE_ASAR_HASH?.trim() || null;
 const CUSTOM_PICKER_UI_MARKER = "codexdeck-model-picker-ui-v7";
@@ -133,14 +144,28 @@ function readAsarHeader(asarPath) {
   try {
     const prefix = Buffer.alloc(16);
     fs.readSync(fd, prefix, 0, prefix.length, 0);
+    const headerPickleSize = prefix.readUInt32LE(4);
     const headerJsonSize = prefix.readUInt32LE(12);
+    const headerEnd = 16 + headerJsonSize;
+    const filesOffset = 8 + headerPickleSize;
+    const paddingSize = filesOffset - headerEnd;
+    if (paddingSize < 0 || paddingSize > 3 || filesOffset > fs.fstatSync(fd).size) {
+      throw new Error(`Invalid ASAR header layout: ${asarPath}`);
+    }
     const headerBytes = Buffer.alloc(headerJsonSize);
     fs.readSync(fd, headerBytes, 0, headerJsonSize, 16);
+    if (paddingSize > 0) {
+      const padding = Buffer.alloc(paddingSize);
+      fs.readSync(fd, padding, 0, paddingSize, headerEnd);
+      if (padding.some((byte) => byte !== 0)) {
+        throw new Error(`Invalid ASAR header padding: ${asarPath}`);
+      }
+    }
     return {
       headerJsonSize,
       headerBytes,
       header: JSON.parse(headerBytes.toString("utf8")),
-      filesOffset: 16 + headerJsonSize,
+      filesOffset,
     };
   } finally {
     fs.closeSync(fd);
@@ -322,11 +347,16 @@ function replaceModelListFilter(text) {
 }
 
 function containsPowerPickerSignature(text) {
+  const hasSplitUltraPicker =
+    text.includes(LEGACY_SPLIT_POWER_SELECTIONS) &&
+    text.includes(LEGACY_SPLIT_POWER_SELECTION_FILTER);
   return (
     text.includes("gpt-5.6-terra:low") &&
     text.includes("gpt-5.6-sol:xhigh") &&
     text.includes("gpt-5.6-sol:ultra") &&
-    (text.includes("gpt-5.6-luna") || text.includes(LEGACY_SOL_POWER_SELECTIONS))
+    (text.includes("gpt-5.6-luna") ||
+      text.includes(LEGACY_SOL_POWER_SELECTIONS) ||
+      hasSplitUltraPicker)
   );
 }
 
@@ -674,6 +704,7 @@ function hasCompletePowerSelections(text) {
   const currentFilterCount = [
     CURRENT_LEGACY_POWER_SELECTION_FILTER,
     CURRENT_FALLBACK_POWER_SELECTION_FILTER,
+    CURRENT_SPLIT_POWER_SELECTION_FILTER,
   ].reduce((count, filter) => count + countOccurrences(text, filter), 0);
   return (
     validateCurrentPowerSelections(text).state === "patched" &&
@@ -692,6 +723,7 @@ function replacePowerSelectionFilter(text) {
   const currentFilters = [
     CURRENT_LEGACY_POWER_SELECTION_FILTER,
     CURRENT_FALLBACK_POWER_SELECTION_FILTER,
+    CURRENT_SPLIT_POWER_SELECTION_FILTER,
   ].flatMap((candidate) =>
     Array.from({ length: countOccurrences(text, candidate) }, () => candidate),
   );
@@ -758,6 +790,10 @@ function replacePowerSelectionFilter(text) {
     {
       before: LEGACY_FALLBACK_POWER_SELECTION_FILTER,
       after: CURRENT_FALLBACK_POWER_SELECTION_FILTER,
+    },
+    {
+      before: LEGACY_SPLIT_POWER_SELECTION_FILTER,
+      after: CURRENT_SPLIT_POWER_SELECTION_FILTER,
     },
   ];
   const matchingReplacements = replacements.flatMap((replacement) =>
@@ -917,22 +953,22 @@ function replacePowerSelections(text) {
   } else if (text.includes(LEGACY_SOL_POWER_SELECTIONS_PATCH_MARKER)) {
     selections = replaceMarkedPowerSelections(text, LEGACY_SOL_POWER_SELECTIONS_PATCH_MARKER);
   } else {
-    const count = text.split(LEGACY_SOL_POWER_SELECTIONS).length - 1;
-    if (count === 0) {
-      return { state: "missing" };
-    }
-    if (count > 1) {
+    const unifiedCount = countOccurrences(text, LEGACY_SOL_POWER_SELECTIONS);
+    const splitCount = unifiedCount === 0 ? countOccurrences(text, LEGACY_SPLIT_POWER_SELECTIONS) : 0;
+    if (unifiedCount > 1 || splitCount > 1) {
       return { state: "ambiguous" };
     }
+    if (unifiedCount === 0 && splitCount === 0) return { state: "missing" };
 
-    const selectionsOffset = text.indexOf(LEGACY_SOL_POWER_SELECTIONS);
+    const legacySelection = unifiedCount === 1 ? LEGACY_SOL_POWER_SELECTIONS : LEGACY_SPLIT_POWER_SELECTIONS;
+    const selectionsOffset = text.indexOf(legacySelection);
     const assignment = text.slice(0, selectionsOffset).match(/([A-Za-z_$][\w$]*)=\[[ \t]*$/);
     if (!assignment) {
       return { state: "missing" };
     }
 
     const beforeOffset = selectionsOffset - assignment[0].length;
-    const closingBracketOffset = selectionsOffset + LEGACY_SOL_POWER_SELECTIONS.length;
+    const closingBracketOffset = selectionsOffset + legacySelection.length;
     if (text[closingBracketOffset] !== "]") {
       return { state: "missing" };
     }

@@ -70,7 +70,14 @@ test("the simplified Chinese collapsed Max label is patched to English", () => {
     '"composer.mode.local.reasoning.max.label":`Max`',
   );
   assert.match(patchScript, /replaceZhCnReasoningLabels/);
-  assert.match(patchScript, /"model-picker-v21"/);
+  assert.match(patchScript, /"model-picker-v22"/);
+});
+
+test("the split Ultra picker preimage is recognized and widened", () => {
+  assert.match(patchScript, /LEGACY_SPLIT_POWER_SELECTIONS/);
+  assert.match(patchScript, /LEGACY_SPLIT_POWER_SELECTION_FILTER/);
+  assert.match(patchScript, /CURRENT_SPLIT_POWER_SELECTION_FILTER/);
+  assert.match(patchScript, /hasSplitUltraPicker/);
 });
 
 test("the composer trigger uses the same English reasoning vocabulary as the picker", () => {
@@ -97,4 +104,10 @@ test("the model picker payload keeps the system cursor", () => {
     .toString("utf8");
 
   assert.doesNotMatch(css, /cursor\s*:\s*crosshair/i);
+});
+
+test("ASAR entries start after aligned header pickle padding", () => {
+  assert.match(patchScript, /const headerPickleSize = prefix\.readUInt32LE\(4\)/);
+  assert.match(patchScript, /const filesOffset = 8 \+ headerPickleSize/);
+  assert.doesNotMatch(patchScript, /filesOffset:\s*16 \+ headerJsonSize/);
 });
