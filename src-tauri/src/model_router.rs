@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use std::time::Duration;
 
 use axum::body::Body;
+use axum::extract::DefaultBodyLimit;
 use axum::extract::Path;
 use axum::extract::State;
 use axum::http::HeaderMap;
@@ -26,6 +27,7 @@ use crate::state::AppState;
 use crate::utils::redact_sensitive_text;
 
 const ROUTER_REQUEST_TIMEOUT_SECS: u64 = 300;
+const MAX_MODEL_ROUTER_REQUEST_BODY_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug)]
 pub(crate) struct ModelRouterHandle {
@@ -147,6 +149,7 @@ pub(crate) async fn start_model_router(
         .route("/v1/responses/compact", post(forward_responses_compact))
         .route("/v1/chat/completions", post(forward_chat_completions))
         .route("/v1/:endpoint", post(forward_single_segment_endpoint))
+        .layer(DefaultBodyLimit::max(MAX_MODEL_ROUTER_REQUEST_BODY_BYTES))
         .with_state(state);
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
@@ -448,6 +451,8 @@ mod tests {
     use super::build_routes_from_accounts;
     use super::model_list_payload;
     use super::routes_to_model_catalog_entries;
+    use super::start_model_router;
+    use super::ModelRouterRoute;
     use crate::models::AccountSourceKind;
     use crate::models::ApiQuotaMode;
     use crate::models::ModelRouterRouteSelection;
@@ -590,5 +595,37 @@ mod tests {
         assert_eq!(payload["models"][0]["slug"], "menu-main");
         assert_eq!(payload["models"][0]["display_name"], "Menu menu-main");
         assert_eq!(payload["models"][0]["context_window"], 262144);
+    }
+
+    #[tokio::test]
+    async fn model_router_accepts_requests_above_axum_default_body_limit() {
+        let handle = start_model_router(vec![ModelRouterRoute {
+            model: "known-model".to_string(),
+            display_name: None,
+            request_model: "known-model".to_string(),
+            context_window: None,
+            base_url: "https://api.example.com/v1".to_string(),
+            api_key: "sk-test".to_string(),
+            source_label: "test".to_string(),
+        }])
+        .await
+        .expect("start model router");
+        let oversized_input = "x".repeat(3 * 1024 * 1024);
+        let response = reqwest::Client::new()
+            .post(format!("{}/responses", handle.base_url))
+            .json(&json!({
+                "model": "unrouted-model",
+                "input": oversized_input,
+            }))
+            .send()
+            .await
+            .expect("send oversized request");
+
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        let payload: serde_json::Value = response.json().await.expect("parse router error");
+        assert_eq!(
+            payload["error"]["message"],
+            "No CodexDeck route for model unrouted-model."
+        );
     }
 }

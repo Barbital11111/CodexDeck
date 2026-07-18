@@ -76,6 +76,7 @@ npm run dev
 - 上下文窗口在 UI 中使用 `256K`、`512K`、`1M` 这类格式展示，内部仍保存为 token 数。未知非 GPT 模型默认推荐 `256K`，GPT 系列不自动补写。
 - API profile 默认写入 `codexdeck_api` provider。
 - 混合模式会保留官方账号态，并通过 `experimental_bearer_token` 走指定 API 中转。
+- Grok 4.5 / 4.5 latest 支持 `Low / Medium / High` 三档推理；其他 Grok 变体不自动继承这些档位。
 - 切换账号时会同步 Codex 线程 provider，降低历史会话不可见风险。
 - 路由模式会在本机临时启动只监听 `127.0.0.1` 的模型路由，将多个 API 账号的已选模型聚合为一个 OpenAI 兼容入口；关闭或切换模式时会停止旧路由。
 

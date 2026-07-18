@@ -1157,6 +1157,11 @@ const THINKING_TOGGLE_PROFILE: RelayReasoningProfile = RelayReasoningProfile {
     efforts: &[("none", "Thinking off"), ("high", "Thinking on")],
     supports_reasoning_summaries: true,
 };
+const GROK_4_5_REASONING_PROFILE: RelayReasoningProfile = RelayReasoningProfile {
+    default_effort: "high",
+    efforts: &[("low", "Low"), ("medium", "Medium"), ("high", "High")],
+    supports_reasoning_summaries: true,
+};
 const HIGH_MAX_REASONING_PROFILE: RelayReasoningProfile = RelayReasoningProfile {
     default_effort: "high",
     efforts: &[
@@ -1207,7 +1212,9 @@ fn entry_uses_bundled_reasoning_profile(entry: &RelayModelCatalogEntry) -> bool 
 
 fn relay_reasoning_profile(entry: &RelayModelCatalogEntry) -> RelayReasoningProfile {
     let identity = compact_model_identity(entry);
-    if identity.contains("minimaxm3") {
+    if identity.contains("grok45") {
+        GROK_4_5_REASONING_PROFILE
+    } else if identity.contains("minimaxm3") {
         THINKING_TOGGLE_PROFILE
     } else if identity.contains("glm52") {
         GLM_5_2_REASONING_PROFILE
@@ -2157,6 +2164,7 @@ mod tests {
     use super::normalize_relay_api_key;
     use super::normalize_relay_base_url;
     use super::profile_dir_from_store_path;
+    use super::relay_reasoning_profile;
     use super::remove_account_profile_in_store_path;
     use super::truncate_message;
     use super::validate_hybrid_profile_config;
@@ -2561,6 +2569,38 @@ responses_websockets_v2 = true
         assert!(efforts(4).is_empty());
         assert_eq!(models[4]["default_reasoning_level"], json!("none"));
         assert_eq!(models[4]["supports_reasoning_summaries"], json!(false));
+    }
+
+    #[test]
+    fn grok_4_5_models_use_low_medium_high_reasoning_profile() {
+        let grok_4_5 = RelayModelCatalogEntry {
+            model: "grok-4.5".to_string(),
+            display_name: None,
+            request_model: None,
+            context_window: None,
+            enabled: true,
+        };
+        let grok_4_5_latest = RelayModelCatalogEntry {
+            model: "grok-4.5-latest".to_string(),
+            display_name: None,
+            request_model: None,
+            context_window: None,
+            enabled: true,
+        };
+
+        for entry in [&grok_4_5, &grok_4_5_latest] {
+            let profile = relay_reasoning_profile(entry);
+            assert_eq!(profile.default_effort, "high");
+            assert_eq!(
+                profile
+                    .efforts
+                    .iter()
+                    .map(|(effort, _)| *effort)
+                    .collect::<Vec<_>>(),
+                vec!["low", "medium", "high"]
+            );
+            assert!(profile.supports_reasoning_summaries);
+        }
     }
 
     #[test]
