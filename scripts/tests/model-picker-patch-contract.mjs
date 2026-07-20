@@ -70,7 +70,27 @@ test("the simplified Chinese collapsed Max label is patched to English", () => {
     '"composer.mode.local.reasoning.max.label":`Max`',
   );
   assert.match(patchScript, /replaceZhCnReasoningLabels/);
-  assert.match(patchScript, /"model-picker-v22"/);
+  assert.match(patchScript, /"model-picker-v23"/);
+});
+
+test("stable metadata stops retrying only for permanent environment errors", () => {
+  const before = stringConstant("STABLE_METADATA_NON_RETRY_BEFORE");
+  const after = stringConstant("STABLE_METADATA_NON_RETRY_AFTER");
+
+  assert.ok(Buffer.byteLength(after) <= Buffer.byteLength(before));
+  assert.match(after, /you have not agreed to the xcode license agreements/);
+  assert.match(after, /not a git repository/);
+  assert.match(after, /\/i\.test/);
+  assert.match(patchScript, /replaceStableMetadataNonRetryGuard/);
+  assert.match(patchScript, /stable-metadata-git-retry/);
+  assert.match(patchScript, /if\s*\(\s*!sawStableMetadataRetry\s*\|\|/);
+  assert.doesNotMatch(patchScript, /uV=0/);
+
+  const permanentError = new Function("e", after);
+  assert.equal(permanentError(new Error("You have not agreed to the Xcode license agreements")), true);
+  assert.equal(permanentError(new Error("fatal: not a git repository")), true);
+  assert.equal(permanentError("NOT A GIT REPOSITORY"), true);
+  assert.equal(permanentError(new Error("temporary git index lock")), false);
 });
 
 test("the split Ultra picker preimage is recognized and widened", () => {

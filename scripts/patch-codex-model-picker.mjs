@@ -38,6 +38,10 @@ const APPLIED_NEEDLES = [
 
 const HISTORY_PROVIDER_FILTER_BEFORE = "modelProviders:null";
 const HISTORY_PROVIDER_FILTER_AFTER = "modelProviders:[]  ";
+const STABLE_METADATA_NON_RETRY_BEFORE =
+  "return(e instanceof Error?e.message:String(e)).toLowerCase().includes(`you have not agreed to the xcode license agreements`)";
+const STABLE_METADATA_NON_RETRY_AFTER =
+  "return/you have not agreed to the xcode license agreements|not a git repository/i.test(e instanceof Error?e.message:e)";
 
 const LEGACY_SOL_POWER_SELECTIONS_PATCH_MARKER = "/*codexdeck-sol-max*/";
 const PREVIOUS_POWER_SELECTIONS_PATCH_MARKERS = [
@@ -100,7 +104,7 @@ const REASONING_LABEL_DEFAULT_REPLACEMENTS = [
   ["defaultMessage:`Ultra`", "defaultMessage:`ULTRA`"],
 ];
 
-const PATCH_VERSION = process.env.CODEXDECK_PATCH_VERSION?.trim() || "model-picker-v22";
+const PATCH_VERSION = process.env.CODEXDECK_PATCH_VERSION?.trim() || "model-picker-v23";
 const sourceCodexVersion = process.env.CODEXDECK_SOURCE_CODEX_VERSION?.trim() || null;
 const sourceAsarHashFromEnv = process.env.CODEXDECK_SOURCE_ASAR_HASH?.trim() || null;
 const CUSTOM_PICKER_UI_MARKER = "codexdeck-model-picker-ui-v7";
@@ -367,6 +371,46 @@ function padSameSizeReplacement(before, after) {
     return null;
   }
   return `${after}${" ".repeat(beforeLength - afterLength)}`;
+}
+
+function isStableMetadataRetryAsset(text) {
+  return text.includes("stable-metadata") && text.includes("Unknown method: process/spawn");
+}
+
+function replaceStableMetadataNonRetryGuard(text) {
+  const beforeCount = countOccurrences(text, STABLE_METADATA_NON_RETRY_BEFORE);
+  const afterCount = countOccurrences(text, STABLE_METADATA_NON_RETRY_AFTER);
+  if (
+    beforeCount > 1 ||
+    afterCount > 1 ||
+    (beforeCount === 1 && afterCount === 1)
+  ) {
+    return { state: "ambiguous" };
+  }
+  if (beforeCount === 0 && afterCount === 0) {
+    return { state: "missing" };
+  }
+
+  let patchedText = text;
+  let changed = false;
+  if (beforeCount === 1) {
+    const replacement = padSameSizeReplacement(
+      STABLE_METADATA_NON_RETRY_BEFORE,
+      STABLE_METADATA_NON_RETRY_AFTER,
+    );
+    if (!replacement) return { state: "unsafe-size-change" };
+    patchedText = patchedText.replace(STABLE_METADATA_NON_RETRY_BEFORE, replacement);
+    changed = true;
+  }
+  if (patchedText.includes(HISTORY_PROVIDER_FILTER_BEFORE)) {
+    patchedText = patchedText.replaceAll(
+      HISTORY_PROVIDER_FILTER_BEFORE,
+      HISTORY_PROVIDER_FILTER_AFTER,
+    );
+    changed = true;
+  }
+
+  return changed ? { state: "patchable", text: patchedText } : { state: "patched", text };
 }
 
 function findFunctionEnd(text, openBraceOffset) {
@@ -1297,6 +1341,30 @@ function replaceReasoningLabelDefaults(entryPath, text) {
 function patchEntryBytes(entryPath, bytes) {
   const text = bytes.toString("utf8");
 
+  if (isStableMetadataRetryAsset(text)) {
+    const result = replaceStableMetadataNonRetryGuard(text);
+    if (result.state === "patched") {
+      return {
+        state: "patched",
+        patchName: "stable-metadata-git-retry",
+        additionalPatchNames: text.includes(HISTORY_PROVIDER_FILTER_AFTER)
+          ? ["history-provider-filter"]
+          : [],
+      };
+    }
+    if (result.state !== "patchable") return result;
+    const patched = Buffer.from(result.text, "utf8");
+    if (patched.length !== bytes.length) return { state: "unsafe-size-change" };
+    return {
+      state: "patchable",
+      bytes: patched,
+      patchName: "stable-metadata-git-retry",
+      additionalPatchNames: result.text.includes(HISTORY_PROVIDER_FILTER_AFTER)
+        ? ["history-provider-filter"]
+        : [],
+    };
+  }
+
   if (isComposerCollapsedReasoningLabelCandidate(entryPath, text)) {
     const result = replaceComposerReasoningLabels(text);
     if (result.state === "patched") {
@@ -1469,6 +1537,9 @@ function containsModelPickerGateSignature(text) {
 
 function verifyEntryPatch(entryPath, bytes) {
   const text = bytes.toString("utf8");
+  if (isStableMetadataRetryAsset(text)) {
+    return replaceStableMetadataNonRetryGuard(text).state === "patched";
+  }
   if (isComposerCollapsedReasoningLabelCandidate(entryPath, text)) {
     return replaceComposerReasoningLabels(text).state === "patched";
   }
@@ -1811,6 +1882,7 @@ function main() {
   let sawPowerSliderCss = false;
   let sawComposerCollapsedReasoningLabel = false;
   let sawReasoningLabelDefaults = false;
+  let sawStableMetadataRetry = false;
 
   for (const file of files) {
     const { offset, bytes } = readAsarEntry(appAsarPath, asar.filesOffset, file.entry);
@@ -1830,6 +1902,7 @@ function main() {
       text,
     );
     const isReasoningLabelDefaults = isReasoningLabelDefaultsEntry(file.path);
+    const isStableMetadataRetry = isStableMetadataRetryAsset(text);
     const isPreferredModelPickerEntry = /^webview\/assets\/model-list-filter-.*\.js$/.test(
       file.path,
     );
@@ -1839,6 +1912,16 @@ function main() {
     sawPowerSliderCss ||= isPowerSliderCss;
     sawComposerCollapsedReasoningLabel ||= isComposerCollapsedReasoningLabel;
     sawReasoningLabelDefaults ||= isReasoningLabelDefaults;
+    sawStableMetadataRetry ||= isStableMetadataRetry;
+    if (
+      isStableMetadataRetry &&
+      (result.patchName !== "stable-metadata-git-retry" ||
+        ["ambiguous", "missing", "unsafe-size-change", "unsupported-preimage"].includes(
+          result.state,
+        ))
+    ) {
+      throw new Error(`Stable metadata Git retry patch failed for ${file.path}: ${result.state}`);
+    }
     if (
       result.patchName === "model-picker" ||
       (isPreferredModelPickerEntry && containsModelPickerGateSignature(text))
@@ -1894,6 +1977,7 @@ function main() {
         throw new Error(`Patched ASAR integrity mismatch for ${file.path}.`);
       }
       alreadyPatchNames.add(result.patchName);
+      result.additionalPatchNames?.forEach((name) => alreadyPatchNames.add(name));
     }
 
     if (result.state === "patchable") {
@@ -1904,6 +1988,7 @@ function main() {
         bytes: result.bytes,
       });
       patchNames.add(result.patchName);
+      result.additionalPatchNames?.forEach((name) => patchNames.add(name));
     }
   }
 
@@ -1921,6 +2006,13 @@ function main() {
   }
   if (!sawComposerCollapsedReasoningLabel || !sawReasoningLabelDefaults) {
     throw new Error("Did not find both composer and default reasoning label assets in app.asar.");
+  }
+  if (
+    !sawStableMetadataRetry ||
+    (!patchNames.has("stable-metadata-git-retry") &&
+      !alreadyPatchNames.has("stable-metadata-git-retry"))
+  ) {
+    throw new Error("Did not patch or verify the stable metadata Git retry guard in app.asar.");
   }
 
   if (!targets.length) {

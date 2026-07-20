@@ -37,7 +37,7 @@ const PREVIOUS_STASH_DIR_PREFIX: &str = ".previous-stash-";
 const PATCH_BACKUP_KEEP_LATEST: usize = 1;
 const PATCH_STATE_FILE_NAME: &str = "model-picker-patch-state.json";
 const PATCH_FAILURE_STATE_FILE_NAME: &str = "model-picker-patch-failure.json";
-const MODEL_PICKER_PATCH_VERSION: &str = "model-picker-v22";
+const MODEL_PICKER_PATCH_VERSION: &str = "model-picker-v23";
 const CANDIDATE_PROMOTION_PENDING_PREFIX: &str = "candidate-promotion-pending:";
 const PROMOTION_FILE_OPERATION_ATTEMPTS: usize = 51;
 const PROMOTION_FILE_OPERATION_RETRY_DELAY: Duration = Duration::from_millis(200);
@@ -209,11 +209,13 @@ fn is_deterministic_candidate_patch_failure(error: &str) -> bool {
         "Custom model picker UI patch failed for",
         "Composer reasoning label patch failed for",
         "Reasoning label defaults patch failed for",
+        "Stable metadata Git retry patch failed for",
         "Did not find Codex model picker gate",
         "Did not patch or verify the Codex model picker gate",
         "Did not find the model picker Power slider scope call",
         "Did not find both model picker Power slider JS and CSS assets",
         "Did not find both composer and default reasoning label assets",
+        "Did not patch or verify the stable metadata Git retry guard",
         "patch 版本不匹配",
         "patch 未命中",
         "patch 状态中的来源 app.asar hash 与当前受控副本不一致",
@@ -2275,9 +2277,12 @@ fn cleanup_stale_multimodel_artifacts_in_workspace(
         controlled_root.join(CONTROLLED_CANDIDATE_DIR_NAME),
     ] {
         if target.file_name().and_then(|name| name.to_str()) == Some(CONTROLLED_CANDIDATE_DIR_NAME)
-            && completed_candidate_is_pending_promotion(&target)
         {
-            continue;
+            if completed_candidate_is_pending_promotion(&target)
+                || unpatched_candidate_is_pending_retry(&target)
+            {
+                continue;
+            }
         }
         removed += usize::from(remove_stale_workspace_directory(
             workspace,
@@ -2413,6 +2418,10 @@ fn completed_candidate_is_pending_promotion(candidate_root: &Path) -> bool {
             .patch_names
             .iter()
             .any(|name| name == "custom-model-picker-ui")
+        || !state
+            .patch_names
+            .iter()
+            .any(|name| name == "stable-metadata-git-retry")
     {
         return false;
     }
@@ -2432,6 +2441,49 @@ fn completed_candidate_is_pending_promotion(candidate_root: &Path) -> bool {
         return false;
     };
     state.patched_asar_hash.as_deref() == Some(actual_hash.as_str())
+}
+
+fn unpatched_candidate_is_pending_retry(candidate_root: &Path) -> bool {
+    if candidate_root.join(PATCH_STATE_FILE_NAME).exists() {
+        return false;
+    }
+
+    let app_root = candidate_root.join(CONTROLLED_APP_DIR_NAME);
+    let exe_path = find_codex_launch_exe_in_app_root(&app_root);
+    let asar_path = app_root.join("resources").join("app.asar");
+    if !exe_path.is_file() || !asar_path.is_file() {
+        return false;
+    }
+
+    let Ok(marker) = read_controlled_copy_marker(&app_root) else {
+        return false;
+    };
+    let Some(source_hash) = marker
+        .source_asar_hash
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return false;
+    };
+    marker.patch_version.is_none()
+        && marker.controlled_asar_hash.as_deref() == Some(source_hash)
+        && marker
+            .source_app_root
+            .as_deref()
+            .is_some_and(|path| !path.trim().is_empty())
+        && marker
+            .controlled_app_root
+            .as_deref()
+            .is_some_and(|path| canonical_patch_paths_match(Path::new(path), &app_root))
+        && marker
+            .controlled_exe_path
+            .as_deref()
+            .is_some_and(|path| canonical_patch_paths_match(Path::new(path), &exe_path))
+        && marker
+            .controlled_app_asar_path
+            .as_deref()
+            .is_some_and(|path| canonical_patch_paths_match(Path::new(path), &asar_path))
 }
 
 fn is_generated_candidate_dir_name(name: &str) -> bool {
@@ -3309,6 +3361,13 @@ fn validate_patch_state_for_controlled_copy(
     {
         return Err("patch 未命中自定义模型选择器 UI。".to_string());
     }
+    if !state
+        .patch_names
+        .iter()
+        .any(|name| name == "stable-metadata-git-retry")
+    {
+        return Err("patch 未命中 stable metadata Git retry guard。".to_string());
+    }
     if let Some(source_hash) = state.source_asar_hash.as_deref() {
         if !controlled_copy.source_asar_hash.is_empty()
             && source_hash != controlled_copy.source_asar_hash
@@ -3878,7 +3937,11 @@ mod tests {
             "sourceAsarHash": "source-hash",
             "sourceCodexVersion": "test-version",
             "patchedAsarHash": controlled_hash,
-            "patchNames": ["model-picker", "custom-model-picker-ui"],
+            "patchNames": [
+                "model-picker",
+                "custom-model-picker-ui",
+                "stable-metadata-git-retry"
+            ],
         });
         fs::write(
             &patch_state_path,
@@ -3961,6 +4024,28 @@ mod tests {
         );
 
         assert!(cached_patch_state_for_controlled_copy(&controlled).is_some());
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn patch_cache_rejects_v23_state_without_stable_metadata_retry_patch() {
+        let workspace = temp_workspace("missing-stable-metadata-patch");
+        let controlled = create_patch_cache_fixture(
+            &workspace,
+            Some(MODEL_PICKER_PATCH_VERSION),
+            Some(MODEL_PICKER_PATCH_VERSION),
+        );
+        let raw = fs::read_to_string(&controlled.patch_state_path).expect("read patch state");
+        let mut state = serde_json::from_str::<serde_json::Value>(&raw).expect("parse patch state");
+        state["patchNames"] = serde_json::json!(["model-picker", "custom-model-picker-ui"]);
+        fs::write(
+            &controlled.patch_state_path,
+            serde_json::to_vec_pretty(&state).expect("serialize incomplete patch state"),
+        )
+        .expect("write incomplete patch state");
+
+        assert!(cached_patch_state_for_controlled_copy(&controlled).is_none());
 
         let _ = fs::remove_dir_all(workspace);
     }
@@ -4162,7 +4247,11 @@ mod tests {
                 "sourceCodexVersion": source.codex_version,
                 "sourceAsarHash": source.asar_hash,
                 "patchedAsarHash": patched_hash,
-                "patchNames": ["model-picker", "custom-model-picker-ui"],
+                "patchNames": [
+                    "model-picker",
+                    "custom-model-picker-ui",
+                    "stable-metadata-git-retry"
+                ],
                 "appAsarPath": candidate.controlled_app_asar_path,
                 "controlledAppRoot": candidate.controlled_app_root,
                 "launchPath": candidate.controlled_exe_path,
@@ -4350,6 +4439,10 @@ mod tests {
         };
         let prepared =
             prepare_candidate_controlled_copy(&workspace, &source).expect("prepare candidate");
+
+        cleanup_stale_multimodel_artifacts_after_running_root_lookup(&workspace, Ok(Vec::new()))
+            .expect("cleanup must preserve a reusable unpatched candidate");
+        assert!(prepared.controlled_app_root.exists());
 
         let reused = reusable_unpatched_candidate_controlled_copy_after_running_root_lookup(
             &workspace,

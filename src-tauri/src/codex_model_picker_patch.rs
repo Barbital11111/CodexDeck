@@ -14,6 +14,8 @@ use sha2::{Digest, Sha256};
 
 const HISTORY_PROVIDER_FILTER_BEFORE: &str = "modelProviders:null";
 const HISTORY_PROVIDER_FILTER_AFTER: &str = "modelProviders:[]  ";
+const STABLE_METADATA_NON_RETRY_BEFORE: &str = "return(e instanceof Error?e.message:String(e)).toLowerCase().includes(`you have not agreed to the xcode license agreements`)";
+const STABLE_METADATA_NON_RETRY_AFTER: &str = "return/you have not agreed to the xcode license agreements|not a git repository/i.test(e instanceof Error?e.message:e)";
 
 const LEGACY_SOL_POWER_SELECTIONS_PATCH_MARKER: &str = "/*codexdeck-sol-max*/";
 const PREVIOUS_POWER_SELECTIONS_PATCH_MARKERS: [&str; 3] = [
@@ -75,7 +77,7 @@ const REASONING_LABEL_DEFAULT_REPLACEMENTS: [(&str, &str); 3] = [
 
 const CUSTOM_PICKER_UI_MARKER: &str = "codexdeck-model-picker-ui-v7";
 const CUSTOM_PICKER_CSS_MARKER: &str = ".cdpv8";
-const DEFAULT_PATCH_VERSION: &str = "model-picker-v22";
+const DEFAULT_PATCH_VERSION: &str = "model-picker-v23";
 const CUSTOM_PICKER_COMPONENT_SHA256: &str =
     "4172a556d950840debd0b40f0c652a59e030fb7720f76d0d6d8c3392f4d90faa";
 const CUSTOM_PICKER_CSS_SHA256: &str =
@@ -164,6 +166,7 @@ struct EntryPatch {
     state: PatchDisposition,
     bytes: Option<Vec<u8>>,
     patch_name: Option<&'static str>,
+    additional_patch_names: &'static [&'static str],
 }
 
 impl EntryPatch {
@@ -172,6 +175,7 @@ impl EntryPatch {
             state,
             bytes: None,
             patch_name: None,
+            additional_patch_names: &[],
         }
     }
 
@@ -180,6 +184,7 @@ impl EntryPatch {
             state: PatchDisposition::Patched,
             bytes: None,
             patch_name: Some(patch_name),
+            additional_patch_names: &[],
         }
     }
 
@@ -188,7 +193,13 @@ impl EntryPatch {
             state: PatchDisposition::Patchable,
             bytes: Some(bytes),
             patch_name: Some(patch_name),
+            additional_patch_names: &[],
         }
+    }
+
+    fn with_additional_patch_names(mut self, patch_names: &'static [&'static str]) -> Self {
+        self.additional_patch_names = patch_names;
+        self
     }
 }
 
@@ -463,6 +474,36 @@ fn pad_same_size_replacement(before: &str, after: &str) -> Option<String> {
         replacement.push_str(&" ".repeat(before_length - after_length));
         replacement
     })
+}
+
+fn is_stable_metadata_retry_asset(text: &str) -> bool {
+    text.contains("stable-metadata") && text.contains("Unknown method: process/spawn")
+}
+
+fn replace_stable_metadata_non_retry_guard(text: &str) -> TextPatch {
+    let guard = replace_exact_same_size_label(
+        text,
+        STABLE_METADATA_NON_RETRY_BEFORE,
+        STABLE_METADATA_NON_RETRY_AFTER,
+    );
+    let mut patched_text = match guard.state {
+        PatchDisposition::Patchable => guard.text.expect("patchable stable metadata guard"),
+        PatchDisposition::Patched => text.to_string(),
+        state => return TextPatch::state(state),
+    };
+    let mut changed = guard.state == PatchDisposition::Patchable;
+    if patched_text.contains(HISTORY_PROVIDER_FILTER_BEFORE) {
+        patched_text = patched_text.replace(
+            HISTORY_PROVIDER_FILTER_BEFORE,
+            HISTORY_PROVIDER_FILTER_AFTER,
+        );
+        changed = true;
+    }
+    if changed {
+        TextPatch::patchable(patched_text)
+    } else {
+        TextPatch::patched()
+    }
 }
 
 fn read_asar_header(asar_path: &Path) -> Result<AsarHeader, String> {
@@ -2486,6 +2527,20 @@ fn text_patch_to_entry(
 
 fn patch_entry_bytes(entry_path: &str, bytes: &[u8]) -> Result<EntryPatch, String> {
     let text = String::from_utf8_lossy(bytes);
+    if is_stable_metadata_retry_asset(text.as_ref()) {
+        let has_history_provider_filter = text.contains(HISTORY_PROVIDER_FILTER_BEFORE)
+            || text.contains(HISTORY_PROVIDER_FILTER_AFTER);
+        let patch = text_patch_to_entry(
+            replace_stable_metadata_non_retry_guard(text.as_ref()),
+            bytes.len(),
+            "stable-metadata-git-retry",
+        );
+        return Ok(if has_history_provider_filter {
+            patch.with_additional_patch_names(&["history-provider-filter"])
+        } else {
+            patch
+        });
+    }
     if is_composer_collapsed_reasoning_label_candidate(entry_path, text.as_ref()) {
         return Ok(text_patch_to_entry(
             replace_composer_reasoning_labels(text.as_ref()),
@@ -2632,6 +2687,10 @@ fn has_invalid_power_selection_closing(text: &str) -> bool {
 
 fn verify_entry_patch(entry_path: &str, bytes: &[u8]) -> Result<bool, String> {
     let text = String::from_utf8_lossy(bytes);
+    if is_stable_metadata_retry_asset(text.as_ref()) {
+        return Ok(replace_stable_metadata_non_retry_guard(text.as_ref()).state
+            == PatchDisposition::Patched);
+    }
     if is_composer_collapsed_reasoning_label_candidate(entry_path, text.as_ref()) {
         return Ok(
             replace_composer_reasoning_labels(text.as_ref()).state == PatchDisposition::Patched
@@ -3110,6 +3169,7 @@ pub(crate) fn patch_controlled_app(request: &PatchRequest) -> Result<Value, Stri
     let mut saw_power_slider_css = false;
     let mut saw_composer_collapsed_reasoning_label = false;
     let mut saw_reasoning_label_defaults = false;
+    let mut saw_stable_metadata_retry = false;
 
     for file in files {
         let (offset, bytes) = read_asar_entry(&request.app_asar_path, asar.files_offset, &file)?;
@@ -3127,6 +3187,7 @@ pub(crate) fn patch_controlled_app(request: &PatchRequest) -> Result<Value, Stri
         let is_composer_collapsed_reasoning_label =
             is_composer_collapsed_reasoning_label_candidate(&file.path, text.as_ref());
         let is_reasoning_label_defaults = is_reasoning_label_defaults_entry(&file.path);
+        let is_stable_metadata_retry = is_stable_metadata_retry_asset(text.as_ref());
         let is_preferred_model_picker = is_preferred_model_picker_entry(&file.path);
         saw_power_picker |= is_power_picker;
         saw_power_selection_scope |= is_power_selection_scope;
@@ -3134,6 +3195,17 @@ pub(crate) fn patch_controlled_app(request: &PatchRequest) -> Result<Value, Stri
         saw_power_slider_css |= is_power_slider_css;
         saw_composer_collapsed_reasoning_label |= is_composer_collapsed_reasoning_label;
         saw_reasoning_label_defaults |= is_reasoning_label_defaults;
+        saw_stable_metadata_retry |= is_stable_metadata_retry;
+
+        if is_stable_metadata_retry
+            && (result.state.is_failure() || result.patch_name != Some("stable-metadata-git-retry"))
+        {
+            return Err(format!(
+                "Stable metadata Git retry patch failed for {}: {}",
+                file.path,
+                result.state.as_str()
+            ));
+        }
 
         if result.patch_name == Some("model-picker")
             || (is_preferred_model_picker && contains_model_picker_gate_signature(text.as_ref()))
@@ -3197,6 +3269,9 @@ pub(crate) fn patch_controlled_app(request: &PatchRequest) -> Result<Value, Stri
                     ));
                 }
                 append_unique(&mut already_patch_names, patch_name);
+                for additional in result.additional_patch_names {
+                    append_unique(&mut already_patch_names, additional);
+                }
             }
         }
         if result.state == PatchDisposition::Patchable {
@@ -3214,6 +3289,9 @@ pub(crate) fn patch_controlled_app(request: &PatchRequest) -> Result<Value, Stri
                 bytes: replacement,
             });
             append_unique(&mut patch_names, patch_name);
+            for additional in result.additional_patch_names {
+                append_unique(&mut patch_names, additional);
+            }
         }
     }
 
@@ -3242,6 +3320,16 @@ pub(crate) fn patch_controlled_app(request: &PatchRequest) -> Result<Value, Stri
         return Err(
             "Did not find both composer and default reasoning label assets in app.asar."
                 .to_string(),
+        );
+    }
+    if !saw_stable_metadata_retry
+        || !patch_names
+            .iter()
+            .chain(already_patch_names.iter())
+            .any(|name| name == "stable-metadata-git-retry")
+    {
+        return Err(
+            "Did not patch or verify the stable metadata Git retry guard in app.asar.".to_string(),
         );
     }
 
@@ -3549,6 +3637,34 @@ mod tests {
         assert_eq!(
             patch.text.expect("replacement").as_bytes().len(),
             source.as_bytes().len()
+        );
+    }
+
+    #[test]
+    fn stable_metadata_non_git_guard_is_length_preserving_and_keeps_retry_policy() {
+        let source = format!(
+            "function aV(e){{{STABLE_METADATA_NON_RETRY_BEFORE}}}var oV=e((()=>{{}}));\
+             function sV(e,t){{return{{retry:(e,t)=>(t instanceof Error?t.message:String(t)).includes(`Unknown method: process/spawn`)||aV(t)?!1:e<uV,retryDelay:()=>lV,queryFn:()=>`stable-metadata`,modelProviders:null,previous:{{modelProviders:null}}}}}}\
+             var lV,uV,dV=e((()=>{{lV=1e3,uV=3}}));"
+        );
+
+        let first = replace_stable_metadata_non_retry_guard(&source);
+        assert_eq!(first.state, PatchDisposition::Patchable);
+        let patched = first.text.expect("patched stable metadata guard");
+        assert_eq!(patched.len(), source.len());
+        assert!(patched.contains(STABLE_METADATA_NON_RETRY_AFTER));
+        assert!(patched.contains("Unknown method: process/spawn"));
+        assert!(patched.contains("lV=1e3,uV=3"));
+        assert!(!patched.contains("uV=0"));
+        assert!(!patched.contains(HISTORY_PROVIDER_FILTER_BEFORE));
+        assert_eq!(
+            count_occurrences(&patched, HISTORY_PROVIDER_FILTER_AFTER),
+            2
+        );
+
+        assert_eq!(
+            replace_stable_metadata_non_retry_guard(&patched).state,
+            PatchDisposition::Patched
         );
     }
 
