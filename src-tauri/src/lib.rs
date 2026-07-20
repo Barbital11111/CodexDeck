@@ -2273,7 +2273,7 @@ fn force_stop_running_codex(
         let _ = Command::new("pkill").args(["-9", "-x", "Codex"]).status();
     }
 
-    // 等待进程树收敛，避免新实例拉起时与旧实例短暂重叠。
+    #[cfg(not(target_os = "windows"))]
     thread::sleep(Duration::from_millis(220));
 }
 

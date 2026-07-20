@@ -36,6 +36,7 @@ const PATCH_VALIDATION_DIR_PREFIX: &str = "patch-validation-";
 const PREVIOUS_STASH_DIR_PREFIX: &str = ".previous-stash-";
 const PATCH_BACKUP_KEEP_LATEST: usize = 1;
 const PATCH_STATE_FILE_NAME: &str = "model-picker-patch-state.json";
+const PATCH_FAILURE_STATE_FILE_NAME: &str = "model-picker-patch-failure.json";
 const MODEL_PICKER_PATCH_VERSION: &str = "model-picker-v22";
 const CANDIDATE_PROMOTION_PENDING_PREFIX: &str = "candidate-promotion-pending:";
 const PROMOTION_FILE_OPERATION_ATTEMPTS: usize = 51;
@@ -126,6 +127,100 @@ struct SourceCodexSnapshot {
     exe_path: PathBuf,
     asar_hash: String,
     codex_version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CandidatePatchFailure {
+    schema_version: u8,
+    patch_version: String,
+    source_app_root: String,
+    source_asar_hash: String,
+    source_codex_version: Option<String>,
+    failed_at: i64,
+}
+
+fn record_candidate_patch_failure(
+    workspace: &Path,
+    source: &SourceCodexSnapshot,
+) -> Result<(), String> {
+    let state = CandidatePatchFailure {
+        schema_version: 1,
+        patch_version: MODEL_PICKER_PATCH_VERSION.to_string(),
+        source_app_root: source.app_root.to_string_lossy().to_string(),
+        source_asar_hash: source.asar_hash.clone(),
+        source_codex_version: source.codex_version.clone(),
+        failed_at: now_unix_seconds(),
+    };
+    let mut serialized = serde_json::to_vec_pretty(&state)
+        .map_err(|error| format!("序列化 candidate patch 失败状态失败: {error}"))?;
+    serialized.push(b'\n');
+    write_patch_state_atomically(&candidate_patch_failure_path(workspace), &serialized)
+}
+
+fn candidate_patch_failure_matches_source(workspace: &Path, source: &SourceCodexSnapshot) -> bool {
+    let raw = fs::read_to_string(candidate_patch_failure_path(workspace)).ok();
+    let state = raw
+        .as_deref()
+        .and_then(|raw| serde_json::from_str::<CandidatePatchFailure>(raw).ok());
+    state.is_some_and(|state| {
+        state.schema_version == 1
+            && state.patch_version == MODEL_PICKER_PATCH_VERSION
+            && state.source_asar_hash == source.asar_hash
+            && state.source_codex_version == source.codex_version
+            && normalize_windows_like_path(&state.source_app_root)
+                == normalize_windows_like_path(&source.app_root.to_string_lossy())
+    })
+}
+
+fn ensure_candidate_patch_retry_allowed(
+    workspace: &Path,
+    source: &SourceCodexSnapshot,
+) -> Result<(), String> {
+    if candidate_patch_failure_matches_source(workspace, source) {
+        return Err(format!(
+            "当前 Codex 来源已确认无法使用 {MODEL_PICKER_PATCH_VERSION}，已跳过重复复制和 patch；安装支持该 Codex 版本的新 CodexDeck 后会自动重试。"
+        ));
+    }
+    Ok(())
+}
+
+fn clear_candidate_patch_failure(workspace: &Path) {
+    let path = candidate_patch_failure_path(workspace);
+    if let Err(error) = fs::remove_file(&path) {
+        if error.kind() != std::io::ErrorKind::NotFound {
+            log::warn!(
+                "清理 candidate patch 失败状态失败 {}: {error}",
+                path.display()
+            );
+        }
+    }
+}
+
+fn candidate_patch_failure_path(workspace: &Path) -> PathBuf {
+    workspace.join(PATCH_FAILURE_STATE_FILE_NAME)
+}
+
+fn is_deterministic_candidate_patch_failure(error: &str) -> bool {
+    [
+        "Model picker patch failed for",
+        "Reasoning effort patch failed for",
+        "Reasoning effort scope patch failed for",
+        "Custom model picker UI patch failed for",
+        "Composer reasoning label patch failed for",
+        "Reasoning label defaults patch failed for",
+        "Did not find Codex model picker gate",
+        "Did not patch or verify the Codex model picker gate",
+        "Did not find the model picker Power slider scope call",
+        "Did not find both model picker Power slider JS and CSS assets",
+        "Did not find both composer and default reasoning label assets",
+        "patch 版本不匹配",
+        "patch 未命中",
+        "patch 状态中的来源 app.asar hash 与当前受控副本不一致",
+        "patch 状态中的 Codex 版本与当前受控副本不一致",
+    ]
+    .iter()
+    .any(|needle| error.contains(needle))
 }
 
 fn lock_controlled_copy_lifecycle() -> MutexGuard<'static, ()> {
@@ -277,6 +372,7 @@ pub(crate) fn prepare_managed_codex_launch_path(app: &AppHandle) -> Result<Optio
     let workspace = workspace_dir()?;
     fs::create_dir_all(&workspace)
         .map_err(|error| format!("创建多模型工作区失败 {}: {error}", workspace.display()))?;
+    schedule_stale_multimodel_artifact_cleanup(workspace.clone());
     log_multimodel_launch_phase(&started_at, "workspace");
 
     let restore_point = current_restore_point(app, &workspace).ok_or_else(|| {
@@ -609,13 +705,39 @@ fn rebuild_controlled_codex_copy_from_source(
             "复用已完成 patch 的候选 Codex 副本并重新尝试晋级: {}",
             candidate.controlled_app_root.display()
         );
+        clear_candidate_patch_failure(workspace);
         return promote_candidate_controlled_copy(workspace, &candidate)
             .map_err(candidate_promotion_pending_error);
     }
 
-    let candidate = prepare_candidate_controlled_copy(workspace, source)?;
-    let state = run_patch_script(app, workspace, &candidate)?;
-    validate_patch_state_for_controlled_copy(&state, &candidate)?;
+    ensure_candidate_patch_retry_allowed(workspace, source)?;
+
+    let candidate =
+        match reusable_unpatched_candidate_controlled_copy_for_source(workspace, source)? {
+            Some(candidate) => {
+                log::info!(
+                    "复用已完成复制的同源 candidate，跳过重复复制: {}",
+                    candidate.controlled_app_root.display()
+                );
+                candidate
+            }
+            None => prepare_candidate_controlled_copy(workspace, source)?,
+        };
+    match run_patch_script(app, workspace, &candidate).and_then(|state| {
+        validate_patch_state_for_controlled_copy(&state, &candidate)?;
+        Ok(state)
+    }) {
+        Ok(_) => {}
+        Err(error) => {
+            if is_deterministic_candidate_patch_failure(&error) {
+                if let Err(cache_error) = record_candidate_patch_failure(workspace, source) {
+                    log::warn!("记录 candidate patch 失败状态失败: {cache_error}");
+                }
+            }
+            return Err(error);
+        }
+    }
+    clear_candidate_patch_failure(workspace);
     promote_candidate_controlled_copy(workspace, &candidate)
         .map_err(candidate_promotion_pending_error)
 }
@@ -645,30 +767,7 @@ fn ready_candidate_controlled_copy_for_source(
         return Ok(None);
     }
 
-    let mut candidate_roots = Vec::new();
-    let fixed_candidate = controlled_root.join(CONTROLLED_CANDIDATE_DIR_NAME);
-    if fixed_candidate.is_dir() {
-        candidate_roots.push(fixed_candidate);
-    }
-    for entry in fs::read_dir(&controlled_root).map_err(|error| {
-        format!(
-            "读取受控 Codex 候选目录失败 {}: {error}",
-            controlled_root.display()
-        )
-    })? {
-        let entry = entry.map_err(|error| format!("读取受控 Codex 候选条目失败: {error}"))?;
-        let name = entry.file_name().to_string_lossy().to_string();
-        if entry
-            .file_type()
-            .map_err(|error| format!("检查受控 Codex 候选条目失败: {error}"))?
-            .is_dir()
-            && is_generated_candidate_dir_name(&name)
-        {
-            candidate_roots.push(entry.path());
-        }
-    }
-
-    for candidate_root in candidate_roots {
+    for candidate_root in managed_candidate_roots(&controlled_root)? {
         let controlled_app_root = candidate_root.join(CONTROLLED_APP_DIR_NAME);
         if ensure_safe_controlled_copy_target(workspace, &controlled_app_root).is_err() {
             continue;
@@ -735,6 +834,82 @@ fn ready_candidate_controlled_copy_for_source(
     Ok(None)
 }
 
+fn reusable_unpatched_candidate_controlled_copy_for_source(
+    workspace: &Path,
+    source: &SourceCodexSnapshot,
+) -> Result<Option<ControlledCodexCopy>, String> {
+    let running_app_roots = resolve_running_windows_codex_app_dirs().map_err(|error| {
+        format!("无法可靠枚举运行中的候选 Codex，已拒绝 patch 或继续复制: {error}")
+    })?;
+    reusable_unpatched_candidate_controlled_copy_after_running_root_lookup(
+        workspace,
+        source,
+        &running_app_roots,
+    )
+}
+
+fn reusable_unpatched_candidate_controlled_copy_after_running_root_lookup(
+    workspace: &Path,
+    source: &SourceCodexSnapshot,
+    running_app_roots: &[PathBuf],
+) -> Result<Option<ControlledCodexCopy>, String> {
+    let controlled_root = workspace.join(CONTROLLED_COPY_DIR_NAME);
+    for candidate_root in managed_candidate_roots(&controlled_root)? {
+        let controlled_app_root = candidate_root.join(CONTROLLED_APP_DIR_NAME);
+        if ensure_safe_controlled_copy_target(workspace, &controlled_app_root).is_err() {
+            continue;
+        }
+        let controlled_exe_path = find_codex_launch_exe_in_app_root(&controlled_app_root);
+        let controlled_app_asar_path = controlled_app_root.join("resources").join("app.asar");
+        let patch_state_path = candidate_root.join(PATCH_STATE_FILE_NAME);
+        if !controlled_exe_path.is_file()
+            || !controlled_app_asar_path.is_file()
+            || patch_state_path.exists()
+        {
+            continue;
+        }
+
+        let marker = match read_controlled_copy_marker(&controlled_app_root) {
+            Ok(marker) => marker,
+            Err(_) => continue,
+        };
+        if marker.patch_version.is_some()
+            || marker.source_asar_hash.as_deref() != Some(source.asar_hash.as_str())
+            || marker.source_codex_version.as_deref() != source.codex_version.as_deref()
+            || marker.controlled_asar_hash.as_deref() != Some(source.asar_hash.as_str())
+            || marker.source_app_root.as_deref().is_none_or(|path| {
+                normalize_windows_like_path(path)
+                    != normalize_windows_like_path(&source.app_root.to_string_lossy())
+            })
+        {
+            continue;
+        }
+        if sha256_file(&controlled_app_asar_path)? != source.asar_hash {
+            continue;
+        }
+        if running_app_roots.iter().any(|running_root| {
+            path_is_within_windows_like(&running_root.to_string_lossy(), &candidate_root)
+        }) {
+            return Err(format!(
+                "同源 candidate 正在运行，已拒绝修改其 app.asar 或创建另一份副本: {}",
+                candidate_root.display()
+            ));
+        }
+
+        return Ok(Some(ControlledCodexCopy {
+            source_app_root: source.app_root.clone(),
+            controlled_app_root,
+            controlled_exe_path,
+            controlled_app_asar_path,
+            source_asar_hash: source.asar_hash.clone(),
+            source_codex_version: source.codex_version.clone(),
+            patch_state_path,
+        }));
+    }
+
+    Ok(None)
+}
+
 fn resolve_source_codex_snapshot(
     app: &AppHandle,
     workspace: &Path,
@@ -768,20 +943,37 @@ fn prepare_candidate_controlled_copy(
     source: &SourceCodexSnapshot,
 ) -> Result<ControlledCodexCopy, String> {
     let controlled_root = workspace.join(CONTROLLED_COPY_DIR_NAME);
-    let preferred_candidate_root = controlled_root.join(CONTROLLED_CANDIDATE_DIR_NAME);
-    let candidate_root = if preferred_candidate_root.exists() {
-        let generated = controlled_root.join(format!(
-            "{CONTROLLED_GENERATED_CANDIDATE_DIR_PREFIX}{}",
-            Uuid::new_v4()
-        ));
-        log::info!(
-            "固定 candidate 已存在，改用隔离候选代次，保留可能仍在运行的旧副本: {}",
-            preferred_candidate_root.display()
-        );
-        generated
-    } else {
-        preferred_candidate_root
-    };
+    reclaim_candidate_slot(workspace)?;
+    fs::create_dir_all(&controlled_root).map_err(|error| {
+        format!(
+            "创建受控 Codex 根目录失败 {}: {error}",
+            controlled_root.display()
+        )
+    })?;
+    let candidate_root = controlled_root.join(CONTROLLED_CANDIDATE_DIR_NAME);
+    fs::create_dir(&candidate_root).map_err(|error| {
+        format!(
+            "预留受控 Codex candidate 单槽失败 {}: {error}",
+            candidate_root.display()
+        )
+    })?;
+    match populate_candidate_controlled_copy(workspace, source, &candidate_root) {
+        Ok(candidate) => Ok(candidate),
+        Err(error) => match fs::remove_dir_all(&candidate_root) {
+            Ok(()) => Err(error),
+            Err(cleanup_error) => Err(format!(
+                "{error}; 清理失败 candidate 单槽 {} 时出错: {cleanup_error}",
+                candidate_root.display()
+            )),
+        },
+    }
+}
+
+fn populate_candidate_controlled_copy(
+    workspace: &Path,
+    source: &SourceCodexSnapshot,
+    candidate_root: &Path,
+) -> Result<ControlledCodexCopy, String> {
     let controlled_app_root = candidate_root.join(CONTROLLED_APP_DIR_NAME);
     let patch_state_path = candidate_root.join(PATCH_STATE_FILE_NAME);
     ensure_safe_controlled_copy_target(workspace, &controlled_app_root)?;
@@ -832,6 +1024,72 @@ fn prepare_candidate_controlled_copy(
         source_codex_version: source.codex_version.clone(),
         patch_state_path,
     })
+}
+
+fn reclaim_candidate_slot(workspace: &Path) -> Result<(), String> {
+    let running_app_roots = resolve_running_windows_codex_app_dirs()
+        .map_err(|error| format!("无法可靠枚举运行中的候选 Codex，已拒绝继续创建副本: {error}"))?;
+    reclaim_candidate_slot_after_running_root_lookup(workspace, &running_app_roots)
+}
+
+fn reclaim_candidate_slot_after_running_root_lookup(
+    workspace: &Path,
+    running_app_roots: &[PathBuf],
+) -> Result<(), String> {
+    let controlled_root = workspace.join(CONTROLLED_COPY_DIR_NAME);
+    let candidate_roots = managed_candidate_roots(&controlled_root)?;
+    if candidate_roots.is_empty() {
+        return Ok(());
+    }
+
+    for candidate_root in candidate_roots {
+        remove_stale_workspace_directory(workspace, &candidate_root, running_app_roots, false)?;
+    }
+
+    let remaining = managed_candidate_roots(&controlled_root)?;
+    if remaining.is_empty() {
+        return Ok(());
+    }
+
+    Err(format!(
+        "已有候选 Codex 副本正在运行或无法安全回收，已拒绝继续复制: {}",
+        remaining
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ))
+}
+
+fn managed_candidate_roots(controlled_root: &Path) -> Result<Vec<PathBuf>, String> {
+    if !controlled_root.is_dir() {
+        return Ok(Vec::new());
+    }
+
+    let mut roots = Vec::new();
+    let fixed = controlled_root.join(CONTROLLED_CANDIDATE_DIR_NAME);
+    if fixed.is_dir() {
+        roots.push(fixed);
+    }
+    for entry in fs::read_dir(controlled_root).map_err(|error| {
+        format!(
+            "读取受控 Codex 候选目录失败 {}: {error}",
+            controlled_root.display()
+        )
+    })? {
+        let entry = entry.map_err(|error| format!("读取受控 Codex 候选条目失败: {error}"))?;
+        let name = entry.file_name().to_string_lossy().to_string();
+        if entry
+            .file_type()
+            .map_err(|error| format!("检查受控 Codex 候选条目失败: {error}"))?
+            .is_dir()
+            && is_generated_candidate_dir_name(&name)
+        {
+            roots.push(entry.path());
+        }
+    }
+    roots.sort();
+    Ok(roots)
 }
 
 fn promote_candidate_controlled_copy(
@@ -3957,8 +4215,8 @@ mod tests {
     }
 
     #[test]
-    fn existing_candidate_uses_isolated_generation_without_deleting_existing() {
-        let workspace = temp_workspace("candidate-generation-isolation");
+    fn existing_stale_candidate_is_reclaimed_without_uuid_generation() {
+        let workspace = temp_workspace("candidate-generation-reclaim");
         let source_app_root = workspace.join("source").join("app");
         let source_resources = source_app_root.join("resources");
         fs::create_dir_all(&source_resources).expect("create source resources");
@@ -3975,26 +4233,201 @@ mod tests {
         let existing_root = workspace
             .join(CONTROLLED_COPY_DIR_NAME)
             .join(CONTROLLED_CANDIDATE_DIR_NAME);
-        let existing_sentinel = existing_root.join("app").join("running.txt");
+        let existing_sentinel = existing_root.join("app").join("stale.txt");
         fs::create_dir_all(existing_sentinel.parent().expect("sentinel parent"))
             .expect("create existing candidate");
         fs::write(&existing_sentinel, b"preserve").expect("write existing candidate sentinel");
 
         let candidate =
             prepare_candidate_controlled_copy(&workspace, &source).expect("prepare candidate");
-        let generated_root = candidate
+        let candidate_root = candidate
             .controlled_app_root
             .parent()
-            .expect("generated candidate root");
-        let generated_name = generated_root
-            .file_name()
-            .and_then(|name| name.to_str())
-            .expect("generated candidate name");
+            .expect("candidate root");
 
-        assert!(existing_sentinel.is_file());
-        assert_ne!(generated_root, existing_root);
-        assert!(is_generated_candidate_dir_name(generated_name));
-        assert_eq!(candidate.patch_state_path.parent(), Some(generated_root));
+        assert_eq!(candidate_root, existing_root);
+        assert!(!existing_sentinel.exists());
+        assert_eq!(candidate.patch_state_path.parent(), Some(candidate_root));
+        assert_eq!(
+            fs::read_dir(workspace.join(CONTROLLED_COPY_DIR_NAME))
+                .expect("read controlled root")
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    is_generated_candidate_dir_name(&entry.file_name().to_string_lossy())
+                })
+                .count(),
+            0
+        );
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn running_candidate_blocks_new_copy_instead_of_creating_uuid_generation() {
+        let workspace = temp_workspace("candidate-running-single-slot");
+        let candidate_root = workspace
+            .join(CONTROLLED_COPY_DIR_NAME)
+            .join(CONTROLLED_CANDIDATE_DIR_NAME);
+        let candidate_app_root = candidate_root.join(CONTROLLED_APP_DIR_NAME);
+        fs::create_dir_all(&candidate_app_root).expect("create running candidate");
+
+        let error = reclaim_candidate_slot_after_running_root_lookup(
+            &workspace,
+            std::slice::from_ref(&candidate_app_root),
+        )
+        .expect_err("running candidate must block another copy");
+
+        assert!(error.contains("拒绝继续复制"));
+        assert!(candidate_root.exists());
+        assert_eq!(
+            fs::read_dir(workspace.join(CONTROLLED_COPY_DIR_NAME))
+                .expect("read controlled root")
+                .filter_map(Result::ok)
+                .filter(|entry| {
+                    is_generated_candidate_dir_name(&entry.file_name().to_string_lossy())
+                })
+                .count(),
+            0
+        );
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn failed_patch_cache_blocks_only_the_same_source_and_patch_version() {
+        let workspace = temp_workspace("candidate-patch-failure-cache");
+        fs::create_dir_all(&workspace).expect("create workspace");
+        let source_app_root = workspace.join("source").join("app");
+        let source = SourceCodexSnapshot {
+            app_root: source_app_root,
+            exe_path: workspace.join("source").join("app").join("ChatGPT.exe"),
+            asar_hash: "source-hash-a".to_string(),
+            codex_version: Some("26.1.0.0".to_string()),
+        };
+
+        record_candidate_patch_failure(&workspace, &source).expect("record patch failure");
+
+        assert!(candidate_patch_failure_matches_source(&workspace, &source));
+        assert!(ensure_candidate_patch_retry_allowed(&workspace, &source)
+            .expect_err("same failed source must be blocked")
+            .contains("跳过重复复制和 patch"));
+        let changed_source = SourceCodexSnapshot {
+            asar_hash: "source-hash-b".to_string(),
+            ..source.clone()
+        };
+        assert!(!candidate_patch_failure_matches_source(
+            &workspace,
+            &changed_source
+        ));
+
+        clear_candidate_patch_failure(&workspace);
+        assert!(!candidate_patch_failure_matches_source(&workspace, &source));
+        assert!(is_deterministic_candidate_patch_failure(
+            "Custom model picker UI patch failed for picker.css: unsupported-preimage"
+        ));
+        assert!(!is_deterministic_candidate_patch_failure(
+            "读取 app.asar 失败: Access is denied"
+        ));
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn matching_unpatched_candidate_is_reused_without_copying_again() {
+        let workspace = temp_workspace("candidate-unpatched-reuse");
+        let source_app_root = workspace.join("source").join("app");
+        let source_resources = source_app_root.join("resources");
+        fs::create_dir_all(&source_resources).expect("create source resources");
+        let source_exe_path = source_app_root.join("ChatGPT.exe");
+        let source_asar_path = source_resources.join("app.asar");
+        fs::write(&source_exe_path, b"source exe").expect("write source exe");
+        fs::write(&source_asar_path, b"source asar").expect("write source asar");
+        let source = SourceCodexSnapshot {
+            app_root: source_app_root,
+            exe_path: source_exe_path,
+            asar_hash: sha256_file(&source_asar_path).expect("hash source asar"),
+            codex_version: Some("test-version".to_string()),
+        };
+        let prepared =
+            prepare_candidate_controlled_copy(&workspace, &source).expect("prepare candidate");
+
+        let reused = reusable_unpatched_candidate_controlled_copy_after_running_root_lookup(
+            &workspace,
+            &source,
+            &[],
+        )
+        .expect("inspect candidate")
+        .expect("matching candidate");
+
+        assert_eq!(reused.controlled_app_root, prepared.controlled_app_root);
+        assert_eq!(reused.patch_state_path, prepared.patch_state_path);
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn matching_running_unpatched_candidate_is_never_patched_or_duplicated() {
+        let workspace = temp_workspace("candidate-running-unpatched");
+        let source_app_root = workspace.join("source").join("app");
+        let source_resources = source_app_root.join("resources");
+        fs::create_dir_all(&source_resources).expect("create source resources");
+        let source_exe_path = source_app_root.join("ChatGPT.exe");
+        let source_asar_path = source_resources.join("app.asar");
+        fs::write(&source_exe_path, b"source exe").expect("write source exe");
+        fs::write(&source_asar_path, b"source asar").expect("write source asar");
+        let source = SourceCodexSnapshot {
+            app_root: source_app_root,
+            exe_path: source_exe_path,
+            asar_hash: sha256_file(&source_asar_path).expect("hash source asar"),
+            codex_version: Some("test-version".to_string()),
+        };
+        let prepared =
+            prepare_candidate_controlled_copy(&workspace, &source).expect("prepare candidate");
+        let before = fs::read(&prepared.controlled_app_asar_path).expect("read candidate asar");
+
+        let error = reusable_unpatched_candidate_controlled_copy_after_running_root_lookup(
+            &workspace,
+            &source,
+            std::slice::from_ref(&prepared.controlled_app_root),
+        )
+        .expect_err("running candidate must not be returned for patching");
+
+        assert!(error.contains("拒绝修改其 app.asar"));
+        assert_eq!(
+            fs::read(&prepared.controlled_app_asar_path).expect("read unchanged candidate asar"),
+            before
+        );
+        assert_eq!(
+            managed_candidate_roots(&workspace.join(CONTROLLED_COPY_DIR_NAME))
+                .unwrap()
+                .len(),
+            1
+        );
+
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn candidate_prepare_failure_releases_the_single_slot() {
+        let workspace = temp_workspace("candidate-prepare-failure-cleanup");
+        let source_app_root = workspace.join("source").join("app");
+        fs::create_dir_all(&source_app_root).expect("create source root");
+        let source_exe_path = source_app_root.join("ChatGPT.exe");
+        fs::write(&source_exe_path, b"source exe").expect("write source exe");
+        let source = SourceCodexSnapshot {
+            app_root: source_app_root,
+            exe_path: source_exe_path,
+            asar_hash: "missing-source-asar".to_string(),
+            codex_version: Some("test-version".to_string()),
+        };
+
+        prepare_candidate_controlled_copy(&workspace, &source)
+            .expect_err("candidate without app.asar must fail");
+
+        assert!(!workspace
+            .join(CONTROLLED_COPY_DIR_NAME)
+            .join(CONTROLLED_CANDIDATE_DIR_NAME)
+            .exists());
 
         let _ = fs::remove_dir_all(workspace);
     }

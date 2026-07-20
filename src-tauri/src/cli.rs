@@ -34,6 +34,10 @@ const WINDOWS_CODEX_APP_FILE_NAMES: [&str; 3] = ["ChatGPT.exe", "Codex.exe", "Co
 const WINDOWS_STORE_LAUNCH_TIMEOUT_MS: u64 = 8_000;
 #[cfg(target_os = "windows")]
 const WINDOWS_STORE_LAUNCH_POLL_MS: u64 = 250;
+#[cfg(target_os = "windows")]
+const WINDOWS_CODEX_STOP_WAIT_MS: u64 = 900;
+#[cfg(target_os = "windows")]
+const WINDOWS_CODEX_STOP_POLL_MS: u64 = 60;
 
 /// 构造可直接启动 Codex CLI 的命令。
 ///
@@ -201,41 +205,69 @@ pub(crate) fn stop_running_windows_codex_processes(
         }
     }
 
+    let codex_home = dirs::home_dir()
+        .map(|home| home.join(".codex").to_string_lossy().replace('/', "\\"))
+        .unwrap_or_default();
+    let script = windows_codex_stop_script(&prefixes, &codex_home, only_configured_install);
+
+    let _ = new_background_command("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-Command",
+            &script,
+        ])
+        .status();
+}
+
+#[cfg(target_os = "windows")]
+fn windows_codex_stop_script(
+    prefixes: &[String],
+    codex_home: &str,
+    only_configured_install: bool,
+) -> String {
     let script = r#"
 $prefixes = @('__PREFIXES__')
 $codexHome = '__CODEX_HOME__'
 $killGlobalCodex = '__KILL_GLOBAL_CODEX__' -eq 'true'
-Get-CimInstance Win32_Process |
-  Where-Object { $_.Name -in @('ChatGPT.exe','Codex.exe','Codex Desktop.exe','codex.exe') -and $_.ExecutablePath } |
-  Where-Object {
-    $path = $_.ExecutablePath.Replace('/','\').ToLowerInvariant()
+function Test-CodexTarget($item) {
+    if (-not $item.ExecutablePath) { return $false }
+    $path = $item.ExecutablePath.Replace('/','\').ToLowerInvariant()
     if ($killGlobalCodex -and $path -like '*\windowsapps\openai.codex_*') { return $true }
     if ($killGlobalCodex -and $path -like '*\appdata\local\openai\codex\bin\*') { return $true }
     foreach ($prefix in $prefixes) {
       if ($prefix -and $path.StartsWith($prefix)) { return $true }
     }
-    if ($killGlobalCodex -and $_.CommandLine -and $codexHome -and $_.CommandLine.Contains($codexHome)) { return $true }
+    if ($killGlobalCodex -and $item.CommandLine -and $codexHome -and $item.CommandLine.Contains($codexHome)) { return $true }
     return $false
-  } |
-  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+}
 
-$deadline = (Get-Date).AddSeconds(6)
+function Test-CodexDesktopHost($item) {
+    if (-not (Test-CodexTarget $item)) { return $false }
+    $path = $item.ExecutablePath.Replace('/','\').ToLowerInvariant()
+    $commandLine = if ($item.CommandLine) { $item.CommandLine.ToLowerInvariant() } else { '' }
+    if ($path.EndsWith('\resources\codex.exe')) { return $false }
+    if ($commandLine.Contains('--type=') -or $commandLine.Contains('app-server')) { return $false }
+    return $item.Name -in @('ChatGPT.exe','Codex.exe','Codex Desktop.exe')
+}
+
+$targets = @(
+  Get-CimInstance Win32_Process |
+    Where-Object { $_.Name -in @('ChatGPT.exe','Codex.exe','Codex Desktop.exe','codex.exe') } |
+    Where-Object { Test-CodexTarget $_ }
+)
+$targets | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+
+$deadline = (Get-Date).AddMilliseconds(__STOP_WAIT_MS__)
 do {
-  Start-Sleep -Milliseconds 150
   $stillRunning = @(
     Get-CimInstance Win32_Process |
-      Where-Object { $_.Name -in @('ChatGPT.exe','Codex.exe','Codex Desktop.exe','codex.exe') -and $_.ExecutablePath } |
-      Where-Object {
-        $path = $_.ExecutablePath.Replace('/','\').ToLowerInvariant()
-        if ($killGlobalCodex -and $path -like '*\windowsapps\openai.codex_*') { return $true }
-        if ($killGlobalCodex -and $path -like '*\appdata\local\openai\codex\bin\*') { return $true }
-        foreach ($prefix in $prefixes) {
-          if ($prefix -and $path.StartsWith($prefix)) { return $true }
-        }
-        if ($killGlobalCodex -and $_.CommandLine -and $codexHome -and $_.CommandLine.Contains($codexHome)) { return $true }
-        return $false
-      }
+      Where-Object { $_.Name -in @('ChatGPT.exe','Codex.exe','Codex Desktop.exe') } |
+      Where-Object { Test-CodexDesktopHost $_ }
   )
+  if ($stillRunning.Count -gt 0) { Start-Sleep -Milliseconds __STOP_POLL_MS__ }
 } while ($stillRunning.Count -gt 0 -and (Get-Date) -lt $deadline)
 "#;
 
@@ -244,10 +276,7 @@ do {
         .map(|prefix| format!("'{}'", escape_powershell_single_quoted(prefix)))
         .collect::<Vec<_>>()
         .join(",");
-    let codex_home = dirs::home_dir()
-        .map(|home| home.join(".codex").to_string_lossy().replace('/', "\\"))
-        .unwrap_or_default();
-    let script = script
+    script
         .replace("'__PREFIXES__'", &prefix_literal)
         .replace(
             "__KILL_GLOBAL_CODEX__",
@@ -260,18 +289,9 @@ do {
         .replace(
             "__CODEX_HOME__",
             &escape_powershell_single_quoted(&codex_home),
-        );
-
-    let _ = new_background_command("powershell")
-        .args([
-            "-NoProfile",
-            "-NonInteractive",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-Command",
-            &script,
-        ])
-        .status();
+        )
+        .replace("__STOP_WAIT_MS__", &WINDOWS_CODEX_STOP_WAIT_MS.to_string())
+        .replace("__STOP_POLL_MS__", &WINDOWS_CODEX_STOP_POLL_MS.to_string())
 }
 
 pub(crate) fn find_codex_app_path() -> Option<PathBuf> {
@@ -1306,5 +1326,21 @@ mod tests {
 
         assert_eq!(actual, Some(bundled_cli));
         let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn stop_script_waits_briefly_for_desktop_host_only() {
+        let script = windows_codex_stop_script(
+            &[r"c:\controlled-codex\current\app\".to_string()],
+            r"c:\users\fixture\.codex",
+            true,
+        );
+
+        assert!(script.contains("AddMilliseconds(900)"));
+        assert!(script.contains("Start-Sleep -Milliseconds 60"));
+        assert!(script.contains("EndsWith('\\resources\\codex.exe')"));
+        assert!(script.contains("Contains('--type=')"));
+        assert!(script.contains("Contains('app-server')"));
+        assert!(!script.contains("AddSeconds(6)"));
     }
 }
